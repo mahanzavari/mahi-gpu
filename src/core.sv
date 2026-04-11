@@ -47,6 +47,7 @@ module core #(
     // Intermediate Signals
     reg [7:0] current_pc;
     wire [7:0] next_pc[THREADS_PER_BLOCK-1:0];
+    wire [7:0] [THREADS_PER_BLOCK-1:0] active_mask;
     reg [7:0] rs[THREADS_PER_BLOCK-1:0];
     reg [7:0] rt[THREADS_PER_BLOCK-1:0];
     reg [1:0] lsu_state[THREADS_PER_BLOCK-1:0];
@@ -117,6 +118,7 @@ module core #(
         .clk(clk),
         .reset(reset),
         .start(start),
+        .thread_count(thread_count),
         .fetcher_state(fetcher_state),
         .core_state(core_state),
         .decoded_mem_read_enable(decoded_mem_read_enable),
@@ -125,6 +127,7 @@ module core #(
         .lsu_state(lsu_state),
         .current_pc(current_pc),
         .next_pc(next_pc),
+        .active_mask(active_mask)
         .done(done)
     );
 
@@ -136,7 +139,7 @@ module core #(
             alu alu_instance (
                 .clk(clk),
                 .reset(reset),
-                .enable(i < thread_count),
+                .enable(active_mask[i]),
                 .core_state(core_state),
                 .decoded_alu_arithmetic_mux(decoded_alu_arithmetic_mux),
                 .decoded_alu_output_mux(decoded_alu_output_mux),
@@ -149,7 +152,7 @@ module core #(
             lsu lsu_instance (
                 .clk(clk),
                 .reset(reset),
-                .enable(i < thread_count),
+                .enable(active_mask[i]),
                 .core_state(core_state),
                 .decoded_mem_read_enable(decoded_mem_read_enable),
                 .decoded_mem_write_enable(decoded_mem_write_enable),
@@ -175,7 +178,7 @@ module core #(
             ) register_instance (
                 .clk(clk),
                 .reset(reset),
-                .enable(i < thread_count),
+                .enable(active_mask[i]),
                 .block_id(block_id),
                 .core_state(core_state),
                 .decoded_reg_write_enable(decoded_reg_write_enable),
@@ -197,7 +200,7 @@ module core #(
             ) pc_instance (
                 .clk(clk),
                 .reset(reset),
-                .enable(i < thread_count),
+                .enable(active_mask[i]),
                 .core_state(core_state),
                 .decoded_nzp(decoded_nzp),
                 .decoded_immediate(decoded_immediate),

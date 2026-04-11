@@ -19,6 +19,9 @@ module scheduler #(
     input wire clk,
     input wire reset,
     input wire start,
+
+    //
+    input wire [%clog(THREADS_PER_BLOCK:0)] thread_count;
     
     // Control Signals
     input reg decoded_mem_read_enable,
@@ -35,6 +38,7 @@ module scheduler #(
 
     // Execution State
     output reg [2:0] core_state,
+    output reg [THREADS_PER_BLOCK] active_mask;
     output reg done
 );
     localparam IDLE = 3'b000, // Waiting to start
@@ -45,18 +49,52 @@ module scheduler #(
         EXECUTE = 3'b101,     // Execute ALU and PC calculations
         UPDATE = 3'b110,      // Update registers, NZP, and PC
         DONE = 3'b111;        // Done executing this block
+
+    reg [THREADS_PER_BLOCK-1:0] stack_mask [0:7]:
+    reg [7:0] stack_pc [0:7];
+    reg [2:0] stack_ptr;
+    reg [7:0] target_a, target_b; // execution paths
+    reg [THREADS_PER_BLOCK-1:0] mask_a, mask_b;
+    reg has_diverged;
+
+    always@(*) begin
+        target_a = 0; target_b = 0;
+        mask_a = 0; mask_b = 0;
+        has_diverged = 0;
+        for (int i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin
+            if(active_mask[i]) begin
+                target_a = next_pc[i];
+                break;
+            end
+        end
+        for(int i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin
+            if (active_mask[i]) begin
+                if (next_pc[i] == target_a) begin
+                    mask_a[i] = 1'b1;
+                end else begin
+                    mask_b[i] = 1'b1;
+                    target_b = next_pc[i];
+                    has_diverged = 1'b1;
+                end
+            end
+        end
+    end
     
     always @(posedge clk) begin 
         if (reset) begin
             current_pc <= 0;
             core_state <= IDLE;
             done <= 0;
+            active_mask <= 0;
+            stack_ptr <= 0;
         end else begin 
             case (core_state)
                 IDLE: begin
                     // Here after reset (before kernel is launched, or after previous block has been processed)
                     if (start) begin 
                         // Start by fetching the next instruction for this block based on PC
+                        active_mask <= (1 << thread_count) - 1;
+                        stack_ptr <= 0;
                         core_state <= FETCH;
                     end
                 end
@@ -97,12 +135,25 @@ module scheduler #(
                 UPDATE: begin 
                     if (decoded_ret) begin 
                         // If we reach a RET instruction, this block is done executing
-                        done <= 1;
-                        core_state <= DONE;
+                        if (stack_ptr > 0) begin
+                            stack_ptr <= stack_ptr - 1;
+                            active_mask <= stack_mask[stack_ptr - 1];
+                            current_pc <= stack_pc[stack_ptr - 1];
+                            core_state <= FETCH;
+                        end else begin
+                            done <= 1;
+                            core_state <= DONE;
+                        end
                     end else begin 
-                        // TODO: Branch divergence. For now assume all next_pc converge
-                        current_pc <= next_pc[THREADS_PER_BLOCK-1];
-
+                        if (has_diverged) begin
+                            stack_mask[stack_ptr] <= mask_b;
+                            stack_pc[stack_ptr] <= target_b;
+                            stack_ptr <= stack_ptr + 1;
+                            active_mask <= mask_a;
+                            current_pc <= target_a;
+                        end else begin
+                            current_pc <= target_a;
+                        end
                         // Update is synchronous so we move on after one cycle
                         core_state <= FETCH;
                     end
