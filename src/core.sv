@@ -71,6 +71,7 @@ module core #(
     reg decoded_alu_output_mux;             // Select operation in ALU
     reg decoded_pc_mux;                     // Select source of next PC
     reg decoded_ret;
+    reg decoded_sync;
 
     // Fetcher
     fetcher #(
@@ -108,7 +109,8 @@ module core #(
         .decoded_alu_arithmetic_mux(decoded_alu_arithmetic_mux),
         .decoded_alu_output_mux(decoded_alu_output_mux),
         .decoded_pc_mux(decoded_pc_mux),
-        .decoded_ret(decoded_ret)
+        .decoded_ret(decoded_ret),
+        .decoded_sync(decoded_sync)
     );
 
     // Scheduler
@@ -124,6 +126,7 @@ module core #(
         .decoded_mem_read_enable(decoded_mem_read_enable),
         .decoded_mem_write_enable(decoded_mem_write_enable),
         .decoded_ret(decoded_ret),
+        .decoded_sync(decoded_sync),
         .lsu_state(lsu_state),
         .current_pc(current_pc),
         .next_pc(next_pc),

@@ -21,8 +21,8 @@ module lsu #(
     input reg decoded_mem_write_enable,
 
     // Registers
-    input reg [ََِِDATA_BITS-1:0] rs,
-    input reg [ََِِDATA_BITS-1:0] rt,
+    input reg [DATA_BITS-1:0] rs,
+    input reg [DATA_BITS-1:0] rt,
 
     // Data Memory
     output reg mem_read_valid,

@@ -27,6 +27,7 @@ module scheduler #(
     input reg decoded_mem_read_enable,
     input reg decoded_mem_write_enable,
     input reg decoded_ret,
+    input logic decoded_sync,
 
     // Memory Access State
     input reg [2:0] fetcher_state,
@@ -49,6 +50,8 @@ module scheduler #(
         EXECUTE = 3'b101,     // Execute ALU and PC calculations
         UPDATE = 3'b110,      // Update registers, NZP, and PC
         DONE = 3'b111;        // Done executing this block
+
+    reg is_sync_barrier;
 
     reg [THREADS_PER_BLOCK-1:0] stack_mask [0:7];
     reg [7:0] stack_pc [0:7];
@@ -87,6 +90,7 @@ module scheduler #(
             done <= 0;
             active_mask <= 0;
             stack_ptr <= 0;
+            is_sync_barrier <= 0;
         end else begin 
             case (core_state)
                 IDLE: begin
@@ -95,6 +99,7 @@ module scheduler #(
                         // Start by fetching the next instruction for this block based on PC
                         active_mask <= (1 << thread_count) - 1;
                         stack_ptr <= 0;
+                        is_sync_barrier <= 0;
                         core_state <= FETCH;
                     end
                 end
@@ -130,36 +135,60 @@ module scheduler #(
                 end
                 EXECUTE: begin
                     // Execute is synchronous so we move on after one cycle
+                    if (decoded_sync) 
+                        is_sync_barrier <= 1'b1;
                     core_state <= UPDATE;
                 end
-                UPDATE: begin 
-                    if (decoded_ret) begin 
-                        // If we reach a RET instruction, this block is done executing
-                        if (stack_ptr > 0) begin
-                            stack_ptr <= stack_ptr - 1;
-                            active_mask <= stack_mask[stack_ptr - 1];
-                            current_pc <= stack_pc[stack_ptr - 1];
+                UPDATE: begin
+                    // -------------------------------------------------------
+                    // NEW: SYNC barrier — stall in UPDATE until every active
+                    // thread has lsu_state == IDLE (2'b00).
+                    // -------------------------------------------------------
+                    if (is_sync_barrier) begin
+                        reg all_idle;
+                        all_idle = 1'b1;
+                        for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                            if (active_mask[i] && lsu_state[i] != 2'b00) begin
+                                all_idle = 1'b0;
+                                break;
+                            end
+                        end
+                        if (all_idle) begin
+                            is_sync_barrier <= 1'b0;
+                            // fall through to normal UPDATE logic below
+                        end else begin
+                            // still waiting — stay in UPDATE
+                        end
+                    end
+
+                    // Normal UPDATE logic (only runs when not stalling)
+                    if (!is_sync_barrier) begin
+                        if (decoded_ret) begin 
+                            if (stack_ptr > 0) begin
+                                stack_ptr   <= stack_ptr - 1;
+                                active_mask <= stack_mask[stack_ptr - 1];
+                                current_pc  <= stack_pc[stack_ptr - 1];
+                                core_state  <= FETCH;
+                            end else begin
+                                done       <= 1;
+                                core_state <= DONE;
+                            end
+                        end else begin 
+                            if (has_diverged) begin
+                                stack_mask[stack_ptr] <= mask_b;
+                                stack_pc[stack_ptr]   <= target_b;
+                                stack_ptr             <= stack_ptr + 1;
+                                active_mask           <= mask_a;
+                                current_pc            <= target_a;
+                            end else begin
+                                current_pc <= target_a;
+                            end
                             core_state <= FETCH;
-                        end else begin
-                            done <= 1;
-                            core_state <= DONE;
                         end
-                    end else begin 
-                        if (has_diverged) begin
-                            stack_mask[stack_ptr] <= mask_b;
-                            stack_pc[stack_ptr] <= target_b;
-                            stack_ptr <= stack_ptr + 1;
-                            active_mask <= mask_a;
-                            current_pc <= target_a;
-                        end else begin
-                            current_pc <= target_a;
-                        end
-                        // Update is synchronous so we move on after one cycle
-                        core_state <= FETCH;
                     end
                 end
+
                 DONE: begin 
-                    // no-op
                 end
             endcase
         end
