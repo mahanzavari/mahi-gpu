@@ -7,7 +7,7 @@
 // > Each core contains 1 fetcher & decoder, and register files, ALUs, LSUs, PC for each thread
 module core #(
     parameter DATA_MEM_ADDR_BITS = 8,
-    parameter DATA_MEM_DATA_BITS = 8,
+    parameter DATA_MEM_DATA_BITS = 16,
     parameter PROGRAM_MEM_ADDR_BITS = 8,
     parameter PROGRAM_MEM_DATA_BITS = 16,
     parameter THREADS_PER_BLOCK = 4
@@ -48,11 +48,11 @@ module core #(
     reg [7:0] current_pc;
     wire [7:0] next_pc[THREADS_PER_BLOCK-1:0];
     wire [THREADS_PER_BLOCK-1:0] active_mask;
-    reg [7:0] rs[THREADS_PER_BLOCK-1:0];
-    reg [7:0] rt[THREADS_PER_BLOCK-1:0];
+    reg [DATA_MEM_DATA_BITS-1:0] rs[THREADS_PER_BLOCK-1:0];
+    reg [DATA_MEM_DATA_BITS-1:0] rt[THREADS_PER_BLOCK-1:0];
     reg [1:0] lsu_state[THREADS_PER_BLOCK-1:0];
-    reg [7:0] lsu_out[THREADS_PER_BLOCK-1:0];
-    wire [7:0] alu_out[THREADS_PER_BLOCK-1:0];
+    reg [DATA_MEM_DATA_BITS-1:0] lsu_out[THREADS_PER_BLOCK-1:0];
+    wire [DATA_MEM_DATA_BITS-1:0] alu_out[THREADS_PER_BLOCK-1:0];
     
     // Decoded Instruction Signals
     reg [3:0] decoded_rd_address;
@@ -67,7 +67,7 @@ module core #(
     reg decoded_mem_write_enable;           // Enable writing to memory
     reg decoded_nzp_write_enable;           // Enable writing to NZP register
     reg [1:0] decoded_reg_input_mux;        // Select input to register
-    reg [1:0] decoded_alu_arithmetic_mux;   // Select arithmetic operation
+    reg [2:0] decoded_alu_arithmetic_mux;   // Select arithmetic operation
     reg decoded_alu_output_mux;             // Select operation in ALU
     reg decoded_pc_mux;                     // Select source of next PC
     reg decoded_ret;
@@ -136,7 +136,9 @@ module core #(
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
             // ALU
-            alu alu_instance (
+            alu #(
+                .DATA_BITS(DATA_MEM_DATA_BITS)
+            ) alu_instance (
                 .clk(clk),
                 .reset(reset),
                 .enable(active_mask[i]),
@@ -149,7 +151,9 @@ module core #(
             );
 
             // LSU
-            lsu lsu_instance (
+            lsu #(
+                .DATA_BITS(DATA_MEM_DATA_BITS)
+            ) lsu_instance (
                 .clk(clk),
                 .reset(reset),
                 .enable(active_mask[i]),

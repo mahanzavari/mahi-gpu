@@ -5,7 +5,10 @@
 // > Handles asynchronous memory load and store operations and waits for response
 // > Each thread in each core has it's own LSU
 // > LDR, STR instructions are executed here
-module lsu (
+module lsu #(
+    parameter DATA_BITS = 16
+)
+(
     input wire clk,
     input wire reset,
     input wire enable, // If current block has less threads then block size, some LSUs will be inactive
@@ -18,34 +21,34 @@ module lsu (
     input reg decoded_mem_write_enable,
 
     // Registers
-    input reg [7:0] rs,
-    input reg [7:0] rt,
+    input reg [ََِِDATA_BITS-1:0] rs,
+    input reg [ََِِDATA_BITS-1:0] rt,
 
     // Data Memory
     output reg mem_read_valid,
     output reg [7:0] mem_read_address,
     input reg mem_read_ready,
-    input reg [7:0] mem_read_data,
+    input reg [DATA_BITS-1:0] mem_read_data,
     output reg mem_write_valid,
     output reg [7:0] mem_write_address,
-    output reg [7:0] mem_write_data,
+    output reg [DATA_BITS-1:0] mem_write_data,
     input reg mem_write_ready,
 
     // LSU Outputs
     output reg [1:0] lsu_state,
-    output reg [7:0] lsu_out
+    output reg [DATA_BITS-1:0] lsu_out
 );
     localparam IDLE = 2'b00, REQUESTING = 2'b01, WAITING = 2'b10, DONE = 2'b11;
 
     always @(posedge clk) begin
         if (reset) begin
             lsu_state <= IDLE;
-            lsu_out <= 0;
+            lsu_out <= {DATA_BITS{1'b0}};
             mem_read_valid <= 0;
             mem_read_address <= 0;
             mem_write_valid <= 0;
             mem_write_address <= 0;
-            mem_write_data <= 0;
+            mem_write_data <= {DATA_BITS{1'b0}};
         end else if (enable) begin
             // If memory read enable is triggered (LDR instruction)
             if (decoded_mem_read_enable) begin 

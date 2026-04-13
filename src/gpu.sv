@@ -9,7 +9,7 @@
 // > Configurable number of cores and thread capacity per core
 module gpu #(
     parameter DATA_MEM_ADDR_BITS = 8,        // Number of bits in data memory address (256 rows)
-    parameter DATA_MEM_DATA_BITS = 8,        // Number of bits in data memory value (8 bit data)
+    parameter DATA_MEM_DATA_BITS = 16,        // Number of bits in data memory value (8 bit data)
     parameter DATA_MEM_NUM_CHANNELS = 4,     // Number of concurrent channels for sending requests to data memory
     parameter PROGRAM_MEM_ADDR_BITS = 8,     // Number of bits in program memory address (256 rows)
     parameter PROGRAM_MEM_DATA_BITS = 16,    // Number of bits in program memory value (16 bit instruction)

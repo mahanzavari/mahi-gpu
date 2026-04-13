@@ -24,7 +24,7 @@ module decoder (
     output reg decoded_mem_write_enable,           // Enable writing to memory
     output reg decoded_nzp_write_enable,           // Enable writing to NZP register
     output reg [1:0] decoded_reg_input_mux,        // Select input to register
-    output reg [1:0] decoded_alu_arithmetic_mux,   // Select arithmetic operation
+    output reg [2:0] decoded_alu_arithmetic_mux,   // Select arithmetic operation
     output reg decoded_alu_output_mux,             // Select operation in ALU
     output reg decoded_pc_mux,                     // Select source of next PC
 

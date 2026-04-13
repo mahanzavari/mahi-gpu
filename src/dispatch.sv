@@ -74,7 +74,7 @@ module dispatch #(
                             ? thread_count - (blocks_dispatched * THREADS_PER_BLOCK)
                             : THREADS_PER_BLOCK;
 
-                        blocks_dispatched = blocks_dispatched + 1;
+                        blocks_dispatched <= blocks_dispatched + 1;
                     end
                 end
             end
@@ -84,7 +84,7 @@ module dispatch #(
                     // If a core just finished executing it's current block, reset it
                     core_reset[i] <= 1;
                     core_start[i] <= 0;
-                    blocks_done = blocks_done + 1;
+                    blocks_done <= blocks_done + 1;
                 end
             end
         end

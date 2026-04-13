@@ -62,7 +62,7 @@ module controller #(
             current_consumer <= '{default: 0};
             controller_state <= '{default: 0};
 
-            channel_serving_consumer = '{default: 0};
+            channel_serving_consumer <= '{default: 0};
         end else begin 
             // For each channel, we handle processing concurrently
             for (int i = 0; i < NUM_CHANNELS; i = i + 1) begin 
@@ -71,7 +71,7 @@ module controller #(
                         // While this channel is idle, cycle through consumers looking for one with a pending request
                         for (int j = 0; j < NUM_CONSUMERS; j = j + 1) begin 
                             if (consumer_read_valid[j] && !channel_serving_consumer[j]) begin 
-                                channel_serving_consumer[j] = 1;
+                                channel_serving_consumer[j] <= 1;
                                 current_consumer[i] <= j;
 
                                 mem_read_valid[i] <= 1;
@@ -81,7 +81,7 @@ module controller #(
                                 // Once we find a pending request, pick it up with this channel and stop looking for requests
                                 break;
                             end else if (consumer_write_valid[j] && !channel_serving_consumer[j]) begin 
-                                channel_serving_consumer[j] = 1;
+                                channel_serving_consumer[j] <= 1;
                                 current_consumer[i] <= j;
 
                                 mem_write_valid[i] <= 1;
