@@ -21,7 +21,7 @@ module scheduler #(
     input wire start,
 
     //
-    input wire [$clog2(THREADS_PER_BLOCK)-1:0] thread_count,
+    input wire [$clog2(THREADS_PER_BLOCK):0] thread_count,
     
     // Control Signals
     input reg decoded_mem_read_enable,
