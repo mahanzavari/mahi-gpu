@@ -14,14 +14,14 @@
 // > Technically, different instructions can branch to different PCs, requiring "branch divergence." In
 //   this minimal implementation, we assume no branch divergence (naive approach for simplicity)
 module scheduler #(
-    parameter THREADS_PER_BLOCK = 4,
+    parameter THREADS_PER_BLOCK = 4
 ) (
     input wire clk,
     input wire reset,
     input wire start,
 
     //
-    input wire [%clog(THREADS_PER_BLOCK:0)] thread_count;
+    input wire [$clog2(THREADS_PER_BLOCK)-1:0] thread_count,
     
     // Control Signals
     input reg decoded_mem_read_enable,
@@ -38,7 +38,7 @@ module scheduler #(
 
     // Execution State
     output reg [2:0] core_state,
-    output reg [THREADS_PER_BLOCK] active_mask;
+    output reg [THREADS_PER_BLOCK-1:0] active_mask,
     output reg done
 );
     localparam IDLE = 3'b000, // Waiting to start
@@ -50,7 +50,7 @@ module scheduler #(
         UPDATE = 3'b110,      // Update registers, NZP, and PC
         DONE = 3'b111;        // Done executing this block
 
-    reg [THREADS_PER_BLOCK-1:0] stack_mask [0:7]:
+    reg [THREADS_PER_BLOCK-1:0] stack_mask [0:7];
     reg [7:0] stack_pc [0:7];
     reg [2:0] stack_ptr;
     reg [7:0] target_a, target_b; // execution paths

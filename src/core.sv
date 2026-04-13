@@ -47,7 +47,7 @@ module core #(
     // Intermediate Signals
     reg [7:0] current_pc;
     wire [7:0] next_pc[THREADS_PER_BLOCK-1:0];
-    wire [7:0] [THREADS_PER_BLOCK-1:0] active_mask;
+    wire [THREADS_PER_BLOCK-1:0] active_mask;
     reg [7:0] rs[THREADS_PER_BLOCK-1:0];
     reg [7:0] rt[THREADS_PER_BLOCK-1:0];
     reg [1:0] lsu_state[THREADS_PER_BLOCK-1:0];
@@ -113,7 +113,7 @@ module core #(
 
     // Scheduler
     scheduler #(
-        .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+        .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
     ) scheduler_instance (
         .clk(clk),
         .reset(reset),
@@ -127,7 +127,7 @@ module core #(
         .lsu_state(lsu_state),
         .current_pc(current_pc),
         .next_pc(next_pc),
-        .active_mask(active_mask)
+        .active_mask(active_mask),
         .done(done)
     );
 
@@ -174,7 +174,7 @@ module core #(
             registers #(
                 .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
                 .THREAD_ID(i),
-                .DATA_BITS(DATA_MEM_DATA_BITS),
+                .DATA_BITS(DATA_MEM_DATA_BITS)
             ) register_instance (
                 .clk(clk),
                 .reset(reset),
