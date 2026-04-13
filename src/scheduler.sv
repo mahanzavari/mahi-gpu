@@ -27,7 +27,7 @@ module scheduler #(
     input reg decoded_mem_read_enable,
     input reg decoded_mem_write_enable,
     input reg decoded_ret,
-    input logic decoded_sync,
+    input wire decoded_sync,
 
     // Memory Access State
     input reg [2:0] fetcher_state,

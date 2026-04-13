@@ -39,7 +39,8 @@ module registers #(
 );
     localparam ARITHMETIC = 2'b00,
         MEMORY = 2'b01,
-        CONSTANT = 2'b10;
+        CONSTANT = 2'b10,
+        SHARED   = 2'b11;
 
     // 16 registers per thread (13 free registers and 3 read-only registers)
     reg [7:0] registers[15:0];
@@ -93,6 +94,9 @@ module registers #(
                         CONSTANT: begin 
                             // CONST
                             registers[decoded_rd_address] <= decoded_immediate;
+                        end
+                        SHARED: begin
+                            registers[decoded_rd_address] <= lsu_out;
                         end
                     endcase
                 end

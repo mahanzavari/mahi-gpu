@@ -10,7 +10,9 @@ module core #(
     parameter DATA_MEM_DATA_BITS = 16,
     parameter PROGRAM_MEM_ADDR_BITS = 8,
     parameter PROGRAM_MEM_DATA_BITS = 16,
-    parameter THREADS_PER_BLOCK = 4
+    parameter THREADS_PER_BLOCK = 4,
+    parameter SHARED_MEM_ADDR_BITS      = 8, 
+    parameter SHARED_MEM_SIZE           = 256
 ) (
     input wire clk,
     input wire reset,
@@ -72,6 +74,18 @@ module core #(
     reg decoded_pc_mux;                     // Select source of next PC
     reg decoded_ret;
     reg decoded_sync;
+    // shared mem
+    reg decoded_shared_read_enable;
+    reg decoded_shared_write_enable;
+    // Shared memory wires                      
+    wire [THREADS_PER_BLOCK-1:0]              sh_read_valid;
+    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_read_address  [THREADS_PER_BLOCK-1:0];
+    wire [THREADS_PER_BLOCK-1:0]              sh_read_ready;
+    wire [DATA_MEM_DATA_BITS-1:0]             sh_read_data     [THREADS_PER_BLOCK-1:0];
+    wire [THREADS_PER_BLOCK-1:0]              sh_write_valid;
+    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_write_address [THREADS_PER_BLOCK-1:0];
+    wire [DATA_MEM_DATA_BITS-1:0]             sh_write_data    [THREADS_PER_BLOCK-1:0];
+    wire [THREADS_PER_BLOCK-1:0]              sh_write_ready;
 
     // Fetcher
     fetcher #(
@@ -110,7 +124,9 @@ module core #(
         .decoded_alu_output_mux(decoded_alu_output_mux),
         .decoded_pc_mux(decoded_pc_mux),
         .decoded_ret(decoded_ret),
-        .decoded_sync(decoded_sync)
+        .decoded_sync(decoded_sync),
+        .decoded_shared_read_enable(decoded_shared_read_enable),
+        .decoded_shared_write_enable(decoded_shared_write_enable)
     );
 
     // Scheduler
@@ -132,6 +148,24 @@ module core #(
         .next_pc(next_pc),
         .active_mask(active_mask),
         .done(done)
+    );
+    // Shared memory PER CORE
+    shared_mem #(
+        .DATA_BITS(DATA_MEM_DATA_BITS),
+        .ADDR_BITS(SHARED_MEM_ADDR_BITS),
+        .SIZE(SHARED_MEM_SIZE),
+        .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
+    ) shared_mem_instance (
+        .clk(clk),
+        .reset(reset),
+        .read_valid(sh_read_valid),
+        .read_address(sh_read_address),
+        .read_ready(sh_read_ready),
+        .read_data(sh_read_data),
+        .write_valid(sh_write_valid),
+        .write_address(sh_write_address),
+        .write_data(sh_write_data),
+        .write_ready(sh_write_ready)
     );
 
     // Dedicated ALU, LSU, registers, & PC unit for each thread this core has capacity for
@@ -171,6 +205,16 @@ module core #(
                 .mem_write_address(data_mem_write_address[i]),
                 .mem_write_data(data_mem_write_data[i]),
                 .mem_write_ready(data_mem_write_ready[i]),
+                .decoded_shared_read_enable(decoded_shared_read_enable),
+                .decoded_shared_write_enable(decoded_shared_write_enable),
+                .shared_mem_read_valid(sh_read_valid[i]),
+                .shared_mem_read_address(sh_read_address[i]),
+                .shared_mem_read_ready(sh_read_ready[i]),
+                .shared_mem_read_data(sh_read_data[i]),
+                .shared_mem_write_valid(sh_write_valid[i]),
+                .shared_mem_write_address(sh_write_address[i]),
+                .shared_mem_write_data(sh_write_data[i]),
+                .shared_mem_write_ready(sh_write_ready[i]),
                 .rs(rs[i]),
                 .rt(rt[i]),
                 .lsu_state(lsu_state[i]),
