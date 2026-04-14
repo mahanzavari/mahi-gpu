@@ -34,6 +34,7 @@ module dispatch #(
     reg [7:0] blocks_dispatched; // How many blocks have been sent to cores?
     reg [7:0] blocks_done; // How many blocks have finished processing?
     reg start_execution; // EDA: Unimportant hack used because of EDA tooling
+    reg [7:0] next_blocks_dispatched;
 
     always @(posedge clk) begin
         if (reset) begin
@@ -62,23 +63,22 @@ module dispatch #(
                 done <= 1;
             end
 
+            next_blocks_dispatched = blocks_dispatched;
             for (int i = 0; i < NUM_CORES; i++) begin
                 if (core_reset[i]) begin 
                     core_reset[i] <= 0;
-
-                    // If this core was just reset, check if there are more blocks to be dispatched
-                    if (blocks_dispatched < total_blocks) begin 
+                    if (next_blocks_dispatched < total_blocks) begin 
                         core_start[i] <= 1;
-                        core_block_id[i] <= blocks_dispatched;
-                        core_thread_count[i] <= (blocks_dispatched == total_blocks - 1) 
-                            ? thread_count - (blocks_dispatched * THREADS_PER_BLOCK)
+                        core_block_id[i] <= next_blocks_dispatched;
+                        core_thread_count[i] <= (next_blocks_dispatched == total_blocks - 1) 
+                            ? thread_count - (next_blocks_dispatched * THREADS_PER_BLOCK)
                             : THREADS_PER_BLOCK;
 
-                        blocks_dispatched <= blocks_dispatched + 1;
+                        next_blocks_dispatched = next_blocks_dispatched + 1;
                     end
                 end
             end
-
+            blocks_dispatched <= next_blocks_dispatched;
             for (int i = 0; i < NUM_CORES; i++) begin
                 if (core_start[i] && core_done[i]) begin
                     // If a core just finished executing it's current block, reset it

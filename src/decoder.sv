@@ -4,7 +4,10 @@
 // INSTRUCTION DECODER
 // > Decodes an instruction into the control signals necessary to execute it
 // > Each core has it's own decoder
-module decoder (
+module decoder #(
+    parameter DATA_BITS = 16
+)
+(
     input wire clk,
     input wire reset,
 
@@ -16,7 +19,7 @@ module decoder (
     output reg [3:0] decoded_rs_address,
     output reg [3:0] decoded_rt_address,
     output reg [2:0] decoded_nzp,
-    output reg [7:0] decoded_immediate,
+    output reg [DATA_BITS-1:0] decoded_immediate,
     
     // Control Signals
     output reg decoded_reg_write_enable,           // Enable writing to a register
@@ -75,7 +78,7 @@ module decoder (
                 decoded_rd_address <= instruction[11:8];
                 decoded_rs_address <= instruction[7:4];
                 decoded_rt_address <= instruction[3:0];
-                decoded_immediate <= instruction[7:0];
+                decoded_immediate <= {8'b0, instruction[7:0]};
                 decoded_nzp <= instruction[11:9];
 
                 // Control signals reset on every decode and set conditionally by instruction

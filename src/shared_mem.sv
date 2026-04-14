@@ -40,7 +40,7 @@ module shared_mem #(
                     write_ready <= 1'b0;
                     if (write_valid[i]) begin
                          mem[write_address[i]] <= write_data[i];
-                         write_ready <= 1'b1;
+                         write_ready[i] <= 1'b1;
                     end
                end
           end

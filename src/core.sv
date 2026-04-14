@@ -12,7 +12,8 @@ module core #(
     parameter PROGRAM_MEM_DATA_BITS = 16,
     parameter THREADS_PER_BLOCK = 4,
     parameter SHARED_MEM_ADDR_BITS      = 8, 
-    parameter SHARED_MEM_SIZE           = 256
+    parameter SHARED_MEM_SIZE           = 256,
+    parameter DATA_BITS = 16
 ) (
     input wire clk,
     input wire reset,
@@ -26,20 +27,20 @@ module core #(
     input wire [$clog2(THREADS_PER_BLOCK):0] thread_count,
 
     // Program Memory
-    output reg program_mem_read_valid,
-    output reg [PROGRAM_MEM_ADDR_BITS-1:0] program_mem_read_address,
-    input reg program_mem_read_ready,
-    input reg [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data,
+    output wire program_mem_read_valid,
+    output wire [PROGRAM_MEM_ADDR_BITS-1:0] program_mem_read_address,
+    input wire program_mem_read_ready,
+    input wire [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data,
 
     // Data Memory
-    output reg [THREADS_PER_BLOCK-1:0] data_mem_read_valid,
-    output reg [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [THREADS_PER_BLOCK-1:0],
-    input reg [THREADS_PER_BLOCK-1:0] data_mem_read_ready,
-    input reg [DATA_MEM_DATA_BITS-1:0] data_mem_read_data [THREADS_PER_BLOCK-1:0],
-    output reg [THREADS_PER_BLOCK-1:0] data_mem_write_valid,
-    output reg [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [THREADS_PER_BLOCK-1:0],
-    output reg [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [THREADS_PER_BLOCK-1:0],
-    input reg [THREADS_PER_BLOCK-1:0] data_mem_write_ready
+    output wire [THREADS_PER_BLOCK-1:0] data_mem_read_valid,
+    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [THREADS_PER_BLOCK-1:0],
+    input wire [THREADS_PER_BLOCK-1:0] data_mem_read_ready,
+    input wire [DATA_MEM_DATA_BITS-1:0] data_mem_read_data [THREADS_PER_BLOCK-1:0],
+    output wire [THREADS_PER_BLOCK-1:0] data_mem_write_valid,
+    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [THREADS_PER_BLOCK-1:0],
+    output wire [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [THREADS_PER_BLOCK-1:0],
+    input wire [THREADS_PER_BLOCK-1:0] data_mem_write_ready
 );
     // State
     reg [2:0] core_state;
@@ -61,7 +62,7 @@ module core #(
     reg [3:0] decoded_rs_address;
     reg [3:0] decoded_rt_address;
     reg [2:0] decoded_nzp;
-    reg [7:0] decoded_immediate;
+    reg [DATA_BITS-1:0] decoded_immediate;
 
     // Decoded Control Signals
     reg decoded_reg_write_enable;           // Enable writing to a register
@@ -79,12 +80,12 @@ module core #(
     reg decoded_shared_write_enable;
     // Shared memory wires                      
     wire [THREADS_PER_BLOCK-1:0]              sh_read_valid;
-    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_read_address  [THREADS_PER_BLOCK-1:0];
+    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_read_address  [THREADS_PER_BLOCK];
     wire [THREADS_PER_BLOCK-1:0]              sh_read_ready;
-    wire [DATA_MEM_DATA_BITS-1:0]             sh_read_data     [THREADS_PER_BLOCK-1:0];
+    wire [DATA_MEM_DATA_BITS-1:0]             sh_read_data     [THREADS_PER_BLOCK];
     wire [THREADS_PER_BLOCK-1:0]              sh_write_valid;
-    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_write_address [THREADS_PER_BLOCK-1:0];
-    wire [DATA_MEM_DATA_BITS-1:0]             sh_write_data    [THREADS_PER_BLOCK-1:0];
+    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_write_address [THREADS_PER_BLOCK];
+    wire [DATA_MEM_DATA_BITS-1:0]             sh_write_data    [THREADS_PER_BLOCK];
     wire [THREADS_PER_BLOCK-1:0]              sh_write_ready;
 
     // Fetcher

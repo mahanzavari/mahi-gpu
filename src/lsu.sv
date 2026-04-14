@@ -114,6 +114,8 @@ module lsu #(
                         mem_write_valid <= 1;
                         mem_write_address <= rs;
                         mem_write_data <= rt;
+
+                        $display("LSU Write: Addr=%0d, Data=%0d", rs, rt);
                         lsu_state <= WAITING;
                     end
                     WAITING: begin
@@ -167,6 +169,9 @@ module lsu #(
                         shared_mem_write_valid <= 1'b1;
                         shared_mem_write_address <= rs;
                         shared_mem_write_data    <= rt;
+
+                        $display("SHARED Write: Addr=%0d, Data=%0d", rs, rt);
+
                         slsu_state <= WAITING;
                     end
                     WAITING: begin

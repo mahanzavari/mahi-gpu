@@ -82,6 +82,13 @@ module registers #(
             if (core_state == 3'b110) begin 
                 // Only allow writing to R0 - R12
                 if (decoded_reg_write_enable && decoded_rd_address < 13) begin
+                    // debug
+                    $display("Time=%0t | CoreState=%b | Thread=%0d | rd=%0d <= %0d",
+                        $time, core_state, THREAD_ID, decoded_rd_address,
+                        (decoded_reg_input_mux == ARITHMETIC) ? alu_out :
+                        (decoded_reg_input_mux == MEMORY)     ? lsu_out :
+                        decoded_immediate);
+
                     case (decoded_reg_input_mux)
                         ARITHMETIC: begin 
                             // ADD, SUB, MUL, DIV
