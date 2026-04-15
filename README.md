@@ -1,8 +1,8 @@
-# tiny-gpu
+# mahi-gpu
 
 A minimal GPU implementation in Verilog optimized for learning about how GPUs work from the ground up.
 
-Built with <15 files of fully documented Verilog, complete documentation on architecture & ISA, working matrix addition/multiplication kernels, and full support for kernel simulation & execution traces.
+
 
 ### Table of Contents
 
@@ -32,17 +32,19 @@ Because the GPU market is so competitive, low-level technical details for all mo
 
 While there are lots of resources to learn about GPU programming, there's almost nothing available to learn about how GPU's work at a hardware level.
 
-The best option is to go through open-source GPU implementations like [Miaow](https://github.com/VerticalResearchGroup/miaow) and [VeriGPU](https://github.com/hughperkins/VeriGPU/tree/main) and try to figure out what's going on. This is challenging since these projects aim at being feature complete and functional, so they're quite complex.
 
-This is why I built `tiny-gpu`!
+This is why I built `mahi-gpu`!
 
-## What is tiny-gpu?
+# T
+special Thanks to [tiny-gpu](https://github.com/adam-maj/tiny-gpu) for letting me learn more about the GPU and giving me many ideas to learn how simple GPUs work!
+
+## What is mahi-gpu?
 
 > [!IMPORTANT]
 >
-> **tiny-gpu** is a minimal GPU implementation optimized for learning about how GPUs work from the ground up.
+> **mahi-gpu** is a minimal GPU implementation optimized for learning about how GPUs work from the ground up.
 >
-> Specifically, with the trend toward general-purpose GPUs (GPGPUs) and ML-accelerators like Google's TPU, tiny-gpu focuses on highlighting the general principles of all of these architectures, rather than on the details of graphics-specific hardware.
+> Specifically, with the trend toward general-purpose GPUs (GPGPUs) and ML-accelerators like Google's TPU, mahi-gpu focuses on highlighting the general principles of all of these architectures, rather than on the details of graphics-specific hardware.
 
 With this motivation in mind, we can simplify GPUs by cutting out the majority of complexity involved with building a production-grade graphics card, and focus on the core elements that are critical to all of these modern hardware accelerators.
 
@@ -63,7 +65,7 @@ After understanding the fundamentals laid out in this project, you can checkout 
 
 ## GPU
 
-tiny-gpu is built to execute a single kernel at a time.
+mahi-gpu is built to execute a single kernel at a time.
 
 In order to launch a kernel, we need to do the following:
 
@@ -100,15 +102,19 @@ The GPU is built to interface with an external global memory. Here, data memory 
 
 ### Global Memory
 
-tiny-gpu data memory has the following specifications:
+mahi-gpu data memory has the following specifications:
 
 - 8 bit addressability (256 total rows of data memory)
 - 8 bit data (stores values of <256 for each row)
 
-tiny-gpu program memory has the following specifications:
+mahi-gpu program memory has the following specifications:
 
 - 8 bit addressability (256 rows of program memory)
 - 16 bit data (each instruction is 16 bits as specified by the ISA)
+
+### Shared Memory 
+
+mahi-gpu has a shared memory for each Block (core in this project) for faster execution and better caching just like in NVIDIA GPU architectures.
 
 ### Memory Controllers
 
@@ -118,11 +124,11 @@ The memory controllers keep track of all the outgoing requests to memory from th
 
 Each memory controller has a fixed number of channels based on the bandwidth of global memory.
 
-### Cache (WIP)
+<!-- ### Cache (WIP)
 
 The same data is often requested from global memory by multiple cores. Constantly access global memory repeatedly is expensive, and since the data has already been fetched once, it would be more efficient to store it on device in SRAM to be retrieved much quicker on later requests.
 
-This is exactly what the cache is used for. Data retrieved from external memory is stored in cache and can be retrieved from there on later requests, freeing up memory bandwidth to be used for new data.
+This is exactly what the cache is used for. Data retrieved from external memory is stored in cache and can be retrieved from there on later requests, freeing up memory bandwidth to be used for new data. -->
 
 ## Core
 
@@ -134,7 +140,7 @@ In this simplified GPU, each core processed one **block** at a time, and for eac
 
 Each core has a single scheduler that manages the execution of threads.
 
-The tiny-gpu scheduler executes instructions for a single block to completion before picking up a new block, and it executes instructions for all threads in-sync and sequentially.
+The mahi-gpu scheduler executes instructions for a single block to completion before picking up a new block, and it executes instructions for all threads in-sync and sequentially.
 
 In more advanced schedulers, techniques like **pipelining** are used to stream the execution of multiple instructions subsequent instructions to maximize resource utilization before previous instructions are fully complete. Additionally, **warp scheduling** can be use to execute multiple batches of threads within a block in parallel.
 
@@ -174,27 +180,68 @@ By default, the PC increments by 1 after every instruction.
 
 With the `BRnzp` instruction, the NZP register checks to see if the NZP register (set by a previous `CMP` instruction) matches some case - and if it does, it will branch to a specific line of program memory. _This is how loops and conditionals are implemented._
 
-Since threads are processed in parallel, tiny-gpu assumes that all threads "converge" to the same program counter after each instruction - which is a naive assumption for the sake of simplicity.
+Since threads are processed in parallel, mahi-gpu assumes that all threads "converge" to the same program counter after each instruction - which is a naive assumption for the sake of simplicity.
 
 In real GPUs, individual threads can branch to different PCs, causing **branch divergence** where a group of threads threads initially being processed together has to split out into separate execution.
 
 # ISA
 
-![ISA](/docs/images/isa.png)
+| Mnemonic | Opcode | Type | Notes |
+|:--------:|:------:|:----:|:-----:|
+| `NOP`   | 0000 | — | No operation |
+| `BRnzp` | 0001 | I | Conditional branch on NZP flags |
+| `CMP`   | 0010 | R | Compare rs, rt → update NZP |
+| `ADD`   | 0011 | R | rd = rs + rt |
+| `SUB`   | 0100 | R | rd = rs - rt |
+| `MUL`   | 0101 | R | rd = rs * rt |
+| `DIV`   | 0110 | R | rd = rs / rt |
+| `LDR`   | 0111 | R | rd = MEM[rs + rt] |
+| `STR`   | 1000 | R | MEM[rs + rt] = rt |
+| `CONST` | 1001 | I | rd = sign/zero‑extended imm (implementation‑defined) |
+| `SYNC`  | 1010 | — | Synchronization primitive |
+| `LDSH`  | 1011 | R | Load from shared memory |
+| `STSH`  | 1100 | R | Store to shared memory |
+| `RET`   | 1111 | — | Thread return |
 
-tiny-gpu implements a simple 11 instruction ISA built to enable simple kernels for proof-of-concept like matrix addition & matrix multiplication (implementation further down on this page).
 
-For these purposes, it supports the following instructions:
+# Instruction Format
 
-- `BRnzp` - Branch instruction to jump to another line of program memory if the NZP register matches the `nzp` condition in the instruction.
-- `CMP` - Compare the value of two registers and store the result in the NZP register to use for a later `BRnzp` instruction.
-- `ADD`, `SUB`, `MUL`, `DIV` - Basic arithmetic operations to enable tensor math.
-- `LDR` - Load data from global memory.
-- `STR` - Store data into global memory.
-- `CONST` - Load a constant value into a register.
-- `RET` - Signal that the current thread has reached the end of execution.
+All instructions are 16 bits.
 
-Each register is specified by 4 bits, meaning that there are 16 total registers. The first 13 register `R0` - `R12` are free registers that support read/write. The last 3 registers are special read-only registers used to supply the `%blockIdx`, `%blockDim`, and `%threadIdx` critical to SIMD.
+```
+15        12 11        8 7        4 3         0
++------------+-----------+-----------+-----------+
+|  OPCODE    |    RD     |    RS     |    RT     |  (R-type)
++------------+-----------+-----------+-----------+
+
+15        12 11        8 7                                0
++------------+-----------+-----------------------+
+|  OPCODE    |    NZP    |    IMMEDIATE[7:0]     |  (I-type: BR, CONST, some others)
++------------+-----------+-----------------------+
+```
+
+## Registers
+
+per‑thread register file for a small GPU‑like SIMD core, Each thread gets 16 registers.
+
+- 13 general‑purpose registers (R0–R12) — read/write
+- 3 read‑only special registers (R13–R15) — automatically set, not writable by the program
+  - `%blockIdx`
+  - `%blockDim`
+  - `%threadIdx`
+
+mahi-gpu implements a simple 11 instruction ISA built to enable simple kernels for proof-of-concept like matrix addition & matrix multiplication These mirror CUDA‑style registers that allow each thread to know:
+1. Which block it belongs to,
+2. How many threads exist in the block,
+3. Which thread index it is.
+
+| Register Index | Name (Conceptual) |  Width   | Read/Write | Initialization | Purpose |
+|:--------------:|:-----------------:|:--------:|:-----------:|:--------------:|---------|
+| **0–12**       | General Purpose Registers (GPRs) | DATA_BITS | R/W | Zero | Used for arithmetic, memory ops, constants, etc. |
+| **13**         | `%blockIdx`       | DATA_BITS | Read‑only to thread | Set to block_id on reset and every cycle | Identifies which block this thread belongs to |
+| **14**         | `%blockDim`       | DATA_BITS | Read‑only | Constant = THREADS_PER_BLOCK | Number of threads per block |
+| **15**         | `%threadIdx`      | DATA_BITS | Read‑only | Constant = THREAD_ID | Thread index within the block |
+
 
 # Execution
 
@@ -209,9 +256,6 @@ Each core follows the following control flow going through different stages to e
 5. `EXECUTE` - Execute any computations on data.
 6. `UPDATE` - Update register files and NZP register.
 
-The control flow is laid out like this for the sake of simplicity and understandability.
-
-In practice, several of these steps could be compressed to be optimize processing times, and the GPU could also use **pipelining** to stream and coordinate the execution of many instructions on a cores resources without waiting for previous instructions to finish.
 
 ### Thread
 
@@ -231,121 +275,65 @@ This matrix addition kernel adds two 1 x 8 matrices by performing 8 element wise
 
 This demonstration makes use of the `%blockIdx`, `%blockDim`, and `%threadIdx` registers to show SIMD programming on this GPU. It also uses the `LDR` and `STR` instructions which require async memory management.
 
-`matadd.asm`
+`gpu_tb.sv`
 
 ```asm
-.threads 8
-.data 0 1 2 3 4 5 6 7          ; matrix A (1 x 8)
-.data 0 1 2 3 4 5 6 7          ; matrix B (1 x 8)
+// threads 8
+// data 1 2 3 4 5 6 7  8            ; matrix A (1 x 8)
+// data 1 2 4 6 8 10 12 14          ; matrix B (1 x 8)
 
-MUL R0, %blockIdx, %blockDim
-ADD R0, R0, %threadIdx         ; i = blockIdx * blockDim + threadIdx
+MUL R1, BID, TPB        
+ADD R2, R1, TID    // r2 = r1 + thread_id      
+// r3 = r2 + 0  (A base)
+CONST R0, 8'd0       
+ADD R3, R2, R0         
+LDR R4, R3        // r4 = mem[r3]  (load A[i]) 
 
-CONST R1, #0                   ; baseA (matrix A base address)
-CONST R2, #8                   ; baseB (matrix B base address)
-CONST R3, #16                  ; baseC (matrix C base address)
+// r5 = r2 + 8  (B base)
+CONST R0, 8'd8         
+ADD R5, R2, R0         
 
-ADD R4, R1, R0                 ; addr(A[i]) = baseA + i
-LDR R4, R4                     ; load A[i] from global memory
+LDR R6, R5       // r6 = mem[r5]  (load B[i])       
 
-ADD R5, R2, R0                 ; addr(B[i]) = baseB + i
-LDR R5, R5                     ; load B[i] from global memory
+ADD R7, R4, R6
+// r3 = r2 + 16  (C base)
+CONST R0, 8'd16
+ADD R3, R2, R0         
 
-ADD R6, R4, R5                 ; C[i] = A[i] + B[i]
-
-ADD R7, R3, R0                 ; addr(C[i]) = baseC + i
-STR R7, R6                     ; store C[i] in global memory
-
-RET                            ; end of kernel
+STR R3, R7
+// RETURN
+RET             // kernel's end 
 ```
 
-### Matrix Multiplication
-
-The matrix multiplication kernel multiplies two 2x2 matrices. It performs element wise calculation of the dot product of the relevant row and column and uses the `CMP` and `BRnzp` instructions to demonstrate branching within the threads (notably, all branches converge so this kernel works on the current tiny-gpu implementation).
-
-`matmul.asm`
-
-```asm
-.threads 4
-.data 1 2 3 4                  ; matrix A (2 x 2)
-.data 1 2 3 4                  ; matrix B (2 x 2)
-
-MUL R0, %blockIdx, %blockDim
-ADD R0, R0, %threadIdx         ; i = blockIdx * blockDim + threadIdx
-
-CONST R1, #1                   ; increment
-CONST R2, #2                   ; N (matrix inner dimension)
-CONST R3, #0                   ; baseA (matrix A base address)
-CONST R4, #4                   ; baseB (matrix B base address)
-CONST R5, #8                   ; baseC (matrix C base address)
-
-DIV R6, R0, R2                 ; row = i // N
-MUL R7, R6, R2
-SUB R7, R0, R7                 ; col = i % N
-
-CONST R8, #0                   ; acc = 0
-CONST R9, #0                   ; k = 0
-
-LOOP:
-  MUL R10, R6, R2
-  ADD R10, R10, R9
-  ADD R10, R10, R3             ; addr(A[i]) = row * N + k + baseA
-  LDR R10, R10                 ; load A[i] from global memory
-
-  MUL R11, R9, R2
-  ADD R11, R11, R7
-  ADD R11, R11, R4             ; addr(B[i]) = k * N + col + baseB
-  LDR R11, R11                 ; load B[i] from global memory
-
-  MUL R12, R10, R11
-  ADD R8, R8, R12              ; acc = acc + A[i] * B[i]
-
-  ADD R9, R9, R1               ; increment k
-
-  CMP R9, R2
-  BRn LOOP                    ; loop while k < N
-
-ADD R9, R5, R0                 ; addr(C[i]) = baseC + i
-STR R9, R8                     ; store C[i] in global memory
-
-RET                            ; end of kernel
-```
 
 # Simulation
 
-tiny-gpu is setup to simulate the execution of both of the above kernels. Before simulating, you'll need to install [iverilog](https://steveicarus.github.io/iverilog/usage/installation.html) and [cocotb](https://docs.cocotb.org/en/stable/install.html):
+mahi-gpu is setup to simulate the execution of the above kernel. Before simulating, Xilinx Vivado or Other Synthesis tools like ALtera Quartus and etc.
 
-- Install Verilog compilers with `brew install icarus-verilog` and `pip3 install cocotb`
-- Download the latest version of sv2v from https://github.com/zachjs/sv2v/releases, unzip it and put the binary in $PATH.
-- Run `mkdir build` in the root directory of this repository.
+Once you've installed the tools, you can run the kernel simulations within the tools.
 
-Once you've installed the pre-requisites, you can run the kernel simulations with `make test_matadd` and `make test_matmul`.
-
-Executing the simulations will output a log file in `test/logs` with the initial data memory state, complete execution trace of the kernel, and final data memory state.
-
-If you look at the initial data memory state logged at the start of the logfile for each, you should see the two start matrices for the calculation, and in the final data memory at the end of the file you should also see the resultant matrix.
+Executing the simulations will output a text in console consisting of scheduler, controller, LDR and registers writes and the results.. 
 
 Below is a sample of the execution traces, showing on each cycle the execution of every thread within every core, including the current instruction, PC, register values, states, etc.
 
-![execution trace](docs/images/trace.png)
+<!-- ![execution trace]() -->
 
-**For anyone trying to run the simulation or play with this repo, please feel free to DM me on [twitter](https://twitter.com/majmudaradam) if you run into any issues - I want you to get this running!**
 
 # Advanced Functionality
 
-For the sake of simplicity, there were many additional features implemented in modern GPUs that heavily improve performance & functionality that tiny-gpu omits. We'll discuss some of those most critical features in this section.
+For the sake of simplicity, there were many additional features implemented in modern GPUs that heavily improve performance & functionality that mahi-gpu omits. We'll discuss some of those most critical features in this section.
 
-### Multi-layered Cache & Shared Memory
+<!-- ### Multi-layered Cache & Shared Memory
 
-In modern GPUs, multiple different levels of caches are used to minimize the amount of data that needs to get accessed from global memory. tiny-gpu implements only one cache layer between individual compute units requesting memory and the memory controllers which stores recent cached data.
+In modern GPUs, multiple different levels of caches are used to minimize the amount of data that needs to get accessed from global memory. mahi-gpu implements only one cache layer between individual compute units requesting memory and the memory controllers which stores recent cached data.
 
 Implementing multi-layered caches allows frequently accessed data to be cached more locally to where it's being used (with some caches within individual compute cores), minimizing load times for this data.
 
 Different caching algorithms are used to maximize cache-hits - this is a critical dimension that can be improved on to optimize memory access.
 
-Additionally, GPUs often use **shared memory** for threads within the same block to access a single memory space that can be used to share results with other threads.
+Additionally, GPUs often use **shared memory** for threads within the same block to access a single memory space that can be used to share results with other threads. -->
 
-### Memory Coalescing
+<!-- ### Memory Coalescing
 
 Another critical memory optimization used by GPUs is **memory coalescing.** Multiple threads running in parallel often need to access sequential addresses in memory (for example, a group of threads accessing neighboring elements in a matrix) - but each of these memory requests is put in separately.
 
@@ -353,7 +341,7 @@ Memory coalescing is used to analyzing queued memory requests and combine neighb
 
 ### Pipelining
 
-In the control flow for tiny-gpu, cores wait for one instruction to be executed on a group of threads before starting execution of the next instruction.
+In the control flow for mahi-gpu, cores wait for one instruction to be executed on a group of threads before starting execution of the next instruction.
 
 Modern GPUs use **pipelining** to stream execution of multiple sequential instructions at once while ensuring that instructions with dependencies on each other still get executed sequentially.
 
@@ -367,7 +355,7 @@ Multiple warps can be executed on a single core simultaneously by executing inst
 
 ### Branch Divergence
 
-tiny-gpu assumes that all threads in a single batch end up on the same PC after each instruction, meaning that threads can be executed in parallel for their entire lifetime.
+mahi-gpu assumes that all threads in a single batch end up on the same PC after each instruction, meaning that threads can be executed in parallel for their entire lifetime.
 
 In reality, individual threads could diverge from each other and branch to different lines based on their data. With different PCs, these threads would need to split into separate lines of execution, which requires managing diverging threads & paying attention to when threads converge again.
 
@@ -375,7 +363,7 @@ In reality, individual threads could diverge from each other and branch to diffe
 
 Another core functionality of modern GPUs is the ability to set **barriers** so that groups of threads in a block can synchronize and wait until all other threads in the same block have gotten to a certain point before continuing execution.
 
-This is useful for cases where threads need to exchange shared data with each other so they can ensure that the data has been fully processed.
+This is useful for cases where threads need to exchange shared data with each other so they can ensure that the data has been fully processed. -->
 
 # Next Steps
 
@@ -383,10 +371,8 @@ Updates I want to make in the future to improve the design, anyone else is welco
 
 - [ ] Add a simple cache for instructions
 - [ ] Build an adapter to use GPU with Tiny Tapeout 7
-- [ ] Add basic branch divergence
 - [ ] Add basic memory coalescing
 - [ ] Add basic pipelining
 - [ ] Optimize control flow and use of registers to improve cycle time
 - [ ] Write a basic graphics kernel or add simple graphics hardware to demonstrate graphics functionality
 
-**For anyone curious to play around or make a contribution, feel free to put up a PR with any improvements you'd like to add 😄**
