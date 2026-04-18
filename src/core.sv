@@ -1,10 +1,9 @@
 `default_nettype none
 `timescale 1ns/1ns
 
-// COMPUTE CORE
-// > Handles processing 1 block at a time
-// > The core also has it's own scheduler to manage control flow
-// > Each core contains 1 fetcher & decoder, and register files, ALUs, LSUs, PC for each thread
+// COMPUTE CORE (Pipelined)
+// > 5-Stage Pipeline: IF -> ID -> EX -> MEM -> WB
+// > Integrates Hazard Detection, Divergence Stack, and Pipeline Registers
 module core #(
     parameter DATA_MEM_ADDR_BITS = 8,
     parameter DATA_MEM_DATA_BITS = 16,
@@ -42,95 +41,336 @@ module core #(
     output wire [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [THREADS_PER_BLOCK-1:0],
     input wire [THREADS_PER_BLOCK-1:0] data_mem_write_ready
 );
-    // State
-    reg [2:0] core_state;
-    reg [2:0] fetcher_state;
-    reg [15:0] instruction;
 
-    // Intermediate Signals
-    reg [7:0] current_pc;
-    wire [7:0] next_pc[THREADS_PER_BLOCK-1:0];
-    wire [THREADS_PER_BLOCK-1:0] active_mask;
-    reg [DATA_MEM_DATA_BITS-1:0] rs[THREADS_PER_BLOCK-1:0];
-    reg [DATA_MEM_DATA_BITS-1:0] rt[THREADS_PER_BLOCK-1:0];
-    reg [1:0] lsu_state[THREADS_PER_BLOCK-1:0];
-    reg [DATA_MEM_DATA_BITS-1:0] lsu_out[THREADS_PER_BLOCK-1:0];
-    wire [DATA_MEM_DATA_BITS-1:0] alu_out[THREADS_PER_BLOCK-1:0];
+    // -------------------------------------------------------------------------
+    // GLOBAL PIPELINE CONTROL
+    // -------------------------------------------------------------------------
+    wire pipeline_stall; // Freezes IF, ID, EX
+    wire pipeline_flush; // Clears IF/ID and ID/EX on branch taken
+    wire [THREADS_PER_BLOCK-1:0] lsu_stall;
     
-    // Decoded Instruction Signals
-    reg [3:0] decoded_rd_address;
-    reg [3:0] decoded_rs_address;
-    reg [3:0] decoded_rt_address;
-    reg [2:0] decoded_nzp;
-    reg [DATA_BITS-1:0] decoded_immediate;
+    // Stall if ANY active LSU is waiting for memory
+    assign pipeline_stall = |lsu_stall;
 
-    // Decoded Control Signals
-    reg decoded_reg_write_enable;           // Enable writing to a register
-    reg decoded_mem_read_enable;            // Enable reading from memory
-    reg decoded_mem_write_enable;           // Enable writing to memory
-    reg decoded_nzp_write_enable;           // Enable writing to NZP register
-    reg [1:0] decoded_reg_input_mux;        // Select input to register
-    reg [2:0] decoded_alu_arithmetic_mux;   // Select arithmetic operation
-    reg decoded_alu_output_mux;             // Select operation in ALU
-    reg decoded_pc_mux;                     // Select source of next PC
-    reg decoded_ret;
-    reg decoded_sync;
-    // shared mem
-    reg decoded_shared_read_enable;
-    reg decoded_shared_write_enable;
-    // Shared memory wires                      
-    wire [THREADS_PER_BLOCK-1:0]              sh_read_valid;
-    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_read_address  [THREADS_PER_BLOCK];
-    wire [THREADS_PER_BLOCK-1:0]              sh_read_ready;
-    wire [DATA_MEM_DATA_BITS-1:0]             sh_read_data     [THREADS_PER_BLOCK];
-    wire [THREADS_PER_BLOCK-1:0]              sh_write_valid;
-    wire [SHARED_MEM_ADDR_BITS-1:0]           sh_write_address [THREADS_PER_BLOCK];
-    wire [DATA_MEM_DATA_BITS-1:0]             sh_write_data    [THREADS_PER_BLOCK];
-    wire [THREADS_PER_BLOCK-1:0]              sh_write_ready;
+    wire [THREADS_PER_BLOCK-1:0] sched_active_mask;
+    wire [7:0] if_pc; // Driven by scheduler
 
-    // Fetcher
+    // -------------------------------------------------------------------------
+    // 1. INSTRUCTION FETCH (IF) STAGE
+    // -------------------------------------------------------------------------
+    wire if_instruction_valid;
+    wire [15:0] if_instruction;
+
     fetcher #(
         .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
         .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS)
     ) fetcher_instance (
         .clk(clk),
         .reset(reset),
-        .core_state(core_state),
-        .current_pc(current_pc),
+        .stall(pipeline_stall),
+        .flush(pipeline_flush),
+        .current_pc(if_pc),
         .mem_read_valid(program_mem_read_valid),
         .mem_read_address(program_mem_read_address),
         .mem_read_ready(program_mem_read_ready),
         .mem_read_data(program_mem_read_data),
-        .fetcher_state(fetcher_state),
-        .instruction(instruction) 
+        .instruction_valid(if_instruction_valid),
+        .instruction(if_instruction)
     );
 
-    // Decoder
-    decoder decoder_instance (
-        .clk(clk),
-        .reset(reset),
-        .core_state(core_state),
-        .instruction(instruction),
-        .decoded_rd_address(decoded_rd_address),
-        .decoded_rs_address(decoded_rs_address),
-        .decoded_rt_address(decoded_rt_address),
-        .decoded_nzp(decoded_nzp),
-        .decoded_immediate(decoded_immediate),
-        .decoded_reg_write_enable(decoded_reg_write_enable),
-        .decoded_mem_read_enable(decoded_mem_read_enable),
-        .decoded_mem_write_enable(decoded_mem_write_enable),
-        .decoded_nzp_write_enable(decoded_nzp_write_enable),
-        .decoded_reg_input_mux(decoded_reg_input_mux),
-        .decoded_alu_arithmetic_mux(decoded_alu_arithmetic_mux),
-        .decoded_alu_output_mux(decoded_alu_output_mux),
-        .decoded_pc_mux(decoded_pc_mux),
-        .decoded_ret(decoded_ret),
-        .decoded_sync(decoded_sync),
-        .decoded_shared_read_enable(decoded_shared_read_enable),
-        .decoded_shared_write_enable(decoded_shared_write_enable)
+    always @(posedge clk) begin
+        if (!reset && start && !pipeline_stall && if_instruction_valid) begin
+            $display("[%0t] [IF]  Fetched PC=%0d, Instr=%04h, Mask=%b", $time, if_pc, if_instruction, sched_active_mask);
+        end
+    end
+
+    // ==================== IF/ID PIPELINE REGISTER ====================
+    reg [15:0] id_instruction;
+    reg [7:0]  id_pc;
+    reg [THREADS_PER_BLOCK-1:0] id_active_mask;
+
+    always @(posedge clk) begin
+        if (reset || pipeline_flush) begin
+            id_instruction <= 16'h0000; // NOP
+            id_pc <= 0;
+            id_active_mask <= 0;
+            if (pipeline_flush && !reset) $display("[%0t] [IF/ID] Flush!", $time);
+        end else if (!pipeline_stall) begin
+            id_instruction <= if_instruction_valid ? if_instruction : 16'h0000;
+            id_pc <= if_pc;
+            id_active_mask <= sched_active_mask; 
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 2. INSTRUCTION DECODE (ID) STAGE
+    // -------------------------------------------------------------------------
+    wire [3:0] id_rd, id_rs, id_rt;
+    wire [2:0] id_nzp;
+    wire [DATA_BITS-1:0] id_imm;
+    
+    wire id_reg_we, id_mem_re, id_mem_we, id_nzp_we;
+    wire [1:0] id_reg_mux;
+    wire [2:0] id_alu_arith_mux;
+    wire id_alu_out_mux, id_pc_mux, id_ret, id_sync;
+    wire id_shared_re, id_shared_we;
+
+    decoder #(
+        .DATA_BITS(DATA_BITS)
+    ) decoder_inst (
+        .instruction(id_instruction),
+        .decoded_rd_address(id_rd),
+        .decoded_rs_address(id_rs),
+        .decoded_rt_address(id_rt),
+        .decoded_nzp(id_nzp),
+        .decoded_immediate(id_imm),
+        .decoded_reg_write_enable(id_reg_we),
+        .decoded_mem_read_enable(id_mem_re),
+        .decoded_mem_write_enable(id_mem_we),
+        .decoded_nzp_write_enable(id_nzp_we),
+        .decoded_reg_input_mux(id_reg_mux),
+        .decoded_alu_arithmetic_mux(id_alu_arith_mux),
+        .decoded_alu_output_mux(id_alu_out_mux),
+        .decoded_pc_mux(id_pc_mux),
+        .decoded_ret(id_ret),
+        .decoded_sync(id_sync),
+        .decoded_shared_read_enable(id_shared_re),
+        .decoded_shared_write_enable(id_shared_we)
     );
 
-    // Scheduler
+    wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK-1:0];
+    wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK-1:0];
+
+    always @(posedge clk) begin
+        if (!reset && start && !pipeline_stall && (|id_active_mask)) begin
+            $display("[%0t] [ID]  Decoded PC=%0d, Instr=%04h (rd=%0d, rs=%0d, rt=%0d)", $time, id_pc, id_instruction, id_rd, id_rs, id_rt);
+        end
+    end
+
+    // ==================== ID/EX PIPELINE REGISTER ====================
+    reg [THREADS_PER_BLOCK-1:0] ex_active_mask;
+    reg [7:0] ex_pc;
+    reg [3:0] ex_rd;
+    reg [2:0] ex_nzp;
+    reg [DATA_BITS-1:0] ex_imm;
+    reg [DATA_BITS-1:0] ex_rs_data [THREADS_PER_BLOCK-1:0];
+    reg [DATA_BITS-1:0] ex_rt_data [THREADS_PER_BLOCK-1:0];
+    
+    reg ex_reg_we, ex_mem_re, ex_mem_we, ex_nzp_we;
+    reg [1:0] ex_reg_mux;
+    reg [2:0] ex_alu_arith_mux;
+    reg ex_alu_out_mux, ex_pc_mux, ex_ret, ex_sync;
+    reg ex_shared_re, ex_shared_we;
+
+    always @(posedge clk) begin
+        if (reset || pipeline_flush) begin
+            ex_active_mask <= 0;
+            ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
+            ex_shared_re <= 0; ex_shared_we <= 0;
+            ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
+            if (pipeline_flush && !reset) $display("[%0t] [ID/EX] Flush!", $time);
+        end else if (!pipeline_stall) begin
+            ex_active_mask <= id_active_mask;
+            ex_pc <= id_pc;
+            ex_rd <= id_rd;
+            ex_nzp <= id_nzp;
+            ex_imm <= id_imm;
+            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                ex_rs_data[i] <= id_rs_data[i];
+                ex_rt_data[i] <= id_rt_data[i];
+            end
+            ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
+            ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
+            ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
+            ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
+            ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 3. EXECUTE (EX) STAGE
+    // -------------------------------------------------------------------------
+    wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK-1:0];
+    wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK-1:0];
+
+    always @(posedge clk) begin
+        if (!reset && start && !pipeline_stall && (|ex_active_mask)) begin
+            $display("[%0t] [EX]  Executing PC=%0d, Mask=%b", $time, ex_pc, ex_active_mask);
+        end
+    end
+
+    // ==================== EX/MEM PIPELINE REGISTER ====================
+    reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
+    reg [3:0] mem_rd;
+    reg [DATA_BITS-1:0] mem_imm;
+    reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK-1:0];
+    reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK-1:0]; 
+    
+    reg mem_reg_we, mem_mem_re, mem_mem_we;
+    reg mem_shared_re, mem_shared_we;
+    reg [1:0] mem_reg_mux;
+    reg mem_ret;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            mem_active_mask <= 0;
+            mem_reg_we <= 0; mem_mem_re <= 0; mem_mem_we <= 0;
+            mem_shared_re <= 0; mem_shared_we <= 0; mem_ret <= 0;
+        end else if (!pipeline_stall) begin 
+            mem_active_mask <= ex_active_mask;
+            mem_rd <= ex_rd;
+            mem_imm <= ex_imm;
+            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                mem_alu_out[i] <= ex_alu_out[i];
+                mem_rt_data[i] <= ex_rt_data[i];
+            end
+            mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
+            mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we;
+            mem_reg_mux <= ex_reg_mux; mem_ret <= ex_ret;
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 4. MEMORY (MEM) STAGE
+    // -------------------------------------------------------------------------
+    wire [DATA_BITS-1:0] mem_lsu_out [THREADS_PER_BLOCK-1:0];
+
+    wire [THREADS_PER_BLOCK-1:0] sh_read_valid, sh_read_ready, sh_write_valid, sh_write_ready;
+    wire [SHARED_MEM_ADDR_BITS-1:0] sh_read_address [THREADS_PER_BLOCK];
+    wire [SHARED_MEM_ADDR_BITS-1:0] sh_write_address [THREADS_PER_BLOCK];
+    wire [DATA_MEM_DATA_BITS-1:0] sh_read_data [THREADS_PER_BLOCK];
+    wire [DATA_MEM_DATA_BITS-1:0] sh_write_data [THREADS_PER_BLOCK];
+
+    shared_mem #(
+        .DATA_BITS(DATA_MEM_DATA_BITS),
+        .ADDR_BITS(SHARED_MEM_ADDR_BITS),
+        .SIZE(SHARED_MEM_SIZE),
+        .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
+    ) shared_mem_instance (
+        .clk(clk), .reset(reset),
+        .read_valid(sh_read_valid), .read_address(sh_read_address),
+        .read_ready(sh_read_ready), .read_data(sh_read_data),
+        .write_valid(sh_write_valid), .write_address(sh_write_address),
+        .write_data(sh_write_data), .write_ready(sh_write_ready)
+    );
+
+    always @(posedge clk) begin
+        if (!reset && start && pipeline_stall && (|mem_active_mask)) begin
+            $display("[%0t] [MEM] Stalling pipeline for Memory Access...", $time);
+        end else if (!reset && start && !pipeline_stall && (|mem_active_mask)) begin
+            $display("[%0t] [MEM] Completing/Bypassing Memory Stage", $time);
+        end
+    end
+
+    // ==================== MEM/WB PIPELINE REGISTER ====================
+    reg [THREADS_PER_BLOCK-1:0] wb_active_mask;
+    reg [3:0] wb_rd;
+    reg [DATA_BITS-1:0] wb_imm;
+    reg [DATA_BITS-1:0] wb_alu_out [THREADS_PER_BLOCK-1:0];
+    reg [DATA_BITS-1:0] wb_lsu_out [THREADS_PER_BLOCK-1:0];
+    
+    reg wb_reg_we;
+    reg [1:0] wb_reg_mux;
+    reg wb_ret;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            wb_active_mask <= 0;
+            wb_reg_we <= 0; wb_ret <= 0;
+        end else if (!pipeline_stall) begin 
+            wb_active_mask <= mem_active_mask;
+            wb_rd <= mem_rd;
+            wb_imm <= mem_imm;
+            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                wb_alu_out[i] <= mem_alu_out[i];
+                wb_lsu_out[i] <= mem_lsu_out[i];
+            end
+            wb_reg_we <= mem_reg_we;
+            wb_reg_mux <= mem_reg_mux;
+            wb_ret <= mem_ret;
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 5. WRITE-BACK (WB) STAGE & THREAD INSTANTIATION
+    // -------------------------------------------------------------------------
+    genvar i;
+    generate
+        for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
+            
+            alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
+                .enable(ex_active_mask[i]),
+                .decoded_alu_arithmetic_mux(ex_alu_arith_mux),
+                .decoded_alu_output_mux(ex_alu_out_mux),
+                .rs(ex_rs_data[i]),
+                .rt(ex_rt_data[i]),
+                .alu_out(ex_alu_out[i])
+            );
+
+            pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) pc_inst (
+                .clk(clk), .reset(reset),
+                .enable(ex_active_mask[i]),
+                .decoded_nzp(ex_nzp), .decoded_immediate(ex_imm),
+                .decoded_nzp_write_enable(ex_nzp_we), .decoded_pc_mux(ex_pc_mux),
+                .alu_out(ex_alu_out[i]),
+                .current_pc(ex_pc),
+                .next_pc(ex_next_pc[i])
+            );
+
+            lsu #( .DATA_BITS(DATA_BITS) ) lsu_inst (
+                .clk(clk), .reset(reset),
+                .enable(mem_active_mask[i]),
+                .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
+                .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
+                .rs(mem_alu_out[i]), // Using ALU out (rs) for address
+                .rt(mem_rt_data[i]), // Using rt for store data
+                
+                .mem_read_valid(data_mem_read_valid[i]), .mem_read_address(data_mem_read_address[i]),
+                .mem_read_ready(data_mem_read_ready[i]), .mem_read_data(data_mem_read_data[i]),
+                .mem_write_valid(data_mem_write_valid[i]), .mem_write_address(data_mem_write_address[i]),
+                .mem_write_data(data_mem_write_data[i]), .mem_write_ready(data_mem_write_ready[i]),
+                
+                .shared_mem_read_valid(sh_read_valid[i]), .shared_mem_read_address(sh_read_address[i]),
+                .shared_mem_read_ready(sh_read_ready[i]), .shared_mem_read_data(sh_read_data[i]),
+                .shared_mem_write_valid(sh_write_valid[i]), .shared_mem_write_address(sh_write_address[i]),
+                .shared_mem_write_data(sh_write_data[i]), .shared_mem_write_ready(sh_write_ready[i]),
+                
+                .stall(lsu_stall[i]),
+                .lsu_out(mem_lsu_out[i])
+            );
+
+            registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .THREAD_ID(i), .DATA_BITS(DATA_BITS) ) reg_inst (
+                .clk(clk), .reset(reset),
+                .enable(wb_active_mask[i]),
+                .block_id(block_id),
+                
+                // ID Stage (Read)
+                .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
+                .rs(id_rs_data[i]), .rt(id_rt_data[i]),
+
+                // WB Stage (Write)
+                .decoded_rd_address(wb_rd),
+                .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
+                .decoded_immediate(wb_imm),
+                .alu_out(wb_alu_out[i]), .lsu_out(wb_lsu_out[i])
+            );
+
+            always @(posedge clk) begin
+                if (!reset && start && wb_active_mask[i] && wb_reg_we && wb_rd < 13) begin
+                    $display("[%0t] [WB]  Thread %0d: Writing rd(%0d) <= %0d", $time, i, wb_rd, 
+                        (wb_reg_mux == 2'b00) ? wb_alu_out[i] :
+                        (wb_reg_mux == 2'b01) ? wb_lsu_out[i] :
+                        (wb_reg_mux == 2'b10) ? wb_imm :
+                        (wb_reg_mux == 2'b11) ? wb_lsu_out[i] : 16'bx);
+                end
+            end
+
+        end
+    endgenerate
+
+    // -------------------------------------------------------------------------
+    // SCHEDULER / PIPELINE CONTROLLER (PHASE 5)
+    // -------------------------------------------------------------------------
     scheduler #(
         .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
     ) scheduler_instance (
@@ -138,130 +378,20 @@ module core #(
         .reset(reset),
         .start(start),
         .thread_count(thread_count),
-        .fetcher_state(fetcher_state),
-        .core_state(core_state),
-        .decoded_mem_read_enable(decoded_mem_read_enable),
-        .decoded_mem_write_enable(decoded_mem_write_enable),
-        .decoded_ret(decoded_ret),
-        .decoded_sync(decoded_sync),
-        .lsu_state(lsu_state),
-        .current_pc(current_pc),
-        .next_pc(next_pc),
-        .active_mask(active_mask),
+        
+        .pipeline_stall(pipeline_stall),
+        .pipeline_flush(pipeline_flush),
+        
+        .if_pc(if_pc),
+        .sched_active_mask(sched_active_mask),
+        
+        .ex_active_mask(ex_active_mask),
+        .ex_pc(ex_pc),
+        .ex_next_pc(ex_next_pc),
+        .ex_ret(ex_ret),
+        .ex_sync(ex_sync),
+        
         .done(done)
     );
-    // Shared memory PER CORE
-    shared_mem #(
-        .DATA_BITS(DATA_MEM_DATA_BITS),
-        .ADDR_BITS(SHARED_MEM_ADDR_BITS),
-        .SIZE(SHARED_MEM_SIZE),
-        .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
-    ) shared_mem_instance (
-        .clk(clk),
-        .reset(reset),
-        .read_valid(sh_read_valid),
-        .read_address(sh_read_address),
-        .read_ready(sh_read_ready),
-        .read_data(sh_read_data),
-        .write_valid(sh_write_valid),
-        .write_address(sh_write_address),
-        .write_data(sh_write_data),
-        .write_ready(sh_write_ready)
-    );
 
-    // Dedicated ALU, LSU, registers, & PC unit for each thread this core has capacity for
-    genvar i;
-    generate
-        for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
-            // ALU
-            alu #(
-                .DATA_BITS(DATA_MEM_DATA_BITS)
-            ) alu_instance (
-                .clk(clk),
-                .reset(reset),
-                .enable(active_mask[i]),
-                .core_state(core_state),
-                .decoded_alu_arithmetic_mux(decoded_alu_arithmetic_mux),
-                .decoded_alu_output_mux(decoded_alu_output_mux),
-                .rs(rs[i]),
-                .rt(rt[i]),
-                .alu_out(alu_out[i])
-            );
-
-            // LSU
-            lsu #(
-                .DATA_BITS(DATA_MEM_DATA_BITS)
-            ) lsu_instance (
-                .clk(clk),
-                .reset(reset),
-                .enable(active_mask[i]),
-                .core_state(core_state),
-                .decoded_mem_read_enable(decoded_mem_read_enable),
-                .decoded_mem_write_enable(decoded_mem_write_enable),
-                .mem_read_valid(data_mem_read_valid[i]),
-                .mem_read_address(data_mem_read_address[i]),
-                .mem_read_ready(data_mem_read_ready[i]),
-                .mem_read_data(data_mem_read_data[i]),
-                .mem_write_valid(data_mem_write_valid[i]),
-                .mem_write_address(data_mem_write_address[i]),
-                .mem_write_data(data_mem_write_data[i]),
-                .mem_write_ready(data_mem_write_ready[i]),
-                .decoded_shared_read_enable(decoded_shared_read_enable),
-                .decoded_shared_write_enable(decoded_shared_write_enable),
-                .shared_mem_read_valid(sh_read_valid[i]),
-                .shared_mem_read_address(sh_read_address[i]),
-                .shared_mem_read_ready(sh_read_ready[i]),
-                .shared_mem_read_data(sh_read_data[i]),
-                .shared_mem_write_valid(sh_write_valid[i]),
-                .shared_mem_write_address(sh_write_address[i]),
-                .shared_mem_write_data(sh_write_data[i]),
-                .shared_mem_write_ready(sh_write_ready[i]),
-                .rs(rs[i]),
-                .rt(rt[i]),
-                .lsu_state(lsu_state[i]),
-                .lsu_out(lsu_out[i])
-            );
-
-            // Register File
-            registers #(
-                .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
-                .THREAD_ID(i),
-                .DATA_BITS(DATA_MEM_DATA_BITS)
-            ) register_instance (
-                .clk(clk),
-                .reset(reset),
-                .enable(active_mask[i]),
-                .block_id(block_id),
-                .core_state(core_state),
-                .decoded_reg_write_enable(decoded_reg_write_enable),
-                .decoded_reg_input_mux(decoded_reg_input_mux),
-                .decoded_rd_address(decoded_rd_address),
-                .decoded_rs_address(decoded_rs_address),
-                .decoded_rt_address(decoded_rt_address),
-                .decoded_immediate(decoded_immediate),
-                .alu_out(alu_out[i]),
-                .lsu_out(lsu_out[i]),
-                .rs(rs[i]),
-                .rt(rt[i])
-            );
-
-            // Program Counter
-            pc #(
-                .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
-                .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS)
-            ) pc_instance (
-                .clk(clk),
-                .reset(reset),
-                .enable(active_mask[i]),
-                .core_state(core_state),
-                .decoded_nzp(decoded_nzp),
-                .decoded_immediate(decoded_immediate),
-                .decoded_nzp_write_enable(decoded_nzp_write_enable),
-                .decoded_pc_mux(decoded_pc_mux),
-                .alu_out(alu_out[i]),
-                .current_pc(current_pc),
-                .next_pc(next_pc[i])
-            );
-        end
-    endgenerate
 endmodule
