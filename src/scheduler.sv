@@ -112,11 +112,12 @@ module scheduler #(
                         if (pipeline_flush) begin
                             // Handle Control Flow Updates synchronously as instruction officially leaves EX stage
                             if (ex_ret) begin 
+                                $display("[%0t] [SCHEDULER] Thread return (RET) executed at PC=%0d. Mask=%b", $time, ex_pc, ex_active_mask);
                                 done_mask <= done_mask | ex_active_mask;
                                 if ((done_mask | ex_active_mask) == ((1 << thread_count) - 1)) begin
                                     state <= DONE_STATE;
                                     done <= 1'b1;
-                                    $display("[%0t] SCHEDULER: Block execution DONE.", $time);
+                                    $display("[%0t] [SCHEDULER] BLOCK EXECUTION DONE! All threads returned.", $time);
                                 end else begin
                                     // Pop divergent path from stack
                                     if (stack_ptr > 0) begin
