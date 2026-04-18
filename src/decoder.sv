@@ -1,35 +1,35 @@
 `default_nettype none
 `timescale 1ns/1ns
 
-// INSTRUCTION DECODER (Combinational for Pipelining)
-// > Decodes an instruction into the control signals necessary to execute it
-// > Operates in the Instruction Decode (ID) stage
+// INSTRUCTION DECODER (Pipelined)
+// > Purely combinational. Immediately decodes the instruction for the ID stage.
 module decoder #(
     parameter DATA_BITS = 16
-)
-(
+) (
     input wire [15:0] instruction,
     
     // Instruction Signals
-    output reg [3:0] decoded_rd_address,
-    output reg [3:0] decoded_rs_address,
-    output reg [3:0] decoded_rt_address,
-    output reg [2:0] decoded_nzp,
-    output reg [DATA_BITS-1:0] decoded_immediate,
+    output logic [3:0] decoded_rd_address,
+    output logic [3:0] decoded_rs_address,
+    output logic [3:0] decoded_rt_address,
+    output logic [2:0] decoded_nzp,
+    output logic [DATA_BITS-1:0] decoded_immediate,
     
     // Control Signals
-    output reg decoded_reg_write_enable,           
-    output reg decoded_mem_read_enable,            
-    output reg decoded_mem_write_enable,           
-    output reg decoded_nzp_write_enable,           
-    output reg [1:0] decoded_reg_input_mux,        
-    output reg [2:0] decoded_alu_arithmetic_mux,   
-    output reg decoded_alu_output_mux,             
-    output reg decoded_pc_mux,                     
-    output reg decoded_ret,
-    output reg decoded_sync,
-    output reg decoded_shared_read_enable,
-    output reg decoded_shared_write_enable
+    output logic decoded_reg_write_enable,           
+    output logic decoded_mem_read_enable,            
+    output logic decoded_mem_write_enable,           
+    output logic decoded_nzp_write_enable,           
+    output logic [1:0] decoded_reg_input_mux,        
+    output logic [2:0] decoded_alu_arithmetic_mux,   
+    output logic decoded_alu_output_mux,             
+    output logic decoded_pc_mux,                     
+
+    // Sync/Shared/Return
+    output logic decoded_ret,
+    output logic decoded_sync,
+    output logic decoded_shared_read_enable,
+    output logic decoded_shared_write_enable
 );
     localparam NOP   = 4'b0000,
                BRnzp = 4'b0001,
@@ -46,20 +46,21 @@ module decoder #(
                STSH  = 4'b1100,
                RET   = 4'b1111;
 
-    always @(*) begin 
-        // Default assignments to prevent latches
+    always_comb begin 
+        // 1. Direct Field Extraction
         decoded_rd_address = instruction[11:8];
         decoded_rs_address = instruction[7:4];
         decoded_rt_address = instruction[3:0];
         decoded_immediate  = {8'b0, instruction[7:0]};
         decoded_nzp        = instruction[11:9];
 
+        // 2. Default Control Signals (Prevents Latches)
         decoded_reg_write_enable    = 0;
         decoded_mem_read_enable     = 0;
         decoded_mem_write_enable    = 0;
         decoded_nzp_write_enable    = 0;
-        decoded_reg_input_mux       = 0;
-        decoded_alu_arithmetic_mux  = 0;
+        decoded_reg_input_mux       = 2'b00;
+        decoded_alu_arithmetic_mux  = 3'b000;
         decoded_alu_output_mux      = 0;
         decoded_pc_mux              = 0;
         decoded_ret                 = 0;
@@ -67,7 +68,7 @@ module decoder #(
         decoded_shared_read_enable  = 0;
         decoded_shared_write_enable = 0;
 
-        // Set the control signals for each instruction
+        // 3. Set specific control signals per opcode
         case (instruction[15:12])
             BRnzp: begin 
                 decoded_pc_mux = 1;
@@ -78,27 +79,23 @@ module decoder #(
             end
             ADD: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b00;
-                decoded_alu_arithmetic_mux = 2'b00;
+                decoded_alu_arithmetic_mux = 3'b000; // ADD
             end
             SUB: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b00;
-                decoded_alu_arithmetic_mux = 2'b01;
+                decoded_alu_arithmetic_mux = 3'b001; // SUB
             end
             MUL: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b00;
-                decoded_alu_arithmetic_mux = 2'b10;
+                decoded_alu_arithmetic_mux = 3'b010; // MUL
             end
             DIV: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b00;
-                decoded_alu_arithmetic_mux = 2'b11;
+                decoded_alu_arithmetic_mux = 3'b011; // DIV
             end
             LDR: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b01;
+                decoded_reg_input_mux = 2'b01; // Select Memory
                 decoded_mem_read_enable = 1;
             end
             STR: begin 
@@ -106,23 +103,23 @@ module decoder #(
             end
             CONST: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b10;
+                decoded_reg_input_mux = 2'b10; // Select Immediate
             end
             SYNC: begin
                 decoded_sync = 1;
             end
             LDSH: begin
-                decoded_shared_read_enable  = 1'b1;
-                decoded_reg_input_mux       = 2'b11;
-                decoded_reg_write_enable    = 1'b1;
+                decoded_shared_read_enable = 1;
+                decoded_reg_input_mux = 2'b11; // Select Shared Memory
+                decoded_reg_write_enable = 1;
             end
             STSH: begin
-                decoded_shared_write_enable = 1'b1;
+                decoded_shared_write_enable = 1;
             end
             RET: begin 
                 decoded_ret = 1;
             end
-            default: ; // NOP or undefined
+            default: ; // NOP
         endcase
     end
 endmodule

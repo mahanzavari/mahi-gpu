@@ -1,172 +1,112 @@
 `default_nettype none
 `timescale 1ns/1ns
 
-// SCHEDULER / PIPELINE CONTROLLER
-// > Manages Hazard Detection, Branch Flushing, and SIMT Divergence
-// > Observes the Execute (EX) stage to control the Fetcher and Pipeline Registers
 module scheduler #(
     parameter THREADS_PER_BLOCK = 4
 ) (
     input wire clk,
     input wire reset,
     input wire start,
-
     input wire [$clog2(THREADS_PER_BLOCK):0] thread_count,
     
-    // Pipeline Hazard Controls
-    input wire pipeline_stall,   // Comes from LSU waiting for memory
-    output reg pipeline_flush,   // Clears IF and ID stages on control flow change
+    // Pipeline Controls
+    input wire pipeline_stall,
+    output reg pipeline_flush,
     
-    // Fetch Stage Controls
+    // Frontend (Fetch)
     output reg [7:0] if_pc,
     output reg [THREADS_PER_BLOCK-1:0] sched_active_mask,
     
-    // Execute (EX) Stage Feedback
+    // Backend (Execution Monitoring)
     input wire [THREADS_PER_BLOCK-1:0] ex_active_mask,
     input wire [7:0] ex_pc,
     input wire [7:0] ex_next_pc [THREADS_PER_BLOCK-1:0],
     input wire ex_ret,
     input wire ex_sync,
-
-    // Execution State
+    
+    // Output to Dispatcher
     output reg done
 );
+
     typedef enum logic [1:0] { IDLE, RUNNING, DONE_STATE } state_t;
     state_t state;
 
-    // SIMT Divergence Stack
-    reg [THREADS_PER_BLOCK-1:0] stack_mask [0:7];
-    reg [7:0] stack_pc [0:7];
-    reg [2:0] stack_ptr;
-
-    // Synchronization & Completion Tracking
-    reg [THREADS_PER_BLOCK-1:0] sync_mask;
     reg [THREADS_PER_BLOCK-1:0] done_mask;
+    reg [THREADS_PER_BLOCK-1:0] target_mask;
 
-    // Combinational evaluation of divergence and branch targets in EX stage
-    reg [7:0] target_a, target_b;
-    reg [THREADS_PER_BLOCK-1:0] mask_a, mask_b;
-    reg has_diverged;
-
-    always_comb begin
-        target_a = 0; target_b = 0;
-        mask_a = 0; mask_b = 0;
-        has_diverged = 0;
-
-        for (int i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin
-            if (ex_active_mask[i]) begin
-                target_a = ex_next_pc[i];
-                break;
-            end
-        end
-        for (int i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin
-            if (ex_active_mask[i]) begin
-                if (ex_next_pc[i] == target_a) begin
-                    mask_a[i] = 1'b1;
-                end else begin
-                    mask_b[i] = 1'b1;
-                    target_b = ex_next_pc[i];
-                    has_diverged = 1'b1;
-                end
-            end
-        end
-    end
-
-    // Combinational flush logic (Instantly squashes invalid instructions in IF/ID)
-    always_comb begin
-        pipeline_flush = 1'b0;
-        if (state == RUNNING && !pipeline_stall && (|ex_active_mask)) begin
-            // Flush if thread returns, synchronizes, diverges, or takes a standard branch
-            if (ex_ret || ex_sync || has_diverged || (target_a != ex_pc + 1)) begin
-                pipeline_flush = 1'b1;
-            end
-        end
-    end
-
-    always @(posedge clk) begin 
+    always @(posedge clk) begin
         if (reset) begin
             state <= IDLE;
-            done <= 0;
             if_pc <= 0;
             sched_active_mask <= 0;
-            stack_ptr <= 0;
-            sync_mask <= 0;
+            done <= 0;
+            pipeline_flush <= 0;
             done_mask <= 0;
-        end else begin 
+        end else begin
+            pipeline_flush <= 0; // Default to not flushing unless a branch is taken
+            
             case (state)
                 IDLE: begin
-                    if (start) begin 
+                    done <= 0;
+                    done_mask <= 0;
+                    if (start) begin
                         state <= RUNNING;
                         if_pc <= 0;
-                        sched_active_mask <= (1 << thread_count) - 1;
-                        done <= 0;
-                        stack_ptr <= 0;
-                        sync_mask <= 0;
-                        done_mask <= 0;
-                        $display("[%0t] SCHEDULER: START asserted. Running block.", $time);
+                        // Determine which threads are active based on thread_count
+                        target_mask = (1 << thread_count) - 1;
+                        sched_active_mask <= target_mask;
+                        $display("[%0t] [SCHEDULER] Block Started. Mask = %b", $time, target_mask);
                     end
                 end
                 
-                RUNNING: begin 
+                RUNNING: begin
+                    // 1. Backend Monitoring (Branching & Returns)
                     if (!pipeline_stall) begin
-                        if (pipeline_flush) begin
-                            // Handle Control Flow Updates synchronously as instruction officially leaves EX stage
-                            if (ex_ret) begin 
-                                $display("[%0t] [SCHEDULER] Thread return (RET) executed at PC=%0d. Mask=%b", $time, ex_pc, ex_active_mask);
-                                done_mask <= done_mask | ex_active_mask;
-                                if ((done_mask | ex_active_mask) == ((1 << thread_count) - 1)) begin
-                                    state <= DONE_STATE;
-                                    done <= 1'b1;
-                                    $display("[%0t] [SCHEDULER] BLOCK EXECUTION DONE! All threads returned.", $time);
-                                end else begin
-                                    // Pop divergent path from stack
-                                    if (stack_ptr > 0) begin
-                                        sched_active_mask <= stack_mask[stack_ptr - 1];
-                                        if_pc <= stack_pc[stack_ptr - 1];
-                                        stack_ptr <= stack_ptr - 1;
-                                    end else begin
-                                        sched_active_mask <= 0;
-                                    end
-                                end
-                            end else if (ex_sync) begin
-                                sync_mask <= sync_mask | ex_active_mask;
-                                if ((sync_mask | ex_active_mask) == ((1 << thread_count) - 1)) begin
-                                    // Barrier met! Wake all threads
-                                    sched_active_mask <= (1 << thread_count) - 1;
-                                    if_pc <= target_a;
-                                    sync_mask <= 0;
-                                    $display("[%0t] SCHEDULER: SYNC barrier resolved.", $time);
-                                end else begin
-                                    // Pop stack and wait at barrier
-                                    if (stack_ptr > 0) begin
-                                        sched_active_mask <= stack_mask[stack_ptr - 1];
-                                        if_pc <= stack_pc[stack_ptr - 1];
-                                        stack_ptr <= stack_ptr - 1;
-                                    end else begin
-                                        sched_active_mask <= 0;
-                                    end
-                                end
-                            end else if (has_diverged) begin
-                                // SIMT Divergence
-                                stack_mask[stack_ptr] <= mask_b;
-                                stack_pc[stack_ptr]   <= target_b;
-                                stack_ptr             <= stack_ptr + 1;
-                                sched_active_mask     <= mask_a;
-                                if_pc                 <= target_a;
-                                $display("[%0t] SCHEDULER: Divergence detected! Path A (PC=%0d), Path B (PC=%0d) pushed.", $time, target_a, target_b);
-                            end else begin
-                                // Standard Branch
-                                if_pc <= target_a;
+                        if (ex_ret && (|ex_active_mask)) begin
+                            done_mask <= done_mask | ex_active_mask;
+                            
+                            // If all threads in this block have hit RET, we are done!
+                            if ((done_mask | ex_active_mask) == target_mask) begin
+                                state <= DONE_STATE;
+                                done <= 1;
+                                sched_active_mask <= 0; // Stop fetching to free the bus for other cores!
+                                $display("[%0t] [SCHEDULER] Block Finished! Releasing bus.", $time);
                             end
-                        end else begin
-                            // Default sequential fetching
-                            if_pc <= if_pc + 1;
+                        end 
+                        // Handle Branching (BRnzp)
+                        else if (|ex_active_mask) begin
+                            // In this simple model, we assume threads don't diverge. 
+                            // Check the first active thread to see if it branched.
+                            int first_active = 0;
+                            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                                if (ex_active_mask[i]) begin
+                                    first_active = i;
+                                    break;
+                                end
+                            end
+                            
+                            // If EX stage calculated a next_pc different from PC+1, it's a jump!
+                            if (ex_next_pc[first_active] != ex_pc + 1) begin
+                                if_pc <= ex_next_pc[first_active]; // Redirect the frontend
+                                pipeline_flush <= 1;               // Kill the instructions in IF and ID
+                                $display("[%0t] [SCHEDULER] Branch taken to PC=%0d. Flushing pipeline!", $time, ex_next_pc[first_active]);
+                            end
                         end
                     end
-                end
 
-                DONE_STATE: begin 
-                    // Wait for dispatch module to reset core
+                    // 2. Frontend Control (Increment PC)
+                    // If we aren't stalling, flushing, or finished, grab the next instruction
+                    if (!pipeline_stall && !pipeline_flush && state == RUNNING) begin
+                        if_pc <= if_pc + 1;
+                    end
+                end
+                
+                DONE_STATE: begin
+                    // Wait for Dispatcher to drop the start signal
+                    if (!start) begin
+                        state <= IDLE;
+                        done <= 0;
+                    end
                 end
             endcase
         end

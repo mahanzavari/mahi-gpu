@@ -48,12 +48,16 @@ module core #(
     // Scheduler Stall: PC freezes if either memory is stalling, or fetch is waiting
     wire scheduler_stall = lsu_any_stall || fetch_stall;
 
+    // Fetcher Enable: Shut off the fetcher completely to release the bus when finished!
+    wire core_running = start && !done;
+    wire fetcher_stall = lsu_any_stall || !core_running; // <--- FIXED TYPO HERE
+
     wire pipeline_flush;
     wire [THREADS_PER_BLOCK-1:0] sched_active_mask;
     wire [7:0] if_pc; 
 
     always @(posedge clk) begin
-        if (!reset && start) begin
+        if (!reset && start && !done) begin
             if (lsu_any_stall) $display("[%0t] [STALL] Backend (LSU) Memory Stall triggered", $time);
             else if (fetch_stall) $display("[%0t] [STALL] Fetcher waiting on Program Memory...", $time);
         end
@@ -70,7 +74,7 @@ module core #(
     ) fetcher_instance (
         .clk(clk),
         .reset(reset),
-        .stall(lsu_any_stall), // Fetcher only pauses if the backend is congested
+        .stall(fetcher_stall), // Fetcher only pauses if the backend is congested or core is done
         .flush(pipeline_flush),
         .current_pc(if_pc),
         .mem_read_valid(program_mem_read_valid),
@@ -178,12 +182,12 @@ module core #(
     wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK-1:0];
     wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK-1:0];
 
-        // ==================== EX/MEM PIPELINE REGISTER ====================
+    // ==================== EX/MEM PIPELINE REGISTER ====================
     reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
     reg [3:0] mem_rd;
     reg [DATA_BITS-1:0] mem_imm;
     reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK-1:0];
-    reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK-1:0]; // <-- ADDED THIS
+    reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK-1:0];
     reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK-1:0]; 
     
     reg mem_reg_we, mem_mem_re, mem_mem_we;
@@ -202,7 +206,7 @@ module core #(
             mem_imm <= ex_imm;
             for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
                 mem_alu_out[i] <= ex_alu_out[i];
-                mem_rs_data[i] <= ex_rs_data[i]; // <-- ADDED THIS
+                mem_rs_data[i] <= ex_rs_data[i];
                 mem_rt_data[i] <= ex_rt_data[i];
             end
             mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
@@ -212,6 +216,7 @@ module core #(
             if (|ex_active_mask) $display("[%0t] [EX]  Executing PC=%0d, Mask=%b", $time, ex_pc, ex_active_mask);
         end
     end
+
     // -------------------------------------------------------------------------
     // 4. MEMORY (MEM) STAGE
     // -------------------------------------------------------------------------
@@ -277,12 +282,11 @@ module core #(
                 .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
             );
 
-                        lsu #( .DATA_BITS(DATA_BITS) ) lsu_inst (
+            lsu #( .DATA_BITS(DATA_BITS) ) lsu_inst (
                 .clk(clk), .reset(reset), .enable(mem_active_mask[i]),
                 .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
                 .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
-                .rs(mem_rs_data[i]), // <-- CHANGED FROM mem_alu_out to mem_rs_data
-                .rt(mem_rt_data[i]), 
+                .rs(mem_rs_data[i]), .rt(mem_rt_data[i]), 
                 
                 .mem_read_valid(data_mem_read_valid[i]), .mem_read_address(data_mem_read_address[i]),
                 .mem_read_ready(data_mem_read_ready[i]), .mem_read_data(data_mem_read_data[i]),
