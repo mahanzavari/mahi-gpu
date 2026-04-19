@@ -122,7 +122,7 @@ module tb_gpu_pipelined;
         p_mem[23] = 16'h0000; // NOP
         p_mem[24] = 16'h0000; // NOP
         
-        p_mem[25] = 16'h3524; // ADD R5, R2, R4     (R5 = A + B)
+        p_mem[25] = 16'h3524; // ADD R5, R2, R4     (R5 = A + B) // you can change the Opcde to use other operators
         p_mem[26] = 16'h0000; // NOP
         p_mem[27] = 16'h0000; // NOP
         p_mem[28] = 16'h0000; // NOP
@@ -161,7 +161,7 @@ module tb_gpu_pipelined;
                 $display("[%0t] [TESTBENCH] Execution Completed!", $time);
             end
             begin
-                #50000; // 50,000 ns timeout
+                #4000; // 50,000 ns timeout
                 $display("[%0t] [TESTBENCH] ERROR: Timeout waiting for DONE!", $time);
             end
         join_any

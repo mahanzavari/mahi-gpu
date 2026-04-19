@@ -328,7 +328,8 @@ module core #(
     ) scheduler_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
         
-        .pipeline_stall(scheduler_stall), // Perfectly protects the PC from incrementing!
+        .frontend_stall(scheduler_stall), // Perfectly protects the PC from incrementing!
+        .backend_stall(lsu_any_stall),    // Keeps monitoring EX stage even if fetch is delayed
         .pipeline_flush(pipeline_flush),
         
         .if_pc(if_pc), .sched_active_mask(sched_active_mask),
@@ -336,5 +337,4 @@ module core #(
         .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc),
         .ex_ret(ex_ret), .ex_sync(ex_sync), .done(done)
     );
-
 endmodule

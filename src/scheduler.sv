@@ -10,7 +10,8 @@ module scheduler #(
     input wire [$clog2(THREADS_PER_BLOCK):0] thread_count,
     
     // Pipeline Controls
-    input wire pipeline_stall,
+    input wire frontend_stall, // Freezes the PC
+    input wire backend_stall,  // Freezes backend monitoring
     output reg pipeline_flush,
     
     // Frontend (Fetch)
@@ -52,7 +53,6 @@ module scheduler #(
                     if (start) begin
                         state <= RUNNING;
                         if_pc <= 0;
-                        // Determine which threads are active based on thread_count
                         target_mask = (1 << thread_count) - 1;
                         sched_active_mask <= target_mask;
                         $display("[%0t] [SCHEDULER] Block Started. Mask = %b", $time, target_mask);
@@ -60,23 +60,19 @@ module scheduler #(
                 end
                 
                 RUNNING: begin
-                    // 1. Backend Monitoring (Branching & Returns)
-                    if (!pipeline_stall) begin
+                    // 1. Backend Monitoring: Only pause monitoring if the backend itself is frozen (LSU stall)
+                    if (!backend_stall) begin
                         if (ex_ret && (|ex_active_mask)) begin
                             done_mask <= done_mask | ex_active_mask;
                             
-                            // If all threads in this block have hit RET, we are done!
                             if ((done_mask | ex_active_mask) == target_mask) begin
                                 state <= DONE_STATE;
                                 done <= 1;
-                                sched_active_mask <= 0; // Stop fetching to free the bus for other cores!
+                                sched_active_mask <= 0; // Stop fetching
                                 $display("[%0t] [SCHEDULER] Block Finished! Releasing bus.", $time);
                             end
                         end 
-                        // Handle Branching (BRnzp)
                         else if (|ex_active_mask) begin
-                            // In this simple model, we assume threads don't diverge. 
-                            // Check the first active thread to see if it branched.
                             int first_active = 0;
                             for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
                                 if (ex_active_mask[i]) begin
@@ -85,24 +81,21 @@ module scheduler #(
                                 end
                             end
                             
-                            // If EX stage calculated a next_pc different from PC+1, it's a jump!
                             if (ex_next_pc[first_active] != ex_pc + 1) begin
-                                if_pc <= ex_next_pc[first_active]; // Redirect the frontend
-                                pipeline_flush <= 1;               // Kill the instructions in IF and ID
+                                if_pc <= ex_next_pc[first_active]; 
+                                pipeline_flush <= 1;               
                                 $display("[%0t] [SCHEDULER] Branch taken to PC=%0d. Flushing pipeline!", $time, ex_next_pc[first_active]);
                             end
                         end
                     end
 
-                    // 2. Frontend Control (Increment PC)
-                    // If we aren't stalling, flushing, or finished, grab the next instruction
-                    if (!pipeline_stall && !pipeline_flush && state == RUNNING) begin
+                    // 2. Frontend Control: Freeze PC if either memory is stalling or fetch is waiting
+                    if (!frontend_stall && !pipeline_flush && state == RUNNING) begin
                         if_pc <= if_pc + 1;
                     end
                 end
                 
                 DONE_STATE: begin
-                    // Wait for Dispatcher to drop the start signal
                     if (!start) begin
                         state <= IDLE;
                         done <= 0;
