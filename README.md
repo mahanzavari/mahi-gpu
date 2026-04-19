@@ -2,8 +2,6 @@
 
 A minimal GPU implementation in Verilog optimized for learning about how GPUs work from the ground up.
 
-
-
 ### Table of Contents
 
 - [Overview](#overview)
@@ -12,12 +10,11 @@ A minimal GPU implementation in Verilog optimized for learning about how GPUs wo
   - [Memory](#memory)
   - [Core](#core)
 - [ISA](#isa)
-- [Execution](#execution)
-  - [Core](#core-1)
-  - [Thread](#thread)
+- [Execution Pipeline](#execution-pipeline)
+  - [Stages](#stages)
+  - [Thread Data Path](#thread-data-path)
 - [Kernels](#kernels)
   - [Matrix Addition](#matrix-addition)
-  - [Matrix Multiplication](/tree/master?tab=readme-ov-file#matrix-multiplication)
 - [Simulation](#simulation)
 - [Advanced Functionality](#advanced-functionality)
 - [Next Steps](#next-steps)
@@ -32,36 +29,33 @@ Because the GPU market is so competitive, low-level technical details for all mo
 
 While there are lots of resources to learn about GPU programming, there's almost nothing available to learn about how GPU's work at a hardware level.
 
-
 This is why I built `mahi-gpu`!
 
-# T
-special Thanks to [tiny-gpu](https://github.com/adam-maj/tiny-gpu) for letting me learn more about the GPU and giving me many ideas to learn how simple GPUs work!
+Special thanks to [tiny-gpu](https://github.com/adam-maj/tiny-gpu) for letting me learn more about the GPU and giving me many ideas to learn how simple GPUs work!
 
 ## What is mahi-gpu?
 
-> [!IMPORTANT]
->
-> **mahi-gpu** is a minimal GPU implementation optimized for learning about how GPUs work from the ground up.
->
-> Specifically, with the trend toward general-purpose GPUs (GPGPUs) and ML-accelerators like Google's TPU, mahi-gpu focuses on highlighting the general principles of all of these architectures, rather than on the details of graphics-specific hardware.
+
+**mahi-gpu** is a minimal GPU implementation optimized for learning about how GPUs work from the ground up.
+Specifically, with the trend toward general-purpose GPUs (GPGPUs) and ML-accelerators like Google's TPU, mahi-gpu focuses on highlighting the general principles of all of these architectures, rather than on the details of graphics-specific hardware.
 
 With this motivation in mind, we can simplify GPUs by cutting out the majority of complexity involved with building a production-grade graphics card, and focus on the core elements that are critical to all of these modern hardware accelerators.
 
 This project is primarily focused on exploring:
 
 1. **Architecture** - What does the architecture of a GPU look like? What are the most important elements?
-2. **Parallelization** - How is the SIMD progamming model implemented in hardware?
+2. **Parallelization** - How is the SIMD programming model implemented in hardware?
 3. **Memory** - How does a GPU work around the constraints of limited memory bandwidth?
+4. **Pipelining** - How are instructions streamed continuously to maximize hardware utilization?
 
-After understanding the fundamentals laid out in this project, you can checkout the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production grade GPUs (that are more challenging to implement) which improve performance.
+After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs.
 
 # Architecture
 
-<p float="left">
+<!-- <p float="left">
   <img src="/docs/images/gpu.png" alt="GPU" width="48%">
   <img src="/docs/images/core.png" alt="Core" width="48%">
-</p>
+</p> -->
 
 ## GPU
 
@@ -80,21 +74,15 @@ The GPU itself consists of the following units:
 2. Dispatcher
 3. Variable number of compute cores
 4. Memory controllers for data memory & program memory
-5. Cache
+5. Shared Memory for threads within a block
 
 ### Device Control Register
 
-The device control register usually stores metadata specifying how kernels should be executed on the GPU.
-
-In this case, the device control register just stores the `thread_count` - the total number of threads to launch for the active kernel.
+The device control register usually stores metadata specifying how kernels should be executed on the GPU. In this case, it stores the `thread_count` - the total number of threads to launch for the active kernel.
 
 ### Dispatcher
 
-Once a kernel is launched, the dispatcher is the unit that actually manages the distribution of threads to different compute cores.
-
-The dispatcher organizes threads into groups that can be executed in parallel on a single core called **blocks** and sends these blocks off to be processed by available cores.
-
-Once all blocks have been processed, the dispatcher reports back that the kernel execution is done.
+Once a kernel is launched, the dispatcher manages the distribution of threads to different compute cores. It organizes threads into groups that can be executed in parallel on a single core called **blocks** and sends these blocks off to be processed by available cores.
 
 ## Memory
 
@@ -103,14 +91,12 @@ The GPU is built to interface with an external global memory. Here, data memory 
 ### Global Memory
 
 mahi-gpu data memory has the following specifications:
-
-- 8 bit addressability (256 total rows of data memory)
-- 8 bit data (stores values of <256 for each row)
+- 8-bit addressability (256 total rows of data memory)
+- 16-bit data 
 
 mahi-gpu program memory has the following specifications:
-
-- 8 bit addressability (256 rows of program memory)
-- 16 bit data (each instruction is 16 bits as specified by the ISA)
+- 8-bit addressability (256 rows of program memory)
+- 16-bit data (each instruction is 16 bits as specified by the ISA)
 
 ### Shared Memory 
 
@@ -118,71 +104,24 @@ mahi-gpu has a shared memory for each Block (core in this project) for faster ex
 
 ### Memory Controllers
 
-Global memory has fixed read/write bandwidth, but there may be far more incoming requests across all cores to access data from memory than the external memory is actually able to handle.
-
-The memory controllers keep track of all the outgoing requests to memory from the compute cores, throttle requests based on actual external memory bandwidth, and relay responses from external memory back to the proper resources.
-
-Each memory controller has a fixed number of channels based on the bandwidth of global memory.
-
-<!-- ### Cache (WIP)
-
-The same data is often requested from global memory by multiple cores. Constantly access global memory repeatedly is expensive, and since the data has already been fetched once, it would be more efficient to store it on device in SRAM to be retrieved much quicker on later requests.
-
-This is exactly what the cache is used for. Data retrieved from external memory is stored in cache and can be retrieved from there on later requests, freeing up memory bandwidth to be used for new data. -->
+Global memory has fixed read/write bandwidth, but there may be far more incoming requests across all cores. The memory controllers keep track of all the outgoing requests, throttle them based on actual external memory bandwidth, and relay responses back to the proper resources.
 
 ## Core
 
-Each core has a number of compute resources, often built around a certain number of threads it can support. In order to maximize parallelization, these resources need to be managed optimally to maximize resource utilization.
+Each core has a number of compute resources built around a certain number of threads it can support. In this simplified GPU, each core processes one **block** at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, and register file.
 
-In this simplified GPU, each core processed one **block** at a time, and for each thread in a block, the core has a dedicated ALU, LSU, PC, and register file. Managing the execution of thread instructions on these resources is one of the most challening problems in GPUs.
+### Scheduler (Hazard & Branch Control)
 
-### Scheduler
+The scheduler manages the continuous flow of instructions into the pipeline. Because mahi-gpu is pipelined, the scheduler dynamically monitors execution to handle:
+- **Data & Structural Hazards:** Freezing the frontend (PC) when asynchronous global memory accesses stall the backend.
+- **Branching:** Monitoring the Execute (EX) stage for branch instructions and dynamically flushing the pipeline if a jump is taken.
 
-Each core has a single scheduler that manages the execution of threads.
-
-The mahi-gpu scheduler executes instructions for a single block to completion before picking up a new block, and it executes instructions for all threads in-sync and sequentially.
-
-In more advanced schedulers, techniques like **pipelining** are used to stream the execution of multiple instructions subsequent instructions to maximize resource utilization before previous instructions are fully complete. Additionally, **warp scheduling** can be use to execute multiple batches of threads within a block in parallel.
-
-The main constraint the scheduler has to work around is the latency associated with loading & storing data from global memory. While most instructions can be executed synchronously, these load-store operations are asynchronous, meaning the rest of the instruction execution has to be built around these long wait times.
-
-### Fetcher
-
-Asynchronously fetches the instruction at the current program counter from program memory (most should actually be fetching from cache after a single block is executed).
-
-### Decoder
-
-Decodes the fetched instruction into control signals for thread execution.
-
-### Register Files
-
-Each thread has it's own dedicated set of register files. The register files hold the data that each thread is performing computations on, which enables the same-instruction multiple-data (SIMD) pattern.
-
-Importantly, each register file contains a few read-only registers holding data about the current block & thread being executed locally, enabling kernels to be executed with different data based on the local thread id.
-
-### ALUs
-
-Dedicated arithmetic-logic unit for each thread to perform computations. Handles the `ADD`, `SUB`, `MUL`, `DIV` arithmetic instructions.
-
-Also handles the `CMP` comparison instruction which actually outputs whether the result of the difference between two registers is negative, zero or positive - and stores the result in the `NZP` register in the PC unit.
-
-### LSUs
-
-Dedicated load-store unit for each thread to access global data memory.
-
-Handles the `LDR` & `STR` instructions - and handles async wait times for memory requests to be processed and relayed by the memory controller.
-
-### PCs
-
-Dedicated program-counter for each unit to determine the next instructions to execute on each thread.
-
-By default, the PC increments by 1 after every instruction.
-
-With the `BRnzp` instruction, the NZP register checks to see if the NZP register (set by a previous `CMP` instruction) matches some case - and if it does, it will branch to a specific line of program memory. _This is how loops and conditionals are implemented._
-
-Since threads are processed in parallel, mahi-gpu assumes that all threads "converge" to the same program counter after each instruction - which is a naive assumption for the sake of simplicity.
-
-In real GPUs, individual threads can branch to different PCs, causing **branch divergence** where a group of threads threads initially being processed together has to split out into separate execution.
+### Thread Units
+- **Fetcher**: Asynchronously fetches the instruction at the current program counter from program memory.
+- **Decoder**: Purely combinational unit that translates instructions into pipeline control signals.
+- **Register Files**: Each thread has its own dedicated set of register files, holding data and read-only thread context (`%blockIdx`, `%blockDim`, `%threadIdx`), enabling the SIMD pattern.
+- **ALUs**: Dedicated arithmetic-logic unit for each thread (`ADD`, `SUB`, `MUL`, `DIV`, `CMP`).
+- **LSUs**: Dedicated load-store unit for each thread to access global data memory asynchronously.
 
 # ISA
 
@@ -197,182 +136,105 @@ In real GPUs, individual threads can branch to different PCs, causing **branch d
 | `DIV`   | 0110 | R | rd = rs / rt |
 | `LDR`   | 0111 | R | rd = MEM[rs + rt] |
 | `STR`   | 1000 | R | MEM[rs + rt] = rt |
-| `CONST` | 1001 | I | rd = sign/zero‑extended imm (implementation‑defined) |
+| `CONST` | 1001 | I | rd = sign/zero‑extended imm |
 | `SYNC`  | 1010 | — | Synchronization primitive |
 | `LDSH`  | 1011 | R | Load from shared memory |
 | `STSH`  | 1100 | R | Store to shared memory |
 | `RET`   | 1111 | — | Thread return |
 
+# Execution Pipeline
 
-# Instruction Format
+mahi-gpu implements a **classic 5-stage RISC pipeline**, allowing multiple instructions to be processed simultaneously across different stages of execution. This drastically improves hardware utilization compared to a multi-cycle state machine.
 
-All instructions are 16 bits.
-
+```mermaid
+graph LR
+    IF[Instruction Fetch] -->|IF/ID Reg| ID[Instruction Decode]
+    ID -->|ID/EX Reg| EX[Execute]
+    EX -->|EX/MEM Reg| MEM[Memory Access]
+    MEM -->|MEM/WB Reg| WB[Write Back]
+    
+    style IF fill:#e1f5fe,stroke:#311b92
+    style ID fill:#fff3e0,stroke:#e65100
+    style EX fill:#e8f5e9,stroke:#1b5e20
+    style MEM fill:#fce4ec,stroke:#b71c1c
+    style WB fill:#f3e5f5,stroke:#4a148c
 ```
-15        12 11        8 7        4 3         0
-+------------+-----------+-----------+-----------+
-|  OPCODE    |    RD     |    RS     |    RT     |  (R-type)
-+------------+-----------+-----------+-----------+
 
-15        12 11        8 7                                0
-+------------+-----------+-----------------------+
-|  OPCODE    |    NZP    |    IMMEDIATE[7:0]     |  (I-type: BR, CONST, some others)
-+------------+-----------+-----------------------+
-```
+### Stages
 
-## Registers
+1. **IF (Instruction Fetch)**: The Fetcher requests the instruction at the current PC from Program Memory.
+2. **ID (Instruction Decode)**: The Decoder translates the 16-bit instruction into control signals. The Register File is read asynchronously.
+3. **EX (Execute)**: The ALU performs arithmetic or comparisons. Branch targets and conditions are evaluated here.
+4. **MEM (Memory Access)**: The LSU performs asynchronous reads/writes to Global or Shared Memory. The pipeline will stall here if memory is not immediately ready.
+5. **WB (Write Back)**: The result from the ALU or LSU is written back synchronously to the Register File.
 
-per‑thread register file for a small GPU‑like SIMD core, Each thread gets 16 registers.
+### Thread Data Path
 
-- 13 general‑purpose registers (R0–R12) — read/write
-- 3 read‑only special registers (R13–R15) — automatically set, not writable by the program
-  - `%blockIdx`
-  - `%blockDim`
-  - `%threadIdx`
-
-mahi-gpu implements a simple 11 instruction ISA built to enable simple kernels for proof-of-concept like matrix addition & matrix multiplication These mirror CUDA‑style registers that allow each thread to know:
-1. Which block it belongs to,
-2. How many threads exist in the block,
-3. Which thread index it is.
-
-| Register Index | Name (Conceptual) |  Width   | Read/Write | Initialization | Purpose |
-|:--------------:|:-----------------:|:--------:|:-----------:|:--------------:|---------|
-| **0–12**       | General Purpose Registers (GPRs) | DATA_BITS | R/W | Zero | Used for arithmetic, memory ops, constants, etc. |
-| **13**         | `%blockIdx`       | DATA_BITS | Read‑only to thread | Set to block_id on reset and every cycle | Identifies which block this thread belongs to |
-| **14**         | `%blockDim`       | DATA_BITS | Read‑only | Constant = THREADS_PER_BLOCK | Number of threads per block |
-| **15**         | `%threadIdx`      | DATA_BITS | Read‑only | Constant = THREAD_ID | Thread index within the block |
-
-
-# Execution
-
-### Core
-
-Each core follows the following control flow going through different stages to execute each instruction:
-
-1. `FETCH` - Fetch the next instruction at current program counter from program memory.
-2. `DECODE` - Decode the instruction into control signals.
-3. `REQUEST` - Request data from global memory if necessary (if `LDR` or `STR` instruction).
-4. `WAIT` - Wait for data from global memory if applicable.
-5. `EXECUTE` - Execute any computations on data.
-6. `UPDATE` - Update register files and NZP register.
-
-
-### Thread
-
-![Thread](/docs/images/thread.png)
-
-Each thread within each core follows the above execution path to perform computations on the data in it's dedicated register file.
-
-This resembles a standard CPU diagram, and is quite similar in functionality as well. The main difference is that the `%blockIdx`, `%blockDim`, and `%threadIdx` values lie in the read-only registers for each thread, enabling SIMD functionality.
+This resembles a standard CPU data path, but multiplied across the core. The main difference is that the `%blockIdx`, `%blockDim`, and `%threadIdx` values lie in the read-only registers for each thread, enabling SIMD functionality where threads execute the exact same instruction but on their own private data.
 
 # Kernels
 
-I wrote a matrix addition and matrix multiplication kernel using my ISA as a proof of concept to demonstrate SIMD programming and execution with my GPU. The test files in this repository are capable of fully simulating the execution of these kernels on the GPU, producing data memory states and a complete execution trace.
-
 ### Matrix Addition
 
-This matrix addition kernel adds two 1 x 8 matrices by performing 8 element wise additions in separate threads.
-
-This demonstration makes use of the `%blockIdx`, `%blockDim`, and `%threadIdx` registers to show SIMD programming on this GPU. It also uses the `LDR` and `STR` instructions which require async memory management.
-
-`gpu_tb.sv`
+This matrix addition kernel adds two matrices by performing element-wise additions in separate parallel threads. It demonstrates SIMD programming utilizing `%blockIdx` and `%threadIdx` (represented here as `BID` and `TID`) to dynamically calculate memory offsets.
 
 ```asm
 // threads 8
-// data 1 2 3 4 5 6 7  8            ; matrix A (1 x 8)
-// data 1 2 4 6 8 10 12 14          ; matrix B (1 x 8)
+// data 1 2 3 4 5 6 7 8             ; matrix A
+// data 1 2 4 6 8 10 12 14          ; matrix B
 
 MUL R1, BID, TPB        
-ADD R2, R1, TID    // r2 = r1 + thread_id      
-// r3 = r2 + 0  (A base)
+ADD R2, R1, TID        // r2 = (blockIdx * blockDim) + threadIdx
 CONST R0, 8'd0       
-ADD R3, R2, R0         
-LDR R4, R3        // r4 = mem[r3]  (load A[i]) 
+ADD R3, R2, R0         // A base address
+LDR R4, R3             // Load A[i]
 
-// r5 = r2 + 8  (B base)
 CONST R0, 8'd8         
-ADD R5, R2, R0         
+ADD R5, R2, R0         // B base address
+LDR R6, R5             // Load B[i]       
 
-LDR R6, R5       // r6 = mem[r5]  (load B[i])       
+NOP                    // Pipeline bubble to prevent Data Hazard
+NOP 
+NOP
 
-ADD R7, R4, R6
-// r3 = r2 + 16  (C base)
+ADD R7, R4, R6         // Add A[i] + B[i]
 CONST R0, 8'd16
-ADD R3, R2, R0         
+ADD R3, R2, R0         // C base address
 
-STR R3, R7
-// RETURN
-RET             // kernel's end 
+STR R3, R7             // Store result to C[i]
+RET                    // End Thread
 ```
-
+*(Note: Because mahi-gpu currently lacks hardware data-forwarding, `NOP` instructions are inserted manually by the compiler to prevent Read-After-Write hazards during memory loads).*
 
 # Simulation
 
-mahi-gpu is setup to simulate the execution of the above kernel. Before simulating, Xilinx Vivado or Other Synthesis tools like ALtera Quartus and etc.
+mahi-gpu is setup to simulate the execution of the above kernel. You can run the kernel simulations within tools like Xilinx Vivado or Altera Quartus.
 
-Once you've installed the tools, you can run the kernel simulations within the tools.
-
-Executing the simulations will output a text in console consisting of scheduler, controller, LDR and registers writes and the results.. 
-
-Below is a sample of the execution traces, showing on each cycle the execution of every thread within every core, including the current instruction, PC, register values, states, etc.
-
-<!-- ![execution trace]() -->
-
+Executing the simulations will output a text console trace consisting of scheduler events, pipeline stage progress, memory controller handshakes, and register writes.
 
 # Advanced Functionality
 
-For the sake of simplicity, there were many additional features implemented in modern GPUs that heavily improve performance & functionality that mahi-gpu omits. We'll discuss some of those most critical features in this section.
+For the sake of simplicity, there are additional features implemented in modern GPUs that heavily improve performance & functionality that mahi-gpu currently omits:
 
-<!-- ### Multi-layered Cache & Shared Memory
+### Data Forwarding (Bypassing)
+Currently, if an instruction depends on the result of an immediately preceding memory load, the compiler must insert `NOP` bubbles to wait for the data to reach the Write-Back stage. Modern pipelines use hardware forwarding logic to route data directly from the MEM stage back to the EX stage to avoid these stalls.
 
-In modern GPUs, multiple different levels of caches are used to minimize the amount of data that needs to get accessed from global memory. mahi-gpu implements only one cache layer between individual compute units requesting memory and the memory controllers which stores recent cached data.
-
-Implementing multi-layered caches allows frequently accessed data to be cached more locally to where it's being used (with some caches within individual compute cores), minimizing load times for this data.
-
-Different caching algorithms are used to maximize cache-hits - this is a critical dimension that can be improved on to optimize memory access.
-
-Additionally, GPUs often use **shared memory** for threads within the same block to access a single memory space that can be used to share results with other threads. -->
-
-<!-- ### Memory Coalescing
-
-Another critical memory optimization used by GPUs is **memory coalescing.** Multiple threads running in parallel often need to access sequential addresses in memory (for example, a group of threads accessing neighboring elements in a matrix) - but each of these memory requests is put in separately.
-
-Memory coalescing is used to analyzing queued memory requests and combine neighboring requests into a single transaction, minimizing time spent on addressing, and making all the requests together.
-
-### Pipelining
-
-In the control flow for mahi-gpu, cores wait for one instruction to be executed on a group of threads before starting execution of the next instruction.
-
-Modern GPUs use **pipelining** to stream execution of multiple sequential instructions at once while ensuring that instructions with dependencies on each other still get executed sequentially.
-
-This helps to maximize resource utilization within cores as resources are not sitting idle while waiting (ex: during async memory requests).
+### Memory Coalescing
+Multiple threads running in parallel often need to access sequential addresses in memory (e.g., neighboring elements in a matrix). Memory coalescing analyzes queued memory requests and combines neighboring requests into a single wide transaction, minimizing time spent on addressing.
 
 ### Warp Scheduling
-
-Another strategy used to maximize resource utilization on course is **warp scheduling.** This approach involves breaking up blocks into individual batches of theads that can be executed together.
-
-Multiple warps can be executed on a single core simultaneously by executing instructions from one warp while another warp is waiting. This is similar to pipelining, but dealing with instructions from different threads.
+This approach involves breaking up blocks into smaller batches of threads called **warps**. Multiple warps can be executed on a single core simultaneously by swapping execution out when one warp stalls on a memory access.
 
 ### Branch Divergence
-
-mahi-gpu assumes that all threads in a single batch end up on the same PC after each instruction, meaning that threads can be executed in parallel for their entire lifetime.
-
-In reality, individual threads could diverge from each other and branch to different lines based on their data. With different PCs, these threads would need to split into separate lines of execution, which requires managing diverging threads & paying attention to when threads converge again.
-
-### Synchronization & Barriers
-
-Another core functionality of modern GPUs is the ability to set **barriers** so that groups of threads in a block can synchronize and wait until all other threads in the same block have gotten to a certain point before continuing execution.
-
-This is useful for cases where threads need to exchange shared data with each other so they can ensure that the data has been fully processed. -->
+mahi-gpu currently assumes that all threads in a single block follow the exact same control flow path. In reality, individual threads could evaluate conditionals differently and branch to different PCs. This requires a divergence stack to temporarily mask out inactive threads and serialize the execution of the diverging paths until they converge again.
 
 # Next Steps
 
-Updates I want to make in the future to improve the design, anyone else is welcome to contribute as well:
+Updates I want to make in the future to improve the design:
 
+- [x] Add basic pipelining
+- [ ] Add hardware data forwarding / bypass paths
 - [ ] Add a simple cache for instructions
-- [ ] Build an adapter to use GPU with Tiny Tapeout 7
 - [ ] Add basic memory coalescing
-- [ ] Add basic pipelining
-- [ ] Optimize control flow and use of registers to improve cycle time
-- [ ] Write a basic graphics kernel or add simple graphics hardware to demonstrate graphics functionality
-
+- [ ] Implement SIMT Branch Divergence handling
+- [ ] Write a basic graphics kernel or add simple graphics hardware
