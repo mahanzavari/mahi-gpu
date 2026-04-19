@@ -1,7 +1,7 @@
 `default_nettype none
 `timescale 1ns/1ns
 
-// REGISTER FILE (Pipeline Ready)
+// REGISTER FILE (Pipelined with Internal Forwarding)
 // > Read occurs asynchronously in the Instruction Decode (ID) stage
 // > Write occurs synchronously in the Write-Back (WB) stage
 module registers #(
@@ -44,9 +44,19 @@ module registers #(
     // 16 registers per thread
     reg [DATA_BITS-1:0] registers[15:0];
 
-    // Asynchronous Read for ID stage
-    assign rs = registers[decoded_rs_address];
-    assign rt = registers[decoded_rt_address];
+    // Determine the data currently being written by the WB stage
+    wire [DATA_BITS-1:0] write_data = (decoded_reg_input_mux == ARITHMETIC) ? alu_out :
+                                      (decoded_reg_input_mux == MEMORY)     ? lsu_out :
+                                      (decoded_reg_input_mux == CONSTANT)   ? decoded_immediate :
+                                                                              lsu_out;
+
+    wire is_writing = enable && decoded_reg_write_enable && (decoded_rd_address < 13);
+
+    // Write-to-Read Internal Forwarding:
+    // If we are reading a register in the exact same cycle it is being written,
+    // bypass the register file and forward the write data directly!
+    assign rs = (is_writing && (decoded_rs_address == decoded_rd_address)) ? write_data : registers[decoded_rs_address];
+    assign rt = (is_writing && (decoded_rt_address == decoded_rd_address)) ? write_data : registers[decoded_rt_address];
 
     integer i;
     always @(posedge clk) begin
@@ -62,13 +72,8 @@ module registers #(
             registers[13] <= {{(DATA_BITS-8){1'b0}}, block_id}; 
 
             // Synchronous Write for WB stage
-            if (enable && decoded_reg_write_enable && decoded_rd_address < 13) begin
-                case (decoded_reg_input_mux)
-                    ARITHMETIC: registers[decoded_rd_address] <= alu_out;
-                    MEMORY:     registers[decoded_rd_address] <= lsu_out;
-                    CONSTANT:   registers[decoded_rd_address] <= decoded_immediate;
-                    SHARED:     registers[decoded_rd_address] <= lsu_out;
-                endcase
+            if (is_writing) begin
+                registers[decoded_rd_address] <= write_data;
             end
         end
     end

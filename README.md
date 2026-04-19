@@ -53,15 +53,14 @@ After understanding the fundamentals laid out in this project, you can check out
 # Architecture
 
 ## GPU Card
-<p float="left">
+<p align="center">
   <img src="/docs/PNG/GPU_card.png" alt="GPU" width="48%">
 </p>
 
+</br><br>
 
-## Core
-<p float="left">
-  <img src="/docs/PNG/core_blockvsdx.png" alt="Core" width="48%">
-</p>
+
+
 ## GPU
 
 mahi-gpu is built to execute a single kernel at a time.
@@ -147,23 +146,54 @@ The scheduler manages the continuous flow of instructions into the pipeline. Bec
 | `STSH`  | 1100 | R | Store to shared memory |
 | `RET`   | 1111 | — | Thread return |
 
+## Instruction Format
+
+All instructions are 16 bits.
+
+```
+15        12 11        8 7        4 3         0
++------------+-----------+-----------+-----------+
+|  OPCODE    |    RD     |    RS     |    RT     |  (R-type)
++------------+-----------+-----------+-----------+
+
+15        12 11        8 7                                0
++------------+-----------+-----------------------+
+|  OPCODE    |    NZP    |    IMMEDIATE[7:0]     |  (I-type: BR, CONST, some others)
++------------+-----------+-----------------------+
+```
+
+## Registers
+
+per‑thread register file for a small GPU‑like SIMD core, Each thread gets 16 registers.
+
+- 13 general‑purpose registers (R0–R12) — read/write
+- 3 read‑only special registers (R13–R15) — automatically set, not writable by the program
+  - `%blockIdx`
+  - `%blockDim`
+  - `%threadIdx`
+
+mahi-gpu implements a simple 11 instruction ISA built to enable simple kernels for proof-of-concept like matrix addition & matrix multiplication These mirror CUDA‑style registers that allow each thread to know:
+1. Which block it belongs to,
+2. How many threads exist in the block,
+3. Which thread index it is.
+
+| Register Index | Name (Conceptual) |  Width   | Read/Write | Initialization | Purpose |
+|:--------------:|:-----------------:|:--------:|:-----------:|:--------------:|---------|
+| **0–12**       | General Purpose Registers (GPRs) | DATA_BITS | R/W | Zero | Used for arithmetic, memory ops, constants, etc. |
+| **13**         | `%blockIdx`       | DATA_BITS | Read‑only to thread | Set to block_id on reset and every cycle | Identifies which block this thread belongs to |
+| **14**         | `%blockDim`       | DATA_BITS | Read‑only | Constant = THREADS_PER_BLOCK | Number of threads per block |
+| **15**         | `%threadIdx`      | DATA_BITS | Read‑only | Constant = THREAD_ID | Thread index within the block |
+
+
+
 # Execution Pipeline
 
 mahi-gpu implements a **classic 5-stage RISC pipeline**, allowing multiple instructions to be processed simultaneously across different stages of execution. This drastically improves hardware utilization compared to a multi-cycle state machine.
 
-```mermaid
-graph LR
-    IF[Instruction Fetch] -->|IF/ID Reg| ID[Instruction Decode]
-    ID -->|ID/EX Reg| EX[Execute]
-    EX -->|EX/MEM Reg| MEM[Memory Access]
-    MEM -->|MEM/WB Reg| WB[Write Back]
-    
-    style IF fill:#e1f5fe,stroke:#311b92
-    style ID fill:#fff3e0,stroke:#e65100
-    style EX fill:#e8f5e9,stroke:#1b5e20
-    style MEM fill:#fce4ec,stroke:#b71c1c
-    style WB fill:#f3e5f5,stroke:#4a148c
-```
+<p align="center">
+  <img src="/docs/PNG/core_blockvsdx.png" alt="Core" width="60%">
+</p>
+
 
 ### Stages
 

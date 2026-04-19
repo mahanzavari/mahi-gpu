@@ -34,23 +34,20 @@ module core #(
 );
 
     // -------------------------------------------------------------------------
-    // 0. PIPELINE CONTROL SIGNALS (Ordered explicitly for combinational eval)
+    // 0. PIPELINE CONTROL SIGNALS
     // -------------------------------------------------------------------------
     wire [THREADS_PER_BLOCK-1:0] lsu_stall;
-    wire if_instruction_valid; // Declared early so it can be evaluated
+    wire if_instruction_valid; 
+    wire load_use_stall; // NEW: Hazard stall
     
-    // LSU Stall: Memory is busy. Freezes EVERYTHING (Backend + Fetcher)
     wire lsu_any_stall = |lsu_stall; 
-    
-    // Fetch Stall: Fetcher is waiting for instruction memory. PC must freeze.
     wire fetch_stall = !if_instruction_valid;
     
-    // Scheduler Stall: PC freezes if either memory is stalling, or fetch is waiting
-    wire scheduler_stall = lsu_any_stall || fetch_stall;
+    // PC freezes if memory stalls, fetch stalls, OR if we have a load-use hazard!
+    wire scheduler_stall = lsu_any_stall || fetch_stall || load_use_stall;
 
-    // Fetcher Enable: Shut off the fetcher completely to release the bus when finished!
     wire core_running = start && !done;
-    wire fetcher_stall = lsu_any_stall || !core_running; // <--- FIXED TYPO HERE
+    wire fetcher_stall = lsu_any_stall || !core_running; 
 
     wire pipeline_flush;
     wire [THREADS_PER_BLOCK-1:0] sched_active_mask;
@@ -59,7 +56,7 @@ module core #(
     always @(posedge clk) begin
         if (!reset && start && !done) begin
             if (lsu_any_stall) $display("[%0t] [STALL] Backend (LSU) Memory Stall triggered", $time);
-            else if (fetch_stall) $display("[%0t] [STALL] Fetcher waiting on Program Memory...", $time);
+            else if (load_use_stall) $display("[%0t] [STALL] Load-Use Hazard! Injecting Bubble.", $time);
         end
     end
 
@@ -74,7 +71,7 @@ module core #(
     ) fetcher_instance (
         .clk(clk),
         .reset(reset),
-        .stall(fetcher_stall), // Fetcher only pauses if the backend is congested or core is done
+        .stall(fetcher_stall), 
         .flush(pipeline_flush),
         .current_pc(if_pc),
         .mem_read_valid(program_mem_read_valid),
@@ -95,15 +92,10 @@ module core #(
             id_instruction <= 16'h0000;
             id_pc <= 0;
             id_active_mask <= 0;
-            if (pipeline_flush && !reset) $display("[%0t] [IF/ID] Flush!", $time);
-        end else if (!lsu_any_stall) begin
+        end else if (!lsu_any_stall && !load_use_stall) begin // Freeze IF/ID on Load-Use
             id_instruction <= if_instruction_valid ? if_instruction : 16'h0000;
             id_pc <= if_pc;
             id_active_mask <= if_instruction_valid ? sched_active_mask : 0; 
-            
-            if (if_instruction_valid) begin
-                $display("[%0t] [IF]  Fetched PC=%0d, Instr=%04h", $time, if_pc, if_instruction);
-            end
         end
     end
 
@@ -115,6 +107,7 @@ module core #(
     wire [DATA_BITS-1:0] id_imm;
     
     wire id_reg_we, id_mem_re, id_mem_we, id_nzp_we;
+    wire id_rs_re, id_rt_re; // NEW: Read enables for Hazard Detection
     wire [1:0] id_reg_mux;
     wire [2:0] id_alu_arith_mux;
     wire id_alu_out_mux, id_pc_mux, id_ret, id_sync;
@@ -124,6 +117,7 @@ module core #(
         .instruction(id_instruction),
         .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
         .decoded_nzp(id_nzp), .decoded_immediate(id_imm),
+        .decoded_rs_read_enable(id_rs_re), .decoded_rt_read_enable(id_rt_re),
         .decoded_reg_write_enable(id_reg_we), .decoded_mem_read_enable(id_mem_re),
         .decoded_mem_write_enable(id_mem_we), .decoded_nzp_write_enable(id_nzp_we),
         .decoded_reg_input_mux(id_reg_mux), .decoded_alu_arithmetic_mux(id_alu_arith_mux),
@@ -138,7 +132,8 @@ module core #(
     // ==================== ID/EX PIPELINE REGISTER ====================
     reg [THREADS_PER_BLOCK-1:0] ex_active_mask;
     reg [7:0] ex_pc;
-    reg [3:0] ex_rd;
+    reg [3:0] ex_rd, ex_rs, ex_rt;
+    reg ex_rs_re, ex_rt_re;
     reg [2:0] ex_nzp;
     reg [DATA_BITS-1:0] ex_imm;
     reg [DATA_BITS-1:0] ex_rs_data [THREADS_PER_BLOCK-1:0];
@@ -150,51 +145,78 @@ module core #(
     reg ex_alu_out_mux, ex_pc_mux, ex_ret, ex_sync;
     reg ex_shared_re, ex_shared_we;
 
+    // Load-Use Hazard Detection: If EX is loading a register that ID needs to read
+    assign load_use_stall = (ex_mem_re || ex_shared_re) && ex_reg_we && 
+                            ((id_rs_re && (id_rs == ex_rd)) || (id_rt_re && (id_rt == ex_rd)));
+
     always @(posedge clk) begin
         if (reset || pipeline_flush) begin
             ex_active_mask <= 0;
             ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
             ex_shared_re <= 0; ex_shared_we <= 0;
             ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
+            ex_rs_re <= 0; ex_rt_re <= 0;
         end else if (!lsu_any_stall) begin
-            ex_active_mask <= id_active_mask;
-            ex_pc <= id_pc;
-            ex_rd <= id_rd;
-            ex_nzp <= id_nzp;
-            ex_imm <= id_imm;
-            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
-                ex_rs_data[i] <= id_rs_data[i];
-                ex_rt_data[i] <= id_rt_data[i];
+            if (load_use_stall) begin
+                // Inject Bubble (Clear control signals)
+                ex_active_mask <= 0;
+                ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
+                ex_shared_re <= 0; ex_shared_we <= 0;
+                ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
+                ex_rs_re <= 0; ex_rt_re <= 0;
+            end else begin
+                ex_active_mask <= id_active_mask;
+                ex_pc <= id_pc;
+                ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt;
+                ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
+                ex_nzp <= id_nzp; ex_imm <= id_imm;
+                for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                    ex_rs_data[i] <= id_rs_data[i];
+                    ex_rt_data[i] <= id_rt_data[i];
+                end
+                ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
+                ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
+                ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
+                ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
+                ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
             end
-            ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
-            ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
-            ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
-            ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
-            ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
-            
-            if (|id_active_mask) $display("[%0t] [ID]  Decoded PC=%0d", $time, id_pc);
         end
     end
 
     // -------------------------------------------------------------------------
-    // 3. EXECUTE (EX) STAGE
+    // 3. EXECUTE (EX) STAGE & FORWARDING
     // -------------------------------------------------------------------------
     wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK-1:0];
     wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK-1:0];
 
-    // ==================== EX/MEM PIPELINE REGISTER ====================
+    // Pipeline Registers declared here so forwarding logic can access them
     reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
     reg [3:0] mem_rd;
     reg [DATA_BITS-1:0] mem_imm;
     reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK-1:0];
     reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK-1:0];
     reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK-1:0]; 
-    
-    reg mem_reg_we, mem_mem_re, mem_mem_we;
-    reg mem_shared_re, mem_shared_we;
+    reg mem_reg_we, mem_mem_re, mem_mem_we, mem_shared_re, mem_shared_we, mem_ret;
     reg [1:0] mem_reg_mux;
-    reg mem_ret;
 
+    reg [THREADS_PER_BLOCK-1:0] wb_active_mask;
+    reg [3:0] wb_rd;
+    reg [DATA_BITS-1:0] wb_imm;
+    reg [DATA_BITS-1:0] wb_alu_out [THREADS_PER_BLOCK-1:0];
+    reg [DATA_BITS-1:0] wb_lsu_out [THREADS_PER_BLOCK-1:0];
+    reg wb_reg_we;
+    reg [1:0] wb_reg_mux;
+
+    // --- FORWARDING CONTROL LOGIC ---
+    wire forward_mem_rs = mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 13) && ex_rs_re;
+    wire forward_mem_rt = mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 13) && ex_rt_re;
+    wire forward_wb_rs  = wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 13) && ex_rs_re && !forward_mem_rs;
+    wire forward_wb_rt  = wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 13) && ex_rt_re && !forward_mem_rt;
+
+    wire [DATA_BITS-1:0] fwd_ex_rs_data [THREADS_PER_BLOCK-1:0];
+    wire [DATA_BITS-1:0] fwd_ex_rt_data [THREADS_PER_BLOCK-1:0];
+
+    // ==================== EX/MEM PIPELINE REGISTER ====================
     always @(posedge clk) begin
         if (reset) begin
             mem_active_mask <= 0;
@@ -206,14 +228,12 @@ module core #(
             mem_imm <= ex_imm;
             for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
                 mem_alu_out[i] <= ex_alu_out[i];
-                mem_rs_data[i] <= ex_rs_data[i];
-                mem_rt_data[i] <= ex_rt_data[i];
+                mem_rs_data[i] <= fwd_ex_rs_data[i]; // Store Forwarded Data
+                mem_rt_data[i] <= fwd_ex_rt_data[i]; // Store Forwarded Data
             end
             mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
             mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we;
             mem_reg_mux <= ex_reg_mux; mem_ret <= ex_ret;
-            
-            if (|ex_active_mask) $display("[%0t] [EX]  Executing PC=%0d, Mask=%b", $time, ex_pc, ex_active_mask);
         end
     end
 
@@ -235,14 +255,6 @@ module core #(
     );
 
     // ==================== MEM/WB PIPELINE REGISTER ====================
-    reg [THREADS_PER_BLOCK-1:0] wb_active_mask;
-    reg [3:0] wb_rd;
-    reg [DATA_BITS-1:0] wb_imm;
-    reg [DATA_BITS-1:0] wb_alu_out [THREADS_PER_BLOCK-1:0];
-    reg [DATA_BITS-1:0] wb_lsu_out [THREADS_PER_BLOCK-1:0];
-    reg wb_reg_we;
-    reg [1:0] wb_reg_mux;
-
     always @(posedge clk) begin
         if (reset) begin
             wb_active_mask <= 0;
@@ -257,8 +269,6 @@ module core #(
             end
             wb_reg_we <= mem_reg_we;
             wb_reg_mux <= mem_reg_mux;
-            
-            if (|mem_active_mask) $display("[%0t] [MEM] Bypassing/Completing Memory Stage", $time);
         end
     end
 
@@ -269,10 +279,25 @@ module core #(
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
             
+            // --- FORWARDING DATA MULTIPLEXERS ---
+            wire [DATA_BITS-1:0] fwd_mem_data_i = (mem_reg_mux == 2'b10) ? mem_imm : mem_alu_out[i];
+            wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux == 2'b10) ? wb_imm :
+                                                  (wb_reg_mux == 2'b01 || wb_reg_mux == 2'b11) ? wb_lsu_out[i] :
+                                                  wb_alu_out[i];
+
+            assign fwd_ex_rs_data[i] = forward_mem_rs ? fwd_mem_data_i :
+                                       forward_wb_rs  ? fwd_wb_data_i  :
+                                       ex_rs_data[i];
+
+            assign fwd_ex_rt_data[i] = forward_mem_rt ? fwd_mem_data_i :
+                                       forward_wb_rt  ? fwd_wb_data_i  :
+                                       ex_rt_data[i];
+
+            // Use forwarded data for ALU and PC logic
             alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
                 .enable(ex_active_mask[i]),
                 .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
-                .rs(ex_rs_data[i]), .rt(ex_rt_data[i]), .alu_out(ex_alu_out[i])
+                .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .alu_out(ex_alu_out[i])
             );
 
             pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) pc_inst (
@@ -307,16 +332,6 @@ module core #(
                 .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
                 .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(wb_lsu_out[i])
             );
-
-            always @(posedge clk) begin
-                if (!reset && start && wb_active_mask[i] && wb_reg_we && wb_rd < 13) begin
-                    $display("[%0t] [WB]  Thread %0d: Writing rd(%0d) <= %0d", $time, i, wb_rd, 
-                        (wb_reg_mux == 2'b00) ? wb_alu_out[i] :
-                        (wb_reg_mux == 2'b01) ? wb_lsu_out[i] :
-                        (wb_reg_mux == 2'b10) ? wb_imm :
-                        (wb_reg_mux == 2'b11) ? wb_lsu_out[i] : 16'bx);
-                end
-            end
         end
     endgenerate
 
@@ -328,8 +343,8 @@ module core #(
     ) scheduler_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
         
-        .frontend_stall(scheduler_stall), // Perfectly protects the PC from incrementing!
-        .backend_stall(lsu_any_stall),    // Keeps monitoring EX stage even if fetch is delayed
+        .frontend_stall(scheduler_stall), // Freezes IF/PC when necessary (including load-use hazards!)
+        .backend_stall(lsu_any_stall),
         .pipeline_flush(pipeline_flush),
         
         .if_pc(if_pc), .sched_active_mask(sched_active_mask),
@@ -337,4 +352,5 @@ module core #(
         .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc),
         .ex_ret(ex_ret), .ex_sync(ex_sync), .done(done)
     );
+
 endmodule

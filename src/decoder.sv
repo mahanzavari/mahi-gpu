@@ -1,7 +1,7 @@
 `default_nettype none
 `timescale 1ns/1ns
 
-// INSTRUCTION DECODER (Pipelined)
+// INSTRUCTION DECODER (Pipelined with Hazard Support)
 // > Purely combinational. Immediately decodes the instruction for the ID stage.
 module decoder #(
     parameter DATA_BITS = 16
@@ -14,6 +14,10 @@ module decoder #(
     output logic [3:0] decoded_rt_address,
     output logic [2:0] decoded_nzp,
     output logic [DATA_BITS-1:0] decoded_immediate,
+
+    // Hazard & Forwarding Signals
+    output logic decoded_rs_read_enable,
+    output logic decoded_rt_read_enable,
     
     // Control Signals
     output logic decoded_reg_write_enable,           
@@ -55,6 +59,8 @@ module decoder #(
         decoded_nzp        = instruction[11:9];
 
         // 2. Default Control Signals (Prevents Latches)
+        decoded_rs_read_enable      = 0;
+        decoded_rt_read_enable      = 0;
         decoded_reg_write_enable    = 0;
         decoded_mem_read_enable     = 0;
         decoded_mem_write_enable    = 0;
@@ -74,46 +80,62 @@ module decoder #(
                 decoded_pc_mux = 1;
             end
             CMP: begin 
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
                 decoded_alu_output_mux = 1;
                 decoded_nzp_write_enable = 1;
             end
             ADD: begin 
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
                 decoded_reg_write_enable = 1;
                 decoded_alu_arithmetic_mux = 3'b000; // ADD
             end
             SUB: begin 
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
                 decoded_reg_write_enable = 1;
                 decoded_alu_arithmetic_mux = 3'b001; // SUB
             end
             MUL: begin 
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
                 decoded_reg_write_enable = 1;
                 decoded_alu_arithmetic_mux = 3'b010; // MUL
             end
             DIV: begin 
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
                 decoded_reg_write_enable = 1;
                 decoded_alu_arithmetic_mux = 3'b011; // DIV
             end
             LDR: begin 
+                decoded_rs_read_enable = 1;          // Only uses rs for address based on LSU
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b01; // Select Memory
+                decoded_reg_input_mux = 2'b01;       // Select Memory
                 decoded_mem_read_enable = 1;
             end
             STR: begin 
+                decoded_rs_read_enable = 1;          // Address
+                decoded_rt_read_enable = 1;          // Data to store
                 decoded_mem_write_enable = 1;
             end
             CONST: begin 
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b10; // Select Immediate
+                decoded_reg_input_mux = 2'b10;       // Select Immediate
             end
             SYNC: begin
                 decoded_sync = 1;
             end
             LDSH: begin
+                decoded_rs_read_enable = 1;
                 decoded_shared_read_enable = 1;
-                decoded_reg_input_mux = 2'b11; // Select Shared Memory
+                decoded_reg_input_mux = 2'b11;       // Select Shared Memory
                 decoded_reg_write_enable = 1;
             end
             STSH: begin
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
                 decoded_shared_write_enable = 1;
             end
             RET: begin 
