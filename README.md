@@ -52,11 +52,16 @@ After understanding the fundamentals laid out in this project, you can check out
 
 # Architecture
 
-<!-- <p float="left">
-  <img src="/docs/images/gpu.png" alt="GPU" width="48%">
-  <img src="/docs/images/core.png" alt="Core" width="48%">
-</p> -->
+## GPU Card
+<p float="left">
+  <img src="/docs/PNG/GPU_card.png" alt="GPU" width="48%">
+</p>
 
+
+## Core
+<p float="left">
+  <img src="/docs/PNG/core_blockvsdx.png" alt="Core" width="48%">
+</p>
 ## GPU
 
 mahi-gpu is built to execute a single kernel at a time.

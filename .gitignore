@@ -6,3 +6,7 @@ gds/**/*.gltf
 
 .DS_Store
 results.xml
+
+work/
+*.mti
+*.mpf
