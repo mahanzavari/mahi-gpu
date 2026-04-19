@@ -7,170 +7,99 @@ module scheduler #(
     input wire clk,
     input wire reset,
     input wire start,
-
     input wire [$clog2(THREADS_PER_BLOCK):0] thread_count,
     
-    // Control Signals
-    input reg decoded_mem_read_enable,
-    input reg decoded_mem_write_enable,
-    input reg decoded_ret,
-    input wire decoded_sync,
-
-    // Memory Access State
-    input reg [2:0] fetcher_state,
-    input reg [1:0] lsu_state [THREADS_PER_BLOCK-1:0],
-
-    // Current & Next PC
-    output reg [7:0] current_pc,
-    input reg [7:0] next_pc [THREADS_PER_BLOCK-1:0],
-
-    // Execution State
-    output reg [2:0] core_state,
-    output reg [THREADS_PER_BLOCK-1:0] active_mask,
+    // Pipeline Controls
+    input wire frontend_stall, // Freezes the PC
+    input wire backend_stall,  // Freezes backend monitoring
+    output reg pipeline_flush,
+    
+    // Frontend (Fetch)
+    output reg [7:0] if_pc,
+    output reg [THREADS_PER_BLOCK-1:0] sched_active_mask,
+    
+    // Backend (Execution Monitoring)
+    input wire [THREADS_PER_BLOCK-1:0] ex_active_mask,
+    input wire [7:0] ex_pc,
+    input wire [7:0] ex_next_pc [THREADS_PER_BLOCK-1:0],
+    input wire ex_ret,
+    input wire ex_sync,
+    
+    // Output to Dispatcher
     output reg done
 );
-    localparam IDLE = 3'b000, 
-        FETCH = 3'b001,       
-        DECODE = 3'b010,      
-        REQUEST = 3'b011,     
-        WAIT = 3'b100,        
-        EXECUTE = 3'b101,     
-        UPDATE = 3'b110,      
-        DONE = 3'b111;        
 
-    reg is_sync_barrier;
+    typedef enum logic [1:0] { IDLE, RUNNING, DONE_STATE } state_t;
+    state_t state;
 
-    reg [THREADS_PER_BLOCK-1:0] stack_mask [0:7];
-    reg [7:0] stack_pc [0:7];
-    reg [2:0] stack_ptr;
-    reg [7:0] target_a, target_b; // execution paths
-    reg [THREADS_PER_BLOCK-1:0] mask_a, mask_b;
-    reg has_diverged;
+    reg [THREADS_PER_BLOCK-1:0] done_mask;
+    reg [THREADS_PER_BLOCK-1:0] target_mask;
 
-    always@(*) begin
-        target_a = 0; target_b = 0;
-        mask_a = 0; mask_b = 0;
-        has_diverged = 0;
-        for (int i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin
-            if(active_mask[i]) begin
-                target_a = next_pc[i];
-                break;
-            end
-        end
-        for(int i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin
-            if (active_mask[i]) begin
-                if (next_pc[i] == target_a) begin
-                    mask_a[i] = 1'b1;
-                end else begin
-                    mask_b[i] = 1'b1;
-                    target_b = next_pc[i];
-                    has_diverged = 1'b1;
-                end
-            end
-        end
-    end
-    
-    always @(posedge clk) begin 
+    always @(posedge clk) begin
         if (reset) begin
-            current_pc <= 0;
-            core_state <= IDLE;
+            state <= IDLE;
+            if_pc <= 0;
+            sched_active_mask <= 0;
             done <= 0;
-            active_mask <= 0;
-            stack_ptr <= 0;
-            is_sync_barrier <= 0;
-        end else begin 
-            case (core_state)
+            pipeline_flush <= 0;
+            done_mask <= 0;
+        end else begin
+            pipeline_flush <= 0; // Default to not flushing unless a branch is taken
+            
+            case (state)
                 IDLE: begin
-                    if (start) begin 
-                        active_mask <= (1 << thread_count) - 1;
-                        stack_ptr <= 0;
-                        is_sync_barrier <= 0;
-                        core_state <= FETCH;
-                        $display("[%0t] SCHEDULER (%m): START asserted. Moving to FETCH. PC=%0d, Mask=%b", $time, current_pc, (1 << thread_count) - 1);
+                    done <= 0;
+                    done_mask <= 0;
+                    if (start) begin
+                        state <= RUNNING;
+                        if_pc <= 0;
+                        target_mask = (1 << thread_count) - 1;
+                        sched_active_mask <= target_mask;
+                        $display("[%0t] [SCHEDULER] Block Started. Mask = %b", $time, target_mask);
                     end
                 end
-                FETCH: begin 
-                    if (fetcher_state == 3'b010) begin 
-                        core_state <= DECODE;
-                    end
-                end
-                DECODE: begin
-                    core_state <= REQUEST;
-                end
-                REQUEST: begin 
-                    if (decoded_mem_read_enable || decoded_mem_write_enable) begin
-                        $display("[%0t] SCHEDULER (%m): Mem request dispatched. Waiting for LSUs...", $time);
-                    end
-                    core_state <= WAIT;
-                end
-                WAIT: begin
-                    reg any_lsu_waiting = 1'b0;
-                    for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
-                        if (lsu_state[i] == 2'b01 || lsu_state[i] == 2'b10) begin
-                            any_lsu_waiting = 1'b1;
-                            break;
+                
+                RUNNING: begin
+                    // 1. Backend Monitoring: Only pause monitoring if the backend itself is frozen (LSU stall)
+                    if (!backend_stall) begin
+                        if (ex_ret && (|ex_active_mask)) begin
+                            done_mask <= done_mask | ex_active_mask;
+                            
+                            if ((done_mask | ex_active_mask) == target_mask) begin
+                                state <= DONE_STATE;
+                                done <= 1;
+                                sched_active_mask <= 0; // Stop fetching
+                                $display("[%0t] [SCHEDULER] Block Finished! Releasing bus.", $time);
+                            end
+                        end 
+                        else if (|ex_active_mask) begin
+                            int first_active = 0;
+                            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
+                                if (ex_active_mask[i]) begin
+                                    first_active = i;
+                                    break;
+                                end
+                            end
+                            
+                            if (ex_next_pc[first_active] != ex_pc + 1) begin
+                                if_pc <= ex_next_pc[first_active]; 
+                                pipeline_flush <= 1;               
+                                $display("[%0t] [SCHEDULER] Branch taken to PC=%0d. Flushing pipeline!", $time, ex_next_pc[first_active]);
+                            end
                         end
                     end
 
-                    if (!any_lsu_waiting) begin
-                        core_state <= EXECUTE;
+                    // 2. Frontend Control: Freeze PC if either memory is stalling or fetch is waiting
+                    if (!frontend_stall && !pipeline_flush && state == RUNNING) begin
+                        if_pc <= if_pc + 1;
                     end
                 end
-                EXECUTE: begin
-                    if (decoded_sync) begin
-                        is_sync_barrier <= 1'b1;
-                        $display("[%0t] SCHEDULER (%m): SYNC barrier hit.", $time);
+                
+                DONE_STATE: begin
+                    if (!start) begin
+                        state <= IDLE;
+                        done <= 0;
                     end
-                    core_state <= UPDATE;
-                end
-                UPDATE: begin
-                    if (is_sync_barrier) begin
-                        reg all_idle;
-                        all_idle = 1'b1;
-                        for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
-                            if (active_mask[i] && lsu_state[i] != 2'b00) begin
-                                all_idle = 1'b0;
-                                break;
-                            end
-                        end
-                        if (all_idle) begin
-                            is_sync_barrier <= 1'b0;
-                            $display("[%0t] SCHEDULER (%m): SYNC barrier resolved.", $time);
-                        end else begin
-                            // still waiting — stay in UPDATE
-                        end
-                    end
-
-                    if (!is_sync_barrier) begin
-                        if (decoded_ret) begin 
-                            if (stack_ptr > 0) begin
-                                stack_ptr   <= stack_ptr - 1;
-                                active_mask <= stack_mask[stack_ptr - 1];
-                                current_pc  <= stack_pc[stack_ptr - 1];
-                                core_state  <= FETCH;
-                                $display("[%0t] SCHEDULER (%m): RET encountered. Popped stack -> PC=%0d, Mask=%b", $time, stack_pc[stack_ptr - 1], stack_mask[stack_ptr - 1]);
-                            end else begin
-                                done       <= 1;
-                                core_state <= DONE;
-                                $display("[%0t] SCHEDULER (%m): Block execution DONE.", $time);
-                            end
-                        end else begin 
-                            if (has_diverged) begin
-                                stack_mask[stack_ptr] <= mask_b;
-                                stack_pc[stack_ptr]   <= target_b;
-                                stack_ptr             <= stack_ptr + 1;
-                                active_mask           <= mask_a;
-                                current_pc            <= target_a;
-                                $display("[%0t] SCHEDULER (%m): Divergence detected! Path A (PC=%0d, Mask=%b), Path B (PC=%0d, Mask=%b) pushed.", $time, target_a, mask_a, target_b, mask_b);
-                            end else begin
-                                current_pc <= target_a;
-                            end
-                            core_state <= FETCH;
-                        end
-                    end
-                end
-
-                DONE: begin 
                 end
             endcase
         end
