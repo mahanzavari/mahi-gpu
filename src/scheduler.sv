@@ -13,15 +13,15 @@ module scheduler #(
     
     // Memory Wait Feedback (From LSU)
     input wire mem_req_valid,
-    input wire [$clog2(NUM_WARPS)-1:0] mem_req_warp_id,
+    input wire [$clog2(NUM_WARPS)-1:0] mem_warp_id,
+    input wire [7:0] mem_pc, 
     input wire [NUM_WARPS-1:0] warp_mem_ready,
     
     // Frontend Stall (From Fetcher)
     input wire frontend_stall, 
     
     // Output to IF Pipeline Stage
-    output reg flush_warp_valid,
-    output reg [$clog2(NUM_WARPS)-1:0] flush_warp_id,
+    output reg [NUM_WARPS-1:0] flush_warp_mask, 
     
     output reg [7:0] if_pc,
     output reg [THREADS_PER_BLOCK-1:0] sched_active_mask,
@@ -51,7 +51,7 @@ module scheduler #(
     reg [(8 + THREADS_PER_BLOCK - 1):0] simt_stack [NUM_WARPS-1:0][0:STACK_DEPTH-1];
     reg [$clog2(STACK_DEPTH):0] stack_ptr [NUM_WARPS-1:0];
 
-    reg [$clog2(NUM_WARPS)-1:0] rr_ptr; // Round-robin issue pointer
+    reg [$clog2(NUM_WARPS)-1:0] rr_ptr; 
     
     logic [THREADS_PER_BLOCK-1:0] taken_mask;
     logic [THREADS_PER_BLOCK-1:0] fallthrough_mask;
@@ -83,8 +83,7 @@ module scheduler #(
         if (reset) begin
             done <= 0;
             valid_issue <= 0;
-            flush_warp_valid <= 0;
-            flush_warp_id <= 0;
+            flush_warp_mask <= 0;
             rr_ptr <= 0;
             if_pc <= 0;
             sched_active_mask <= 0;
@@ -100,10 +99,9 @@ module scheduler #(
             end
         end else begin
             valid_issue <= 0;
-            flush_warp_valid <= 0;
+            flush_warp_mask <= 0;
 
             if (start && warp_state[0] == IDLE && !done) begin
-                $display("[%0t] [SCHEDULER] Core Started! Thread count received: %0d", $time, thread_count);
                 for (w = 0; w < NUM_WARPS; w++) begin
                     int threads_for_this_warp = thread_count - (w * THREADS_PER_BLOCK);
                     if (threads_for_this_warp > 0) begin
@@ -114,7 +112,6 @@ module scheduler #(
                         warp_mask[w] <= (1 << threads_for_this_warp) - 1;
                         warp_done_mask[w] <= 0;
                         stack_ptr[w] <= 0;
-                        $display("[%0t] [SCHEDULER] Initialized Warp %0d | Target Mask: %b", $time, w, (1 << threads_for_this_warp) - 1);
                     end else begin
                         warp_state[w] <= DONE_STATE;
                     end
@@ -124,45 +121,59 @@ module scheduler #(
             for (w = 0; w < NUM_WARPS; w++) begin
                 if (warp_state[w] == WAITING_MEM && warp_mem_ready[w]) begin
                     warp_state[w] <= READY;
-                    $display("[%0t] [SCHEDULER] WAKING UP Warp %0d (Memory response received)", $time, w);
                 end
             end
 
             if (mem_req_valid) begin
-                warp_state[mem_req_warp_id] <= WAITING_MEM;
-                $display("[%0t] [SCHEDULER] SLEEPING Warp %0d (Waiting for memory)", $time, mem_req_warp_id);
+                warp_state[mem_warp_id] <= WAITING_MEM;
+                flush_warp_mask[mem_warp_id] <= 1'b1;
+                warp_pc[mem_warp_id] <= mem_pc + 1; 
+                if (sched_warp_id == mem_warp_id) if_pc <= mem_pc + 1;
             end
 
-            if (ex_valid && ex_active_mask != 0) begin
+            // FIX: Ensure we do NOT process RET or branch squashes if the warp is actively waiting for memory
+            if (ex_valid && ex_active_mask != 0 && !(mem_req_valid && mem_warp_id == ex_warp_id) && warp_state[ex_warp_id] != WAITING_MEM) begin
+                $display("[%0t] [SCHED EX] warp=%0d ex_pc=%0d ex_ret=%0b ex_mask=%b taken=%b fall=%b target_pc=%0d",
+                    $time, ex_warp_id, ex_pc, ex_ret, ex_active_mask, taken_mask, fallthrough_mask, target_pc);
+                
                 if (ex_ret) begin
                     warp_done_mask[ex_warp_id] <= warp_done_mask[ex_warp_id] | ex_active_mask;
-                    $display("[%0t] [SCHEDULER] Warp %0d thread(s) retired. DoneMask=%b, Target=%b", $time, ex_warp_id, warp_done_mask[ex_warp_id] | ex_active_mask, warp_target_mask[ex_warp_id]);
-                    
                     if ((warp_done_mask[ex_warp_id] | ex_active_mask) == warp_target_mask[ex_warp_id]) begin
                         warp_state[ex_warp_id] <= DONE_STATE;
-                        $display("[%0t] [SCHEDULER] *** Warp %0d completely finished! ***", $time, ex_warp_id);
+                        $display("[%0t] [SCHEDULER] Warp %0d finished completely.", $time, ex_warp_id);
                     end else if (stack_ptr[ex_warp_id] > 0) begin
                         stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1;
+                        $display("[%0t] [SIMT POP] warp=%0d sp_before=%0d pop_pc=%0d pop_mask=%b",
+                            $time, ex_warp_id, stack_ptr[ex_warp_id],
+                            simt_stack[ex_warp_id][stack_ptr[ex_warp_id]-1][7+THREADS_PER_BLOCK:THREADS_PER_BLOCK],
+                            simt_stack[ex_warp_id][stack_ptr[ex_warp_id]-1][THREADS_PER_BLOCK-1:0]);
                         warp_pc[ex_warp_id] <= simt_stack[ex_warp_id][stack_ptr[ex_warp_id] - 1][7+THREADS_PER_BLOCK : THREADS_PER_BLOCK];
                         warp_mask[ex_warp_id] <= simt_stack[ex_warp_id][stack_ptr[ex_warp_id] - 1][THREADS_PER_BLOCK-1 : 0];
-                        flush_warp_valid <= 1;
-                        flush_warp_id <= ex_warp_id;
-                        $display("[%0t] [SCHEDULER] Warp %0d SIMT POP: Resuming PC=%0d", $time, ex_warp_id, simt_stack[ex_warp_id][stack_ptr[ex_warp_id] - 1][7+THREADS_PER_BLOCK : THREADS_PER_BLOCK]);
+                        flush_warp_mask[ex_warp_id] <= 1'b1;
+                        
+                        if (sched_warp_id == ex_warp_id) begin
+                            if_pc <= simt_stack[ex_warp_id][stack_ptr[ex_warp_id] - 1][7+THREADS_PER_BLOCK : THREADS_PER_BLOCK];
+                            sched_active_mask <= simt_stack[ex_warp_id][stack_ptr[ex_warp_id] - 1][THREADS_PER_BLOCK-1 : 0];
+                        end
                     end
                 end else if (taken_mask != 0) begin
                     if (fallthrough_mask != 0) begin
+                        $display("[%0t] [SIMT PUSH] warp=%0d sp_before=%0d push_pc=%0d push_mask=%b",
+                            $time, ex_warp_id, stack_ptr[ex_warp_id], (ex_pc+8'd1), fallthrough_mask);
                         simt_stack[ex_warp_id][stack_ptr[ex_warp_id]] <= { (ex_pc + 8'd1), fallthrough_mask };
                         stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] + 1;
                         warp_pc[ex_warp_id] <= target_pc;
                         warp_mask[ex_warp_id] <= taken_mask;
-                        flush_warp_valid <= 1;
-                        flush_warp_id <= ex_warp_id;
-                        $display("[%0t] [SCHEDULER] Warp %0d DIVERGENCE! Saved fallthrough PC=%0d. Branching to %0d.", $time, ex_warp_id, ex_pc + 8'd1, target_pc);
+                        flush_warp_mask[ex_warp_id] <= 1'b1;
+                        
+                        if (sched_warp_id == ex_warp_id) begin
+                            if_pc <= target_pc;
+                            sched_active_mask <= taken_mask;
+                        end
                     end else begin
                         warp_pc[ex_warp_id] <= target_pc;
-                        flush_warp_valid <= 1;
-                        flush_warp_id <= ex_warp_id;
-                        $display("[%0t] [SCHEDULER] Warp %0d UNIFORM BRANCH to PC=%0d", $time, ex_warp_id, target_pc);
+                        flush_warp_mask[ex_warp_id] <= 1'b1;
+                        if (sched_warp_id == ex_warp_id) if_pc <= target_pc;
                     end
                 end
             end
@@ -188,9 +199,6 @@ module scheduler #(
                     
                     warp_pc[next_rr] <= warp_pc[next_rr] + 1;
                     rr_ptr <= (next_rr + 1) % NUM_WARPS;
-                    $display("[%0t] [SCOREBOARD] Issued Warp %0d | PC=%0d | Mask=%b", $time, next_rr, warp_pc[next_rr], warp_mask[next_rr]);
-                end else begin
-                    $display("[%0t] [SCOREBOARD] IDLE - All warps are sleeping or done.", $time);
                 end
             end
 
@@ -203,7 +211,6 @@ module scheduler #(
             
             if (start && all_warps_done && warp_state[0] != IDLE) begin
                 done <= 1;
-                $display("[%0t] [SCHEDULER] Core Done Signal Asserted.", $time);
             end
             if (!start) begin
                 done <= 0;

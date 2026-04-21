@@ -74,6 +74,8 @@ module lsu #(
 
             // 1. Accept new pipeline request
             if (enable && (decoded_mem_read_enable || decoded_mem_write_enable || decoded_shared_read_enable || decoded_shared_write_enable)) begin
+                $display("[%0t] [LSU ENQ] warp=%0d type=%0d addr=%0d rd=%0d data=%0d enable=%0b",
+    $time, warp_id, (decoded_mem_read_enable?0:decoded_mem_write_enable?1:decoded_shared_read_enable?2:3), rs[7:0], decoded_rd, rt, enable);
                 req_valid[warp_id] <= 1;
                 req_addr[warp_id] <= rs[7:0];
                 req_data_val[warp_id] <= rt;
@@ -115,6 +117,8 @@ module lsu #(
                 end
 
                 if (selected_w != -1) begin
+                    $display("[%0t] [LSU ISSUE] warp=%0d type=%0d addr=%0d rd=%0d data=%0d",
+                        $time, selected_w, req_type[selected_w], req_addr[selected_w], req_rd[selected_w], req_data_val[selected_w]);
                     port_busy <= 1;
                     active_warp <= selected_w;
                     active_type <= req_type[selected_w];

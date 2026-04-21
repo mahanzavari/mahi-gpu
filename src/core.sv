@@ -37,19 +37,17 @@ module core #(
 
     wire if_instruction_valid; 
     wire fetch_stall = !if_instruction_valid;
-    wire load_use_stall; 
     
     wire core_running = start && !done;
 
-    wire flush_warp_valid;
-    wire [$clog2(NUM_WARPS)-1:0] flush_warp_id;
+    wire [NUM_WARPS-1:0] flush_warp_mask;
     wire [THREADS_PER_BLOCK-1:0] sched_active_mask;
     wire [$clog2(NUM_WARPS)-1:0] sched_warp_id;
     wire [7:0] if_pc; 
     wire valid_issue;
 
-    wire frontend_stall = fetch_stall || load_use_stall;
-    wire fetcher_stall = load_use_stall || !core_running; 
+    wire frontend_stall = fetch_stall;
+    wire fetcher_stall = !core_running; 
 
     // -------------------------------------------------------------------------
     // 1. INSTRUCTION FETCH (IF) STAGE
@@ -62,7 +60,7 @@ module core #(
     ) fetcher_instance (
         .clk(clk), .reset(reset),
         .stall(fetcher_stall), 
-        .flush(1'b0), // Flush handled selectively now
+        .flush(flush_warp_mask[sched_warp_id]), // FIX: Abort the fetcher if the active warp diverges
         .current_pc(if_pc),
         .mem_read_valid(program_mem_read_valid),
         .mem_read_address(program_mem_read_address),
@@ -84,9 +82,9 @@ module core #(
             id_pc <= 0;
             id_active_mask <= 0;
             id_warp_id <= 0;
-        end else if (flush_warp_valid && id_warp_id == flush_warp_id) begin
+        end else if (flush_warp_mask[sched_warp_id]) begin // FIX: Clear the register based on sched_warp_id
             id_active_mask <= 0;
-        end else if (!load_use_stall) begin 
+        end else begin 
             id_instruction <= if_instruction_valid ? if_instruction : 16'h0000;
             id_pc <= if_pc;
             id_warp_id <= sched_warp_id;
@@ -120,7 +118,8 @@ module core #(
         .decoded_ret(id_ret), .decoded_sync(id_sync),
         .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we)
     );
-
+        always @(posedge clk) if (!reset) $display("[%0t] [PIPE ID->EX] warp=%0d pc=%0d instr=0x%04h act=%b rd=%0d rs=%0d rt=%0d memR=%0b memW=%0b ret=%0b",
+        $time, id_warp_id, id_pc, id_instruction, id_active_mask, id_rd, id_rs, id_rt, id_mem_re, id_mem_we, id_ret);
     wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK-1:0];
     wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK-1:0];
 
@@ -141,9 +140,6 @@ module core #(
     reg ex_alu_out_mux, ex_pc_mux, ex_ret, ex_sync;
     reg ex_shared_re, ex_shared_we;
 
-    assign load_use_stall = (ex_mem_re || ex_shared_re) && ex_reg_we && (id_warp_id == ex_warp_id) && 
-                            ((id_rs_re && (id_rs == ex_rd)) || (id_rt_re && (id_rt == ex_rd)));
-
     always @(posedge clk) begin
         if (reset) begin
             ex_active_mask <= 0;
@@ -152,32 +148,24 @@ module core #(
             ex_shared_re <= 0; ex_shared_we <= 0;
             ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
             ex_rs_re <= 0; ex_rt_re <= 0;
-        end else if (flush_warp_valid && id_warp_id == flush_warp_id) begin
+        end else if (flush_warp_mask[id_warp_id]) begin
             ex_active_mask <= 0;
         end else begin
-            if (load_use_stall) begin
-                ex_active_mask <= 0;
-                ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
-                ex_shared_re <= 0; ex_shared_we <= 0;
-                ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
-                ex_rs_re <= 0; ex_rt_re <= 0;
-            end else begin
-                ex_active_mask <= id_active_mask;
-                ex_warp_id <= id_warp_id;
-                ex_pc <= id_pc;
-                ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt;
-                ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
-                ex_nzp <= id_nzp; ex_imm <= id_imm;
-                for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
-                    ex_rs_data[j] <= id_rs_data[j];
-                    ex_rt_data[j] <= id_rt_data[j];
-                end
-                ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
-                ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
-                ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
-                ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
-                ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
+            ex_active_mask <= id_active_mask;
+            ex_warp_id <= id_warp_id;
+            ex_pc <= id_pc;
+            ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt;
+            ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
+            ex_nzp <= id_nzp; ex_imm <= id_imm;
+            for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
+                ex_rs_data[j] <= id_rs_data[j];
+                ex_rt_data[j] <= id_rt_data[j];
             end
+            ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
+            ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
+            ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
+            ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
+            ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
         end
     end
 
@@ -189,6 +177,7 @@ module core #(
 
     reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] mem_warp_id;
+    reg [7:0] mem_pc; // NEW: Passed to Scheduler to rewind PC on Yield
     reg [3:0] mem_rd;
     reg [DATA_BITS-1:0] mem_imm;
     reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK-1:0];
@@ -218,6 +207,7 @@ module core #(
         end else begin 
             mem_active_mask <= ex_active_mask;
             mem_warp_id <= ex_warp_id;
+            mem_pc <= ex_pc;
             mem_rd <= ex_rd;
             mem_imm <= ex_imm;
             for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
@@ -337,7 +327,6 @@ module core #(
                 .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .alu_out(ex_alu_out[i])
             );
 
-            // FIX: Pass the ex_warp_id into the pc module so it evaluates the right condition codes!
             pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .NUM_WARPS(NUM_WARPS) ) pc_inst (
                 .clk(clk), .reset(reset), .enable(ex_active_mask[i]),
                 .warp_id(ex_warp_id),
@@ -379,9 +368,9 @@ module core #(
                 
                 .decoded_rs_address(id_rs), .decoded_rt_address(id_rt), .rs(id_rs_data[i]), .rt(id_rt_data[i]),
                 .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
-                .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(16'h0),
+                .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(16'h0), 
                 
-                .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data)
+                .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data) 
             );
             
         end
@@ -395,10 +384,10 @@ module core #(
     ) scheduler_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
         
-        .mem_req_valid(mem_req_valid), .mem_req_warp_id(mem_warp_id), .warp_mem_ready(warp_mem_ready),
+        .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready),
         .frontend_stall(frontend_stall), 
         
-        .flush_warp_valid(flush_warp_valid), .flush_warp_id(flush_warp_id),
+        .flush_warp_mask(flush_warp_mask),
         .if_pc(if_pc), .sched_active_mask(sched_active_mask), .sched_warp_id(sched_warp_id), .valid_issue(valid_issue),
         
         .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id), .ex_active_mask(ex_active_mask),
