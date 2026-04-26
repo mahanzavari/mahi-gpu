@@ -1,0 +1,176 @@
+==================================================
+[150000] [TESTBENCH] Loading DCR with 4 threads...
+[250000] [TESTBENCH] Sending START pulse...
+[265000] [SCHEDULER] Block Started. Mask = 1111
+[275000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=0
+[295000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=39936 to Consumer 0
+[315000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[325000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=1
+[345000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=20702 to Consumer 0
+[365000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[375000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=2
+[395000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=12303 to Consumer 0
+[415000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[425000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=3
+[445000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=37122 to Consumer 0
+[465000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[475000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=4
+[495000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=25089 to Consumer 0
+[515000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[525000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=5
+[545000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=21281 to Consumer 0
+[565000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[575000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=6
+[595000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=17411 to Consumer 0
+[615000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[625000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=7
+[645000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=38144 to Consumer 0
+[665000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[675000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=8
+[695000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=13651 to Consumer 0
+[715000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[725000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=9
+[745000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=30300 to Consumer 0
+[765000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[775000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=10
+[795000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=38657 to Consumer 0
+[795000] [STALL] Backend (LSU) Memory Stall triggered
+[805000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=2
+[805000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 accepted READ from Consumer 1, Addr=2
+[805000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 accepted READ from Consumer 2, Addr=0
+[805000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 accepted READ from Consumer 3, Addr=0
+[805000] [STALL] Backend (LSU) Memory Stall triggered
+[815000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[815000] [STALL] Backend (LSU) Memory Stall triggered
+[825000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ ready from mem. Relaying Data=3 to Consumer 0
+[825000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ ready from mem. Relaying Data=3 to Consumer 1
+[825000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ ready from mem. Relaying Data=1 to Consumer 2
+[825000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ ready from mem. Relaying Data=1 to Consumer 3
+[825000] [STALL] Backend (LSU) Memory Stall triggered
+[845000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[845000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ complete for Consumer 1. Returning to IDLE.
+[845000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ complete for Consumer 2. Returning to IDLE.
+[845000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ complete for Consumer 3. Returning to IDLE.
+[845000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=11
+[865000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=14167 to Consumer 0
+[885000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[895000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=12
+[915000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=30844 to Consumer 0
+[935000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[945000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=13
+[965000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=39172 to Consumer 0
+[965000] [STALL] Backend (LSU) Memory Stall triggered
+[975000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=3
+[975000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 accepted READ from Consumer 1, Addr=3
+[975000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 accepted READ from Consumer 2, Addr=1
+[975000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 accepted READ from Consumer 3, Addr=1
+[975000] [STALL] Backend (LSU) Memory Stall triggered
+[985000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[985000] [STALL] Backend (LSU) Memory Stall triggered
+[995000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ ready from mem. Relaying Data=4 to Consumer 0
+[995000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ ready from mem. Relaying Data=4 to Consumer 1
+[995000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ ready from mem. Relaying Data=2 to Consumer 2
+[995000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ ready from mem. Relaying Data=2 to Consumer 3
+[995000] [STALL] Backend (LSU) Memory Stall triggered
+relaunch_sim: Time (s): cpu = 00:00:02 ; elapsed = 00:00:09 . Memory (MB): peak = 850.516 ; gain = 0.000
+run all
+[1015000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1015000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ complete for Consumer 1. Returning to IDLE.
+[1015000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ complete for Consumer 2. Returning to IDLE.
+[1015000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ complete for Consumer 3. Returning to IDLE.
+[1015000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=14
+[1035000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=14740 to Consumer 0
+[1055000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1065000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=15
+[1085000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=31388 to Consumer 0
+[1105000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1115000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=16
+[1135000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=39686 to Consumer 0
+[1135000] [STALL] Backend (LSU) Memory Stall triggered
+[1145000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=5
+[1145000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 accepted READ from Consumer 1, Addr=4
+[1145000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 accepted READ from Consumer 2, Addr=5
+[1145000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 accepted READ from Consumer 3, Addr=4
+[1145000] [STALL] Backend (LSU) Memory Stall triggered
+[1155000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1155000] [STALL] Backend (LSU) Memory Stall triggered
+[1165000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ ready from mem. Relaying Data=6 to Consumer 0
+[1165000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ ready from mem. Relaying Data=5 to Consumer 1
+[1165000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ ready from mem. Relaying Data=6 to Consumer 2
+[1165000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ ready from mem. Relaying Data=5 to Consumer 3
+[1165000] [STALL] Backend (LSU) Memory Stall triggered
+[1185000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1185000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ complete for Consumer 1. Returning to IDLE.
+[1185000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ complete for Consumer 2. Returning to IDLE.
+[1185000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ complete for Consumer 3. Returning to IDLE.
+[1185000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=17
+[1205000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=15284 to Consumer 0
+[1225000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1235000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=18
+[1255000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=29116 to Consumer 0
+[1275000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1285000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=19
+[1305000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=22122 to Consumer 0
+[1305000] [STALL] Backend (LSU) Memory Stall triggered
+[1315000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=7
+[1315000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 accepted READ from Consumer 1, Addr=6
+[1315000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 accepted READ from Consumer 2, Addr=7
+[1315000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 accepted READ from Consumer 3, Addr=6
+[1315000] [STALL] Backend (LSU) Memory Stall triggered
+[1325000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1325000] [STALL] Backend (LSU) Memory Stall triggered
+[1335000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ ready from mem. Relaying Data=8 to Consumer 0
+[1335000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ ready from mem. Relaying Data=7 to Consumer 1
+[1335000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ ready from mem. Relaying Data=8 to Consumer 2
+[1335000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ ready from mem. Relaying Data=7 to Consumer 3
+[1335000] [STALL] Backend (LSU) Memory Stall triggered
+[1355000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1355000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 READ complete for Consumer 1. Returning to IDLE.
+[1355000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 READ complete for Consumer 2. Returning to IDLE.
+[1355000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 READ complete for Consumer 3. Returning to IDLE.
+[1355000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=20
+[1375000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=22657 to Consumer 0
+[1395000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1405000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=21
+[1425000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=13928 to Consumer 0
+[1445000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1455000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=22
+[1475000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=38664 to Consumer 0
+[1495000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1505000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=23
+[1525000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=14192 to Consumer 0
+[1545000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1555000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=24
+[1575000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=32886 to Consumer 0
+[1595000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1605000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=25
+[1625000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=61440 to Consumer 0
+[1625000] [STALL] Backend (LSU) Memory Stall triggered
+[1635000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 accepted WRITE from Consumer 0, Addr=11, Data=50
+[1635000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 accepted WRITE from Consumer 1, Addr=10, Data=43
+[1635000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 accepted WRITE from Consumer 2, Addr=9, Data=22
+[1635000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 accepted WRITE from Consumer 3, Addr=8, Data=19
+[1635000] [STALL] Backend (LSU) Memory Stall triggered
+[1645000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ complete for Consumer 0. Returning to IDLE.
+[1645000] [STALL] Backend (LSU) Memory Stall triggered
+[1655000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 WRITE acknowledged by mem. Notifying Consumer 0
+[1655000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 WRITE acknowledged by mem. Notifying Consumer 1
+[1655000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 WRITE acknowledged by mem. Notifying Consumer 2
+[1655000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 WRITE acknowledged by mem. Notifying Consumer 3
+[1655000] [STALL] Backend (LSU) Memory Stall triggered
+[1675000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 0 WRITE complete for Consumer 0. Returning to IDLE.
+[1675000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 1 WRITE complete for Consumer 1. Returning to IDLE.
+[1675000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 2 WRITE complete for Consumer 2. Returning to IDLE.
+[1675000] CONTROLLER (tb_gpu_pipelined.dut.data_memory_controller): Ch 3 WRITE complete for Consumer 3. Returning to IDLE.
+[1675000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 accepted READ from Consumer 0, Addr=26
+[1685000] [SCHEDULER] Block Finished! Releasing bus.
+[1695000] CONTROLLER (tb_gpu_pipelined.dut.program_memory_controller): Ch 0 READ ready from mem. Relaying Data=0 to Consumer 0
+[1695000] [TESTBENCH] Execution Completed!
+==================================================
+   VERIFYING RESULTS (C = A x B)
+==================================================
+Index C[0]: 19 [PASS]
+Index C[1]: 22 [PASS]
+Index C[2]: 43 [PASS]
+Index C[3]: 50 [PASS]
+$finish called at time : 1715 ns : File "../tb_gpu_pipelined.sv" Line 193

@@ -11,3 +11,5 @@ sketches/
 work/
 *.mti
 *.mpf
+logs/
+*.log

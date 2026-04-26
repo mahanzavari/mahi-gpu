@@ -42,11 +42,14 @@ module controller #(
     logic [$clog2(NUM_CONSUMERS)-1:0] current_consumer [NUM_CHANNELS]; 
     logic [NUM_CONSUMERS-1:0] channel_serving_consumer; 
     
-    // Combinatorial arbitration signals
+    // --- Round‑robin pointer per channel ---
+    logic [$clog2(NUM_CONSUMERS)-1:0] rr_ptr [NUM_CHANNELS];
+    
+    // Temporary signals for arbitration
     logic [NUM_CONSUMERS-1:0] next_channel_serving;
     logic consumer_claimed;
 
-    integer i, j;
+    integer i, j, k;
 
     always @(posedge clk) begin
         if (reset) begin 
@@ -62,6 +65,7 @@ module controller #(
                 mem_write_data[i] <= 0;
                 current_consumer[i] <= 0;
                 controller_state[i] <= IDLE;
+                rr_ptr[i] <= 0;   // initialise round-robin pointers
             end
 
             for (i = 0; i < NUM_CONSUMERS; i = i + 1) begin
@@ -69,14 +73,15 @@ module controller #(
             end
             
         end else begin 
-            // Default to current state to prevent latches/spurious drops
             next_channel_serving = channel_serving_consumer;
 
             for (i = 0; i < NUM_CHANNELS; i = i + 1) begin 
                 case (controller_state[i])
                     IDLE: begin
                         consumer_claimed = 1'b0;
-                        for (j = 0; j < NUM_CONSUMERS; j = j + 1) begin 
+                        // Round‑robin scan: start at rr_ptr[i] and check NUM_CONSUMERS slots
+                        for (k = 0; k < NUM_CONSUMERS; k = k + 1) begin
+                            j = (rr_ptr[i] + k) % NUM_CONSUMERS;
                             if (!consumer_claimed) begin
                                 if (consumer_read_valid[j] && !next_channel_serving[j]) begin 
                                     next_channel_serving[j] = 1'b1;
@@ -127,6 +132,8 @@ module controller #(
                         if (!consumer_read_valid[current_consumer[i]]) begin 
                             next_channel_serving[current_consumer[i]] = 1'b0;
                             consumer_read_ready[current_consumer[i]] <= 0;
+                            // Advance round-robin pointer after service completes
+                            rr_ptr[i] <= (current_consumer[i] + 1) % NUM_CONSUMERS;
                             controller_state[i] <= IDLE;
                             $display("[%0t] CONTROLLER (%m): Ch %0d READ complete for Consumer %0d. Returning to IDLE.", $time, i, current_consumer[i]);
                         end
@@ -135,6 +142,8 @@ module controller #(
                         if (!consumer_write_valid[current_consumer[i]]) begin 
                             next_channel_serving[current_consumer[i]] = 1'b0;
                             consumer_write_ready[current_consumer[i]] <= 0;
+                            // Advance round-robin pointer after write completes
+                            rr_ptr[i] <= (current_consumer[i] + 1) % NUM_CONSUMERS;
                             controller_state[i] <= IDLE;
                             $display("[%0t] CONTROLLER (%m): Ch %0d WRITE complete for Consumer %0d. Returning to IDLE.", $time, i, current_consumer[i]);
                         end

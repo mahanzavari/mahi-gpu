@@ -1,78 +1,56 @@
 `default_nettype none
 `timescale 1ns/1ns
-
 module core #(
     parameter DATA_MEM_ADDR_BITS = 8,
     parameter DATA_MEM_DATA_BITS = 16,
     parameter PROGRAM_MEM_ADDR_BITS = 8,
     parameter PROGRAM_MEM_DATA_BITS = 16,
     parameter THREADS_PER_BLOCK = 4,
+    parameter NUM_WARPS = 4,
     parameter SHARED_MEM_ADDR_BITS      = 8, 
     parameter SHARED_MEM_SIZE           = 256,
-    parameter DATA_BITS = 16
+    parameter DATA_BITS = 16,
+    parameter DEBUG = 1
 ) (
     input wire clk,
     input wire reset,
     input wire start,
     output wire done,
     input wire [7:0] block_id,
-    input wire [$clog2(THREADS_PER_BLOCK):0] thread_count,
-
+    input wire [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] thread_count,
     output wire program_mem_read_valid,
     output wire [PROGRAM_MEM_ADDR_BITS-1:0] program_mem_read_address,
     input wire program_mem_read_ready,
     input wire [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data,
-
+    
+    // CHANGED bounds to [THREADS_PER_BLOCK] to prevent array index reversals
     output wire [THREADS_PER_BLOCK-1:0] data_mem_read_valid,
-    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [THREADS_PER_BLOCK-1:0],
+    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [THREADS_PER_BLOCK],
     input wire [THREADS_PER_BLOCK-1:0] data_mem_read_ready,
-    input wire [DATA_MEM_DATA_BITS-1:0] data_mem_read_data [THREADS_PER_BLOCK-1:0],
+    input wire [DATA_MEM_DATA_BITS-1:0] data_mem_read_data [THREADS_PER_BLOCK],
     output wire [THREADS_PER_BLOCK-1:0] data_mem_write_valid,
-    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [THREADS_PER_BLOCK-1:0],
-    output wire [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [THREADS_PER_BLOCK-1:0],
+    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [THREADS_PER_BLOCK],
+    output wire [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [THREADS_PER_BLOCK],
     input wire [THREADS_PER_BLOCK-1:0] data_mem_write_ready
 );
-
-    // -------------------------------------------------------------------------
-    // 0. PIPELINE CONTROL SIGNALS
-    // -------------------------------------------------------------------------
-    wire [THREADS_PER_BLOCK-1:0] lsu_stall;
     wire if_instruction_valid; 
-    wire load_use_stall; // NEW: Hazard stall
-    
-    wire lsu_any_stall = |lsu_stall; 
     wire fetch_stall = !if_instruction_valid;
-    
-    // PC freezes if memory stalls, fetch stalls, OR if we have a load-use hazard!
-    wire scheduler_stall = lsu_any_stall || fetch_stall || load_use_stall;
-
     wire core_running = start && !done;
-    wire fetcher_stall = lsu_any_stall || !core_running; 
-
-    wire pipeline_flush;
+    wire [NUM_WARPS-1:0] flush_warp_mask;
     wire [THREADS_PER_BLOCK-1:0] sched_active_mask;
+    wire [$clog2(NUM_WARPS)-1:0] sched_warp_id;
     wire [7:0] if_pc; 
-
-    always @(posedge clk) begin
-        if (!reset && start && !done) begin
-            if (lsu_any_stall) $display("[%0t] [STALL] Backend (LSU) Memory Stall triggered", $time);
-            else if (load_use_stall) $display("[%0t] [STALL] Load-Use Hazard! Injecting Bubble.", $time);
-        end
-    end
-
-    // -------------------------------------------------------------------------
-    // 1. INSTRUCTION FETCH (IF) STAGE
-    // -------------------------------------------------------------------------
+    wire valid_issue;
+    wire frontend_stall = fetch_stall;
+    wire fetcher_stall = !core_running; 
     wire [15:0] if_instruction;
-
     fetcher #(
         .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
         .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS)
     ) fetcher_instance (
-        .clk(clk),
-        .reset(reset),
+        .clk(clk), .reset(reset),
         .stall(fetcher_stall), 
-        .flush(pipeline_flush),
+        .flush(flush_warp_mask[sched_warp_id]), 
         .current_pc(if_pc),
         .mem_read_valid(program_mem_read_valid),
         .mem_read_address(program_mem_read_address),
@@ -81,276 +59,291 @@ module core #(
         .instruction_valid(if_instruction_valid),
         .instruction(if_instruction)
     );
-
-    // ==================== IF/ID PIPELINE REGISTER ====================
     reg [15:0] id_instruction;
     reg [7:0]  id_pc;
     reg [THREADS_PER_BLOCK-1:0] id_active_mask;
-
+    reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
     always @(posedge clk) begin
-        if (reset || pipeline_flush) begin
+        if (reset) begin
             id_instruction <= 16'h0000;
             id_pc <= 0;
             id_active_mask <= 0;
-        end else if (!lsu_any_stall && !load_use_stall) begin // Freeze IF/ID on Load-Use
+            id_warp_id <= 0;
+        end else if (flush_warp_mask[sched_warp_id]) begin 
+            id_active_mask <= 0;
+        end else begin 
             id_instruction <= if_instruction_valid ? if_instruction : 16'h0000;
             id_pc <= if_pc;
+            id_warp_id <= sched_warp_id;
             id_active_mask <= if_instruction_valid ? sched_active_mask : 0; 
         end
     end
-
-    // -------------------------------------------------------------------------
-    // 2. INSTRUCTION DECODE (ID) STAGE
-    // -------------------------------------------------------------------------
     wire [3:0] id_rd, id_rs, id_rt;
     wire [2:0] id_nzp;
     wire [DATA_BITS-1:0] id_imm;
-    
     wire id_reg_we, id_mem_re, id_mem_we, id_nzp_we;
-    wire id_rs_re, id_rt_re; // NEW: Read enables for Hazard Detection
+    wire id_rs_re, id_rt_re; 
     wire [1:0] id_reg_mux;
     wire [2:0] id_alu_arith_mux;
-    wire id_alu_out_mux, id_pc_mux, id_ret, id_sync;
+    wire id_alu_out_mux, id_pc_mux, id_call, id_ret_fn, id_exit, id_sync;
     wire id_shared_re, id_shared_we;
-
+    wire id_use_mem_offset;
+    wire [7:0] id_mem_addr_offset;
     decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
         .instruction(id_instruction),
         .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
-        .decoded_nzp(id_nzp), .decoded_immediate(id_imm),
+        .decoded_nzp(id_nzp), .decoded_immediate(id_imm), .decoded_use_mem_offset(id_use_mem_offset), 
+        .decoded_mem_addr_offset(id_mem_addr_offset),
         .decoded_rs_read_enable(id_rs_re), .decoded_rt_read_enable(id_rt_re),
         .decoded_reg_write_enable(id_reg_we), .decoded_mem_read_enable(id_mem_re),
         .decoded_mem_write_enable(id_mem_we), .decoded_nzp_write_enable(id_nzp_we),
         .decoded_reg_input_mux(id_reg_mux), .decoded_alu_arithmetic_mux(id_alu_arith_mux),
         .decoded_alu_output_mux(id_alu_out_mux), .decoded_pc_mux(id_pc_mux),
-        .decoded_ret(id_ret), .decoded_sync(id_sync),
-        .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we)
+        .decoded_sync(id_sync),
+        .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we),
+        .decoded_ret_fn(id_ret_fn), .decoded_exit(id_exit), .decoded_call(id_call)
     );
+        always @(posedge clk) if (!reset && id_active_mask) $display("[%0t] [PIPE ID->EX] warp=%0d pc=%0d instr=0x%04h act=%b rd=%0d rs=%0d rt=%0d memR=%0b memW=%0b ret=%0b",
+        $time, id_warp_id, id_pc, id_instruction, id_active_mask, id_rd, id_rs, id_rt, id_mem_re, id_mem_we, id_ret_fn);
 
-    wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK-1:0];
-    wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK-1:0];
-
-    // ==================== ID/EX PIPELINE REGISTER ====================
+    // Internal Array Bounds Unified To Prevent Reversal Side-Effects
+    wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK];
+    wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK];
     reg [THREADS_PER_BLOCK-1:0] ex_active_mask;
+    reg [$clog2(NUM_WARPS)-1:0] ex_warp_id;
     reg [7:0] ex_pc;
     reg [3:0] ex_rd, ex_rs, ex_rt;
     reg ex_rs_re, ex_rt_re;
     reg [2:0] ex_nzp;
     reg [DATA_BITS-1:0] ex_imm;
-    reg [DATA_BITS-1:0] ex_rs_data [THREADS_PER_BLOCK-1:0];
-    reg [DATA_BITS-1:0] ex_rt_data [THREADS_PER_BLOCK-1:0];
-    
+    reg [DATA_BITS-1:0] ex_rs_data [THREADS_PER_BLOCK];
+    reg [DATA_BITS-1:0] ex_rt_data [THREADS_PER_BLOCK];
     reg ex_reg_we, ex_mem_re, ex_mem_we, ex_nzp_we;
     reg [1:0] ex_reg_mux;
     reg [2:0] ex_alu_arith_mux;
-    reg ex_alu_out_mux, ex_pc_mux, ex_ret, ex_sync;
+    reg ex_alu_out_mux, ex_pc_mux, ex_sync;
     reg ex_shared_re, ex_shared_we;
-
-    // Load-Use Hazard Detection: If EX is loading a register that ID needs to read
-    assign load_use_stall = (ex_mem_re || ex_shared_re) && ex_reg_we && 
-                            ((id_rs_re && (id_rs == ex_rd)) || (id_rt_re && (id_rt == ex_rd)));
-
+    reg ex_use_mem_offset;
+    reg [7:0] ex_mem_addr_offset;
+    reg ex_call, ex_ret_fn, ex_exit;
     always @(posedge clk) begin
-        if (reset || pipeline_flush) begin
+        if (reset) begin
             ex_active_mask <= 0;
+            ex_warp_id <= 0;
             ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
             ex_shared_re <= 0; ex_shared_we <= 0;
-            ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
+            ex_nzp_we <= 0; ex_sync <= 0; ex_pc_mux <= 0;
             ex_rs_re <= 0; ex_rt_re <= 0;
-        end else if (!lsu_any_stall) begin
-            if (load_use_stall) begin
-                // Inject Bubble (Clear control signals)
-                ex_active_mask <= 0;
-                ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
-                ex_shared_re <= 0; ex_shared_we <= 0;
-                ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
-                ex_rs_re <= 0; ex_rt_re <= 0;
-            end else begin
-                ex_active_mask <= id_active_mask;
-                ex_pc <= id_pc;
-                ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt;
-                ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
-                ex_nzp <= id_nzp; ex_imm <= id_imm;
-                for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
-                    ex_rs_data[i] <= id_rs_data[i];
-                    ex_rt_data[i] <= id_rt_data[i];
-                end
-                ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
-                ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
-                ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
-                ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
-                ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
+            ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
+        end else if (flush_warp_mask[id_warp_id]) begin
+            ex_active_mask <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
+        end else begin
+            ex_active_mask <= id_active_mask;
+            ex_warp_id <= id_warp_id;
+            ex_pc <= id_pc;
+            ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt;
+            ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
+            ex_nzp <= id_nzp; ex_imm <= id_imm;
+            for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
+                ex_rs_data[j] <= id_rs_data[j];
+                ex_rt_data[j] <= id_rt_data[j];
             end
+            ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
+            ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
+            ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
+            ex_pc_mux <= id_pc_mux; ex_sync <= id_sync;
+            ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
+            ex_use_mem_offset <= id_use_mem_offset;
+            ex_mem_addr_offset <= id_mem_addr_offset;
+            ex_call <= id_call;
+            ex_ret_fn <= id_ret_fn;
+            ex_exit <= id_exit;
         end
     end
 
-    // -------------------------------------------------------------------------
-    // 3. EXECUTE (EX) STAGE & FORWARDING
-    // -------------------------------------------------------------------------
-    wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK-1:0];
-    wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK-1:0];
-
-    // Pipeline Registers declared here so forwarding logic can access them
+    wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK];
+    wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK];
     reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
+    reg [$clog2(NUM_WARPS)-1:0] mem_warp_id;
+    reg [7:0] mem_pc; 
     reg [3:0] mem_rd;
     reg [DATA_BITS-1:0] mem_imm;
-    reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK-1:0];
-    reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK-1:0];
-    reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK-1:0]; 
+    reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK];
+    reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK];
+    reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK]; 
     reg mem_reg_we, mem_mem_re, mem_mem_we, mem_shared_re, mem_shared_we, mem_ret;
     reg [1:0] mem_reg_mux;
+    reg mem_use_mem_offset;
+    reg [7:0] mem_mem_addr_offset;
 
     reg [THREADS_PER_BLOCK-1:0] wb_active_mask;
+    reg [$clog2(NUM_WARPS)-1:0] wb_warp_id;
     reg [3:0] wb_rd;
     reg [DATA_BITS-1:0] wb_imm;
-    reg [DATA_BITS-1:0] wb_alu_out [THREADS_PER_BLOCK-1:0];
-    reg [DATA_BITS-1:0] wb_lsu_out [THREADS_PER_BLOCK-1:0];
+    reg [DATA_BITS-1:0] wb_alu_out [THREADS_PER_BLOCK];
     reg wb_reg_we;
     reg [1:0] wb_reg_mux;
+    wire [DATA_BITS-1:0] fwd_ex_rs_data [THREADS_PER_BLOCK];
+    wire [DATA_BITS-1:0] fwd_ex_rt_data [THREADS_PER_BLOCK];
 
-    // --- FORWARDING CONTROL LOGIC ---
-    wire forward_mem_rs = mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 13) && ex_rs_re;
-    wire forward_mem_rt = mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 13) && ex_rt_re;
-    wire forward_wb_rs  = wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 13) && ex_rs_re && !forward_mem_rs;
-    wire forward_wb_rt  = wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 13) && ex_rt_re && !forward_mem_rt;
-
-    wire [DATA_BITS-1:0] fwd_ex_rs_data [THREADS_PER_BLOCK-1:0];
-    wire [DATA_BITS-1:0] fwd_ex_rt_data [THREADS_PER_BLOCK-1:0];
-
-    // ==================== EX/MEM PIPELINE REGISTER ====================
     always @(posedge clk) begin
         if (reset) begin
             mem_active_mask <= 0;
+            mem_warp_id <= 0;
             mem_reg_we <= 0; mem_mem_re <= 0; mem_mem_we <= 0;
             mem_shared_re <= 0; mem_shared_we <= 0; mem_ret <= 0;
-        end else if (!lsu_any_stall) begin 
+            mem_use_mem_offset  <= 0;
+        end else begin 
             mem_active_mask <= ex_active_mask;
+            mem_warp_id <= ex_warp_id;
+            mem_pc <= ex_pc;
             mem_rd <= ex_rd;
             mem_imm <= ex_imm;
-            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
-                mem_alu_out[i] <= ex_alu_out[i];
-                mem_rs_data[i] <= fwd_ex_rs_data[i]; // Store Forwarded Data
-                mem_rt_data[i] <= fwd_ex_rt_data[i]; // Store Forwarded Data
+            for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
+                mem_alu_out[j] <= ex_alu_out[j];
+                mem_rs_data[j] <= fwd_ex_rs_data[j]; 
+            mem_rt_data[j] <= fwd_ex_rt_data[j]; 
             end
             mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
             mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we;
-            mem_reg_mux <= ex_reg_mux; mem_ret <= ex_ret;
+            mem_reg_mux <= ex_reg_mux;
+            mem_use_mem_offset <= ex_use_mem_offset;
+            mem_mem_addr_offset <= ex_mem_addr_offset;
         end
     end
-
-    // -------------------------------------------------------------------------
-    // 4. MEMORY (MEM) STAGE
-    // -------------------------------------------------------------------------
-    wire [DATA_BITS-1:0] mem_lsu_out [THREADS_PER_BLOCK-1:0];
     wire [THREADS_PER_BLOCK-1:0] sh_read_valid, sh_read_ready, sh_write_valid, sh_write_ready;
     wire [SHARED_MEM_ADDR_BITS-1:0] sh_read_address [THREADS_PER_BLOCK];
     wire [SHARED_MEM_ADDR_BITS-1:0] sh_write_address [THREADS_PER_BLOCK];
     wire [DATA_MEM_DATA_BITS-1:0] sh_read_data [THREADS_PER_BLOCK];
     wire [DATA_MEM_DATA_BITS-1:0] sh_write_data [THREADS_PER_BLOCK];
-
     shared_mem #( .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(SHARED_MEM_ADDR_BITS), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
     ) shared_mem_instance (
         .clk(clk), .reset(reset),
         .read_valid(sh_read_valid), .read_address(sh_read_address), .read_ready(sh_read_ready), .read_data(sh_read_data),
         .write_valid(sh_write_valid), .write_address(sh_write_address), .write_data(sh_write_data), .write_ready(sh_write_ready)
     );
-
-    // ==================== MEM/WB PIPELINE REGISTER ====================
     always @(posedge clk) begin
         if (reset) begin
             wb_active_mask <= 0;
+            wb_warp_id <= 0;
             wb_reg_we <= 0;
-        end else if (!lsu_any_stall) begin 
-            wb_active_mask <= mem_active_mask;
-            wb_rd <= mem_rd;
-            wb_imm <= mem_imm;
-            for (int i = 0; i < THREADS_PER_BLOCK; i++) begin
-                wb_alu_out[i] <= mem_alu_out[i];
-                wb_lsu_out[i] <= mem_lsu_out[i];
+        end else begin 
+            if (mem_mem_re || mem_mem_we || mem_shared_re || mem_shared_we) begin
+                wb_active_mask <= 0;
+                wb_reg_we <= 0;
+            end else begin
+                wb_active_mask <= mem_active_mask;
+                wb_warp_id <= mem_warp_id;
+                wb_rd <= mem_rd;
+                wb_imm <= mem_imm;
+                for (int j = 0; j < THREADS_PER_BLOCK; j++) wb_alu_out[j] <= mem_alu_out[j];
+                wb_reg_we <= mem_reg_we;
+                wb_reg_mux <= mem_reg_mux;
             end
-            wb_reg_we <= mem_reg_we;
-            wb_reg_mux <= mem_reg_mux;
         end
     end
-
-    // -------------------------------------------------------------------------
-    // 5. WRITE-BACK (WB) STAGE & THREAD INSTANTIATION
-    // -------------------------------------------------------------------------
+    wire is_mem_op = mem_mem_re | mem_mem_we | mem_shared_re | mem_shared_we;
+    wire mem_req_valid = (|mem_active_mask) && is_mem_op;
+    wire [THREADS_PER_BLOCK-1:0] lsu_done_pulse;
+    wire [$clog2(NUM_WARPS)-1:0] lsu_done_warp [THREADS_PER_BLOCK];
+    reg [3:0] mem_pending_count [NUM_WARPS];
+    reg [NUM_WARPS-1:0] warp_mem_ready;
+    integer w, t;
+    reg [3:0] done_sum;
+    always @(posedge clk) begin
+        if (reset) begin
+            for (w = 0; w < NUM_WARPS; w++) mem_pending_count[w] <= 0;
+            warp_mem_ready <= 0;
+        end else begin
+            for (w = 0; w < NUM_WARPS; w++) begin
+                done_sum = 0;
+                for (t = 0; t < THREADS_PER_BLOCK; t++) begin
+                    if (lsu_done_pulse[t] && lsu_done_warp[t] == w) done_sum = done_sum + 1;
+                end
+                if (mem_req_valid && mem_warp_id == w) begin
+                    reg [3:0] active_count;
+                    active_count = 0;
+                    for (int b=0; b<THREADS_PER_BLOCK; b++) if (mem_active_mask[b]) active_count++;
+                    mem_pending_count[w] <= active_count - done_sum;
+                    warp_mem_ready[w] <= 0;
+                end else begin
+                    mem_pending_count[w] <= mem_pending_count[w] - done_sum;
+                    if (mem_pending_count[w] > 0 && (mem_pending_count[w] - done_sum) == 0) begin
+                        warp_mem_ready[w] <= 1;
+                    end else begin
+                        warp_mem_ready[w] <= 0;
+                    end
+                end
+            end
+        end
+    end
     genvar i;
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
-            
-            // --- FORWARDING DATA MULTIPLEXERS ---
+            wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 13) && ex_rs_re && (mem_warp_id == ex_warp_id);
+            wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 13) && ex_rt_re && (mem_warp_id == ex_warp_id);
+            wire fwd_wb_rs_i  = wb_active_mask[i]  && wb_reg_we  && (wb_rd == ex_rs)  && (wb_rd < 13)  && ex_rs_re && !fwd_mem_rs_i && (wb_warp_id == ex_warp_id);
+            wire fwd_wb_rt_i  = wb_active_mask[i]  && wb_reg_we  && (wb_rd == ex_rt)  && (wb_rd < 13)  && ex_rt_re && !fwd_mem_rt_i && (wb_warp_id == ex_warp_id);
             wire [DATA_BITS-1:0] fwd_mem_data_i = (mem_reg_mux == 2'b10) ? mem_imm : mem_alu_out[i];
-            wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux == 2'b10) ? wb_imm :
-                                                  (wb_reg_mux == 2'b01 || wb_reg_mux == 2'b11) ? wb_lsu_out[i] :
-                                                  wb_alu_out[i];
-
-            assign fwd_ex_rs_data[i] = forward_mem_rs ? fwd_mem_data_i :
-                                       forward_wb_rs  ? fwd_wb_data_i  :
-                                       ex_rs_data[i];
-
-            assign fwd_ex_rt_data[i] = forward_mem_rt ? fwd_mem_data_i :
-                                       forward_wb_rt  ? fwd_wb_data_i  :
-                                       ex_rt_data[i];
-
-            // Use forwarded data for ALU and PC logic
+            wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux == 2'b10) ? wb_imm : wb_alu_out[i];
+            assign fwd_ex_rs_data[i] = fwd_mem_rs_i ? fwd_mem_data_i : fwd_wb_rs_i ? fwd_wb_data_i : ex_rs_data[i];
+            assign fwd_ex_rt_data[i] = fwd_mem_rt_i ? fwd_mem_data_i : fwd_wb_rt_i ? fwd_wb_data_i : ex_rt_data[i];
             alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
                 .enable(ex_active_mask[i]),
                 .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
                 .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .alu_out(ex_alu_out[i])
             );
-
-            pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) pc_inst (
+            pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .NUM_WARPS(NUM_WARPS) ) pc_inst (
                 .clk(clk), .reset(reset), .enable(ex_active_mask[i]),
+                .warp_id(ex_warp_id),
                 .decoded_nzp(ex_nzp), .decoded_immediate(ex_imm),
                 .decoded_nzp_write_enable(ex_nzp_we), .decoded_pc_mux(ex_pc_mux),
+                .decoded_call(ex_call), .decoded_ret_fn(ex_ret_fn),
                 .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
             );
-
-            lsu #( .DATA_BITS(DATA_BITS) ) lsu_inst (
-                .clk(clk), .reset(reset), .enable(mem_active_mask[i]),
+            wire lsu_we;
+            wire [$clog2(NUM_WARPS)-1:0] lsu_warp_id;
+            wire [3:0] lsu_rd;
+            wire [DATA_BITS-1:0] lsu_data;
+            lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS) ) lsu_inst (
+                .clk(clk), .reset(reset), .enable(mem_active_mask[i]), .warp_id(mem_warp_id),
                 .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
                 .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
-                .rs(mem_rs_data[i]), .rt(mem_rt_data[i]), 
-                
+                .decoded_rd(mem_rd), .rs(mem_rs_data[i]), .rt(mem_rt_data[i]), 
                 .mem_read_valid(data_mem_read_valid[i]), .mem_read_address(data_mem_read_address[i]),
                 .mem_read_ready(data_mem_read_ready[i]), .mem_read_data(data_mem_read_data[i]),
                 .mem_write_valid(data_mem_write_valid[i]), .mem_write_address(data_mem_write_address[i]),
                 .mem_write_data(data_mem_write_data[i]), .mem_write_ready(data_mem_write_ready[i]),
-                
                 .shared_mem_read_valid(sh_read_valid[i]), .shared_mem_read_address(sh_read_address[i]),
                 .shared_mem_read_ready(sh_read_ready[i]), .shared_mem_read_data(sh_read_data[i]),
                 .shared_mem_write_valid(sh_write_valid[i]), .shared_mem_write_address(sh_write_address[i]),
                 .shared_mem_write_data(sh_write_data[i]), .shared_mem_write_ready(sh_write_ready[i]),
-                
-                .stall(lsu_stall[i]), .lsu_out(mem_lsu_out[i])
+                .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data),
+                .done_pulse(lsu_done_pulse[i]), .done_warp_id(lsu_done_warp[i]),
+                .addr_offset(mem_mem_addr_offset), .use_offset(mem_use_mem_offset)
             );
-            
-            registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .THREAD_ID(i), .DATA_BITS(DATA_BITS) ) reg_inst (
-                .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .block_id(block_id),
+            wire [7:0] physical_thread_id = i; 
+            registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
+                .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .block_id(block_id),
+                .thread_id(physical_thread_id),
                 .decoded_rs_address(id_rs), .decoded_rt_address(id_rt), .rs(id_rs_data[i]), .rt(id_rt_data[i]),
                 .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
-                .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(wb_lsu_out[i])
+                .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(16'h0), 
+                .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data) 
             );
         end
     endgenerate
-
-    // -------------------------------------------------------------------------
-    // 6. SCHEDULER / PIPELINE CONTROLLER
-    // -------------------------------------------------------------------------
     scheduler #(
-        .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
+        .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS)
     ) scheduler_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
-        
-        .frontend_stall(scheduler_stall), // Freezes IF/PC when necessary (including load-use hazards!)
-        .backend_stall(lsu_any_stall),
-        .pipeline_flush(pipeline_flush),
-        
-        .if_pc(if_pc), .sched_active_mask(sched_active_mask),
-        
-        .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc),
-        .ex_ret(ex_ret), .ex_sync(ex_sync), .done(done)
+        .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready),
+        .frontend_stall(frontend_stall), 
+        .flush_warp_mask(flush_warp_mask),
+        .if_pc(if_pc), .sched_active_mask(sched_active_mask), .sched_warp_id(sched_warp_id), .valid_issue(valid_issue),
+        .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id), .ex_active_mask(ex_active_mask),
+        .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync),
+        .done(done)
     );
 
 endmodule

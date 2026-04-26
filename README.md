@@ -268,8 +268,8 @@ mahi-gpu currently assumes that all threads in a single block follow the exact s
 Updates I want to make in the future to improve the design:
 
 - [x] Add basic pipelining
-- [ ] Add hardware data forwarding / bypass paths
+- [x] Add hardware data forwarding / bypass paths
 - [ ] Add a simple cache for instructions
 - [ ] Add basic memory coalescing
-- [ ] Implement SIMT Branch Divergence handling
+- [x] Implement SIMT Branch Divergence handling
 - [ ] Write a basic graphics kernel or add simple graphics hardware
