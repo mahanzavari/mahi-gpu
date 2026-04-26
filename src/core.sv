@@ -87,10 +87,13 @@ module core #(
     wire [2:0] id_alu_arith_mux;
     wire id_alu_out_mux, id_pc_mux, id_ret, id_sync;
     wire id_shared_re, id_shared_we;
+    wire id_use_mem_offset;
+    wire [7:0] id_mem_addr_offset;
     decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
         .instruction(id_instruction),
         .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
-        .decoded_nzp(id_nzp), .decoded_immediate(id_imm),
+        .decoded_nzp(id_nzp), .decoded_immediate(id_imm), .decoded_use_mem_offset(id_use_mem_offset), 
+        .decoded_mem_addr_offset(id_mem_addr_offset),
         .decoded_rs_read_enable(id_rs_re), .decoded_rt_read_enable(id_rt_re),
         .decoded_reg_write_enable(id_reg_we), .decoded_mem_read_enable(id_mem_re),
         .decoded_mem_write_enable(id_mem_we), .decoded_nzp_write_enable(id_nzp_we),
@@ -101,7 +104,7 @@ module core #(
     );
         always @(posedge clk) if (!reset && id_active_mask) $display("[%0t] [PIPE ID->EX] warp=%0d pc=%0d instr=0x%04h act=%b rd=%0d rs=%0d rt=%0d memR=%0b memW=%0b ret=%0b",
         $time, id_warp_id, id_pc, id_instruction, id_active_mask, id_rd, id_rs, id_rt, id_mem_re, id_mem_we, id_ret);
-    
+
     // Internal Array Bounds Unified To Prevent Reversal Side-Effects
     wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK];
     wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK];
@@ -119,6 +122,8 @@ module core #(
     reg [2:0] ex_alu_arith_mux;
     reg ex_alu_out_mux, ex_pc_mux, ex_ret, ex_sync;
     reg ex_shared_re, ex_shared_we;
+    reg ex_use_mem_offset;
+    reg [7:0] ex_mem_addr_offset;
     always @(posedge clk) begin
         if (reset) begin
             ex_active_mask <= 0;
@@ -145,6 +150,8 @@ module core #(
             ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
             ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
             ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
+            ex_use_mem_offset <= id_use_mem_offset;
+            ex_mem_addr_offset <= id_mem_addr_offset;
         end
     end
     wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK];
@@ -159,6 +166,9 @@ module core #(
     reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK]; 
     reg mem_reg_we, mem_mem_re, mem_mem_we, mem_shared_re, mem_shared_we, mem_ret;
     reg [1:0] mem_reg_mux;
+    reg mem_use_mem_offset;
+    reg [7:0] mem_mem_addr_offset;
+
     reg [THREADS_PER_BLOCK-1:0] wb_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] wb_warp_id;
     reg [3:0] wb_rd;
@@ -168,12 +178,14 @@ module core #(
     reg [1:0] wb_reg_mux;
     wire [DATA_BITS-1:0] fwd_ex_rs_data [THREADS_PER_BLOCK];
     wire [DATA_BITS-1:0] fwd_ex_rt_data [THREADS_PER_BLOCK];
+
     always @(posedge clk) begin
         if (reset) begin
             mem_active_mask <= 0;
             mem_warp_id <= 0;
             mem_reg_we <= 0; mem_mem_re <= 0; mem_mem_we <= 0;
             mem_shared_re <= 0; mem_shared_we <= 0; mem_ret <= 0;
+            mem_use_mem_offset  <= 0;
         end else begin 
             mem_active_mask <= ex_active_mask;
             mem_warp_id <= ex_warp_id;
@@ -188,6 +200,8 @@ module core #(
             mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
             mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we;
             mem_reg_mux <= ex_reg_mux; mem_ret <= ex_ret;
+            mem_use_mem_offset <= ex_use_mem_offset;
+            mem_mem_addr_offset <= ex_mem_addr_offset;
         end
     end
     wire [THREADS_PER_BLOCK-1:0] sh_read_valid, sh_read_ready, sh_write_valid, sh_write_ready;
@@ -297,7 +311,8 @@ module core #(
                 .shared_mem_write_valid(sh_write_valid[i]), .shared_mem_write_address(sh_write_address[i]),
                 .shared_mem_write_data(sh_write_data[i]), .shared_mem_write_ready(sh_write_ready[i]),
                 .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data),
-                .done_pulse(lsu_done_pulse[i]), .done_warp_id(lsu_done_warp[i])
+                .done_pulse(lsu_done_pulse[i]), .done_warp_id(lsu_done_warp[i]),
+                .addr_offset(mem_mem_addr_offset), .use_offset(mem_use_mem_offset)
             );
             wire [7:0] physical_thread_id = i; 
             registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (

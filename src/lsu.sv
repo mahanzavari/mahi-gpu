@@ -20,6 +20,10 @@ module lsu #(
     input wire [DATA_BITS-1:0] rs,
     input wire [DATA_BITS-1:0] rt,
 
+    // Immediate‑offset addressing support
+    input wire [7:0] addr_offset,
+    input wire       use_offset,
+
     // External Memory Ports
     output reg mem_read_valid,
     output reg [7:0] mem_read_address,
@@ -63,6 +67,9 @@ module lsu #(
     reg [$clog2(NUM_WARPS)-1:0] active_warp;
     reg [2:0] active_type;
 
+    // Effective memory address: base + optional immediate offset
+    wire [7:0] effective_addr = use_offset ? (rs[7:0] + addr_offset) : rs[7:0];
+
     always @(posedge clk) begin
         if (reset) begin
             lsu_we <= 0; done_pulse <= 0; port_busy <= 0;
@@ -73,11 +80,15 @@ module lsu #(
             lsu_we <= 0; done_pulse <= 0;
 
             // 1. Accept new pipeline request
-            if (enable && (decoded_mem_read_enable || decoded_mem_write_enable || decoded_shared_read_enable || decoded_shared_write_enable)) begin
+            if (enable && (decoded_mem_read_enable || decoded_mem_write_enable ||
+                           decoded_shared_read_enable || decoded_shared_write_enable)) begin
                 $display("[%0t] [LSU ENQ] warp=%0d type=%0d addr=%0d rd=%0d data=%0d enable=%0b",
-    $time, warp_id, (decoded_mem_read_enable?0:decoded_mem_write_enable?1:decoded_shared_read_enable?2:3), rs[7:0], decoded_rd, rt, enable);
+                    $time, warp_id,
+                    (decoded_mem_read_enable ? 0 : decoded_mem_write_enable ? 1 :
+                     decoded_shared_read_enable ? 2 : 3),
+                    effective_addr, decoded_rd, rt, enable);
                 req_valid[warp_id] <= 1;
-                req_addr[warp_id] <= rs[7:0];
+                req_addr[warp_id] <= effective_addr;       // use the computed effective address
                 req_data_val[warp_id] <= rt;
                 req_rd[warp_id] <= decoded_rd;
                 if (decoded_mem_read_enable) req_type[warp_id] <= 3'd0;
@@ -123,13 +134,19 @@ module lsu #(
                     active_warp <= selected_w;
                     active_type <= req_type[selected_w];
                     if (req_type[selected_w] == 3'd0) begin
-                        mem_read_valid <= 1; mem_read_address <= req_addr[selected_w];
+                        mem_read_valid <= 1;
+                        mem_read_address <= req_addr[selected_w];
                     end else if (req_type[selected_w] == 3'd1) begin
-                        mem_write_valid <= 1; mem_write_address <= req_addr[selected_w]; mem_write_data <= req_data_val[selected_w];
+                        mem_write_valid <= 1;
+                        mem_write_address <= req_addr[selected_w];
+                        mem_write_data <= req_data_val[selected_w];
                     end else if (req_type[selected_w] == 3'd2) begin
-                        shared_mem_read_valid <= 1; shared_mem_read_address <= req_addr[selected_w];
+                        shared_mem_read_valid <= 1;
+                        shared_mem_read_address <= req_addr[selected_w];
                     end else begin
-                        shared_mem_write_valid <= 1; shared_mem_write_address <= req_addr[selected_w]; shared_mem_write_data <= req_data_val[selected_w];
+                        shared_mem_write_valid <= 1;
+                        shared_mem_write_address <= req_addr[selected_w];
+                        shared_mem_write_data <= req_data_val[selected_w];
                     end
                 end
             end

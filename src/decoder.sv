@@ -15,6 +15,10 @@ module decoder #(
     output logic [2:0] decoded_nzp,
     output logic [DATA_BITS-1:0] decoded_immediate,
 
+    // imm addresssing
+    output logic decoded_use_mem_offset,
+    output logic [7:0] decoded_mem_addr_offset,
+
     // Hazard & Forwarding Signals
     output logic decoded_rs_read_enable,
     output logic decoded_rt_read_enable,
@@ -35,20 +39,22 @@ module decoder #(
     output logic decoded_shared_read_enable,
     output logic decoded_shared_write_enable
 );
-    localparam NOP   = 4'b0000,
-               BRnzp = 4'b0001,
-               CMP   = 4'b0010,
-               ADD   = 4'b0011,
-               SUB   = 4'b0100,
-               MUL   = 4'b0101,
-               DIV   = 4'b0110,
-               LDR   = 4'b0111,
-               STR   = 4'b1000,
-               CONST = 4'b1001,
-               SYNC  = 4'b1010,
-               LDSH  = 4'b1011,
-               STSH  = 4'b1100,
-               RET   = 4'b1111;
+    localparam NOP     = 4'b0000,
+               BRnzp   = 4'b0001,
+               CMP     = 4'b0010,
+               ADD     = 4'b0011,
+               SUB     = 4'b0100,
+               MUL     = 4'b0101,
+               DIV     = 4'b0110,
+               LDR     = 4'b0111,
+               STR     = 4'b1000,
+               CONST   = 4'b1001,
+               SYNC    = 4'b1010,
+               LDSH    = 4'b1011,
+               STSH    = 4'b1100,
+               LDR_IMM = 4'b1101,
+               STR_IMM = 4'b1110,
+               RET     = 4'b1111;
 
     always_comb begin 
         // 1. Direct Field Extraction
@@ -73,6 +79,9 @@ module decoder #(
         decoded_sync                = 0;
         decoded_shared_read_enable  = 0;
         decoded_shared_write_enable = 0;
+        decoded_use_mem_offset      = 0;
+        decoded_mem_addr_offset     = 0;
+
 
         // 3. Set specific control signals per opcode
         case (instruction[15:12])
@@ -137,6 +146,21 @@ module decoder #(
                 decoded_rs_read_enable = 1;
                 decoded_rt_read_enable = 1;
                 decoded_shared_write_enable = 1;
+            end
+            LDR_IMM: begin
+                decoded_rs_read_enable = 1;
+                decoded_mem_read_enable = 1;
+                decoded_reg_write_enable = 1;
+                decoded_reg_input_mux = 2'b01;
+                decoded_use_mem_offset = 1;
+                decoded_mem_addr_offset = {4'b0, instruction[3:0]}; // imm4 from low bits
+            end
+            STR_IMM: begin
+                decoded_rs_read_enable = 1;              // base
+                decoded_rt_read_enable = 1;              // data
+                decoded_mem_write_enable = 1;
+                decoded_use_mem_offset = 1;
+                decoded_mem_addr_offset = {4'b0, instruction[11:8]}; // imm4 in rd field             
             end
             RET: begin 
                 decoded_ret = 1;
