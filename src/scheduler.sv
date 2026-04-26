@@ -24,8 +24,8 @@ module scheduler #(
     input wire [THREADS_PER_BLOCK-1:0] ex_active_mask,
     input wire [7:0] ex_pc,
     input wire [7:0] ex_next_pc [THREADS_PER_BLOCK],
-    input wire ex_ret,
-    input wire ex_sync,              // <-- NEW: sync barrier signal from pipeline
+    input wire ex_exit,
+    input wire ex_sync,      
     output reg done
 );
 
@@ -136,7 +136,7 @@ module scheduler #(
 
                 for (t = 0; t < THREADS_PER_BLOCK; t++) begin
                     if (ex_active_mask[t]) begin
-                        if (ex_ret) begin
+                        if (ex_exit) begin
                             thread_active[ex_warp_id][t] <= 0;
                             arch_thread_pc[ex_warp_id][t] <= ex_pc;
                             branch_taken = 1;
@@ -152,7 +152,7 @@ module scheduler #(
                     flush_warp_mask[ex_warp_id] <= 1'b1;
                     for (t = 0; t < THREADS_PER_BLOCK; t++) begin
                         if (ex_active_mask[t]) begin
-                            if (!ex_ret)
+                            if (!ex_exit)
                                 spec_thread_pc[ex_warp_id][t] <= ex_next_pc[t];
                         end else begin
                             spec_thread_pc[ex_warp_id][t] <= arch_thread_pc[ex_warp_id][t];
@@ -182,9 +182,9 @@ module scheduler #(
                     logic any_active;
                     any_active = 0;
                     for (t = 0; t < THREADS_PER_BLOCK; t++) begin
-                        logic is_ret;
-                        is_ret = (ex_valid && ex_warp_id == w && ex_active_mask[t] && ex_ret);
-                        if (thread_active[w][t] && !is_ret)
+                        logic is_exit;
+                        is_exit = (ex_valid && ex_warp_id == w && ex_active_mask[t] && ex_exit);
+                        if (thread_active[w][t] && !is_exit)
                             any_active = 1;
                     end
                     if (!any_active) begin

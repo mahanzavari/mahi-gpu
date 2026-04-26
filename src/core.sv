@@ -85,7 +85,7 @@ module core #(
     wire id_rs_re, id_rt_re; 
     wire [1:0] id_reg_mux;
     wire [2:0] id_alu_arith_mux;
-    wire id_alu_out_mux, id_pc_mux, id_ret, id_sync;
+    wire id_alu_out_mux, id_pc_mux, id_call, id_ret_fn, id_exit, id_sync;
     wire id_shared_re, id_shared_we;
     wire id_use_mem_offset;
     wire [7:0] id_mem_addr_offset;
@@ -99,11 +99,12 @@ module core #(
         .decoded_mem_write_enable(id_mem_we), .decoded_nzp_write_enable(id_nzp_we),
         .decoded_reg_input_mux(id_reg_mux), .decoded_alu_arithmetic_mux(id_alu_arith_mux),
         .decoded_alu_output_mux(id_alu_out_mux), .decoded_pc_mux(id_pc_mux),
-        .decoded_ret(id_ret), .decoded_sync(id_sync),
-        .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we)
+        .decoded_sync(id_sync),
+        .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we),
+        .decoded_ret_fn(id_ret_fn), .decoded_exit(id_exit), .decoded_call(id_call)
     );
         always @(posedge clk) if (!reset && id_active_mask) $display("[%0t] [PIPE ID->EX] warp=%0d pc=%0d instr=0x%04h act=%b rd=%0d rs=%0d rt=%0d memR=%0b memW=%0b ret=%0b",
-        $time, id_warp_id, id_pc, id_instruction, id_active_mask, id_rd, id_rs, id_rt, id_mem_re, id_mem_we, id_ret);
+        $time, id_warp_id, id_pc, id_instruction, id_active_mask, id_rd, id_rs, id_rt, id_mem_re, id_mem_we, id_ret_fn);
 
     // Internal Array Bounds Unified To Prevent Reversal Side-Effects
     wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK];
@@ -120,20 +121,22 @@ module core #(
     reg ex_reg_we, ex_mem_re, ex_mem_we, ex_nzp_we;
     reg [1:0] ex_reg_mux;
     reg [2:0] ex_alu_arith_mux;
-    reg ex_alu_out_mux, ex_pc_mux, ex_ret, ex_sync;
+    reg ex_alu_out_mux, ex_pc_mux, ex_sync;
     reg ex_shared_re, ex_shared_we;
     reg ex_use_mem_offset;
     reg [7:0] ex_mem_addr_offset;
+    reg ex_call, ex_ret_fn, ex_exit;
     always @(posedge clk) begin
         if (reset) begin
             ex_active_mask <= 0;
             ex_warp_id <= 0;
             ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
             ex_shared_re <= 0; ex_shared_we <= 0;
-            ex_nzp_we <= 0; ex_ret <= 0; ex_sync <= 0; ex_pc_mux <= 0;
+            ex_nzp_we <= 0; ex_sync <= 0; ex_pc_mux <= 0;
             ex_rs_re <= 0; ex_rt_re <= 0;
+            ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
         end else if (flush_warp_mask[id_warp_id]) begin
-            ex_active_mask <= 0;
+            ex_active_mask <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
         end else begin
             ex_active_mask <= id_active_mask;
             ex_warp_id <= id_warp_id;
@@ -148,12 +151,16 @@ module core #(
             ex_reg_we <= id_reg_we; ex_mem_re <= id_mem_re; ex_mem_we <= id_mem_we;
             ex_nzp_we <= id_nzp_we; ex_reg_mux <= id_reg_mux; 
             ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
-            ex_pc_mux <= id_pc_mux; ex_ret <= id_ret; ex_sync <= id_sync;
+            ex_pc_mux <= id_pc_mux; ex_sync <= id_sync;
             ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
             ex_use_mem_offset <= id_use_mem_offset;
             ex_mem_addr_offset <= id_mem_addr_offset;
+            ex_call <= id_call;
+            ex_ret_fn <= id_ret_fn;
+            ex_exit <= id_exit;
         end
     end
+
     wire [DATA_BITS-1:0] ex_alu_out [THREADS_PER_BLOCK];
     wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK];
     reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
@@ -195,11 +202,11 @@ module core #(
             for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
                 mem_alu_out[j] <= ex_alu_out[j];
                 mem_rs_data[j] <= fwd_ex_rs_data[j]; 
-                mem_rt_data[j] <= fwd_ex_rt_data[j]; 
+            mem_rt_data[j] <= fwd_ex_rt_data[j]; 
             end
             mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
             mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we;
-            mem_reg_mux <= ex_reg_mux; mem_ret <= ex_ret;
+            mem_reg_mux <= ex_reg_mux;
             mem_use_mem_offset <= ex_use_mem_offset;
             mem_mem_addr_offset <= ex_mem_addr_offset;
         end
@@ -291,6 +298,7 @@ module core #(
                 .warp_id(ex_warp_id),
                 .decoded_nzp(ex_nzp), .decoded_immediate(ex_imm),
                 .decoded_nzp_write_enable(ex_nzp_we), .decoded_pc_mux(ex_pc_mux),
+                .decoded_call(ex_call), .decoded_ret_fn(ex_ret_fn),
                 .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
             );
             wire lsu_we;
@@ -334,7 +342,8 @@ module core #(
         .flush_warp_mask(flush_warp_mask),
         .if_pc(if_pc), .sched_active_mask(sched_active_mask), .sched_warp_id(sched_warp_id), .valid_issue(valid_issue),
         .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id), .ex_active_mask(ex_active_mask),
-        .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_ret(ex_ret), .ex_sync(ex_sync),
+        .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync),
         .done(done)
     );
+
 endmodule
