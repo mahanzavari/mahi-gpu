@@ -30,7 +30,7 @@ module alu #(
             alu_out = {DATA_BITS{1'b0}};
         end else if (decoded_alu_output_mux == 1'b1) begin 
             // Set values to compare with NZP register in alu_out[2:0]
-            alu_out = {{DATA_BITS-3{1'b0}}, (rs > rt), (rs == rt), (rs < rt)};
+            alu_out = {{DATA_BITS-3{1'b0}}, (rs < rt), (rs == rt), (rs > rt)};
         end else begin 
             // Execute the specified arithmetic instruction
             case (decoded_alu_arithmetic_mux)

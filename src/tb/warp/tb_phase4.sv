@@ -117,7 +117,7 @@ module tb_phase4;
         // PC 0-2: Split Warps based on ThreadID
         p_mem[0]  = 16'h9108; // CONST R1, 8
         p_mem[1]  = 16'h20F1; // CMP R15, R1   (Is Local ThreadID < 8 ?)
-        p_mem[2]  = 16'h121E; // BRn 30 (0x1E) (Warp 0 jumps to PC 30)
+        p_mem[2]  = 16'h181E; // BRn 30 (0x1E) (Warp 0 jumps to PC 30)
         
         // --- WARP 1 PATH (ThreadIdx 8 to 15) ---
         // Calculate R2 = R15 - 8 (Results in 0, 1, 2, 3, 4, 5, 6, 7)
