@@ -24,15 +24,22 @@ module core #(
     input wire [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data,
     
     // CHANGED bounds to [THREADS_PER_BLOCK] to prevent array index reversals
-    output wire [THREADS_PER_BLOCK-1:0] data_mem_read_valid,
-    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [THREADS_PER_BLOCK],
-    input wire [THREADS_PER_BLOCK-1:0] data_mem_read_ready,
-    input wire [DATA_MEM_DATA_BITS-1:0] data_mem_read_data [THREADS_PER_BLOCK],
-    output wire [THREADS_PER_BLOCK-1:0] data_mem_write_valid,
-    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [THREADS_PER_BLOCK],
-    output wire [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [THREADS_PER_BLOCK],
-    input wire [THREADS_PER_BLOCK-1:0] data_mem_write_ready
+    output wire data_mem_read_valid,
+    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address,
+    input wire data_mem_read_ready,
+    input wire [(DATA_MEM_DATA_BITS*4)-1:0] data_mem_read_data, // WORDS_PER_BLOCK = 4
+    output wire data_mem_write_valid,
+    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address,
+    output wire [(DATA_MEM_DATA_BITS*4)-1:0] data_mem_write_data,
+    output wire [3:0] data_mem_write_strobe,
+    input wire data_mem_write_ready
 );
+
+    wire [THREADS_PER_BLOCK-1:0] lsu_we_array;
+    wire [$clog2(NUM_WARPS)-1:0] lsu_warp_id_array [THREADS_PER_BLOCK];
+    wire [3:0] lsu_rd_array;
+    wire [DATA_BITS-1:0] lsu_data_array [THREADS_PER_BLOCK];
+
     wire if_instruction_valid; 
     wire fetch_stall = !if_instruction_valid;
     wire core_running = start && !done;
@@ -44,6 +51,7 @@ module core #(
     wire frontend_stall = fetch_stall;
     wire fetcher_stall = !core_running; 
     wire [15:0] if_instruction;
+
     fetcher #(
         .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
         .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS)
@@ -277,6 +285,23 @@ module core #(
             end
         end
     end
+    lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4) ) lsu_inst (
+        .clk(clk), .reset(reset), .enable_mask(mem_active_mask), .warp_id(mem_warp_id),
+        .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
+        .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
+        .decoded_rd(mem_rd), .rs(mem_rs_data), .rt(mem_rt_data), 
+        .mem_read_valid(data_mem_read_valid), .mem_read_block_address(data_mem_read_address),
+        .mem_read_ready(data_mem_read_ready), .mem_read_block_data(data_mem_read_data),
+        .mem_write_valid(data_mem_write_valid), .mem_write_block_address(data_mem_write_address),
+        .mem_write_block_data(data_mem_write_data), .mem_write_strobe(data_mem_write_strobe), .mem_write_ready(data_mem_write_ready),
+        .shared_mem_read_valid(sh_read_valid), .shared_mem_read_address(sh_read_address),
+        .shared_mem_read_ready(sh_read_ready), .shared_mem_read_data(sh_read_data),
+        .shared_mem_write_valid(sh_write_valid), .shared_mem_write_address(sh_write_address),
+        .shared_mem_write_data(sh_write_data), .shared_mem_write_ready(sh_write_ready),
+        .lsu_we(lsu_we_array), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array),
+        .done_pulse(lsu_done_pulse), .done_warp_id(lsu_done_warp),
+        .addr_offset(mem_mem_addr_offset), .use_offset(mem_use_mem_offset)
+    );
     genvar i;
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
@@ -301,27 +326,7 @@ module core #(
                 .decoded_call(ex_call), .decoded_ret_fn(ex_ret_fn),
                 .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
             );
-            wire lsu_we;
-            wire [$clog2(NUM_WARPS)-1:0] lsu_warp_id;
-            wire [3:0] lsu_rd;
-            wire [DATA_BITS-1:0] lsu_data;
-            lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS) ) lsu_inst (
-                .clk(clk), .reset(reset), .enable(mem_active_mask[i]), .warp_id(mem_warp_id),
-                .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
-                .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
-                .decoded_rd(mem_rd), .rs(mem_rs_data[i]), .rt(mem_rt_data[i]), 
-                .mem_read_valid(data_mem_read_valid[i]), .mem_read_address(data_mem_read_address[i]),
-                .mem_read_ready(data_mem_read_ready[i]), .mem_read_data(data_mem_read_data[i]),
-                .mem_write_valid(data_mem_write_valid[i]), .mem_write_address(data_mem_write_address[i]),
-                .mem_write_data(data_mem_write_data[i]), .mem_write_ready(data_mem_write_ready[i]),
-                .shared_mem_read_valid(sh_read_valid[i]), .shared_mem_read_address(sh_read_address[i]),
-                .shared_mem_read_ready(sh_read_ready[i]), .shared_mem_read_data(sh_read_data[i]),
-                .shared_mem_write_valid(sh_write_valid[i]), .shared_mem_write_address(sh_write_address[i]),
-                .shared_mem_write_data(sh_write_data[i]), .shared_mem_write_ready(sh_write_ready[i]),
-                .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data),
-                .done_pulse(lsu_done_pulse[i]), .done_warp_id(lsu_done_warp[i]),
-                .addr_offset(mem_mem_addr_offset), .use_offset(mem_use_mem_offset)
-            );
+
             wire [7:0] physical_thread_id = i; 
             registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
                 .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .block_id(block_id),
@@ -329,7 +334,7 @@ module core #(
                 .decoded_rs_address(id_rs), .decoded_rt_address(id_rt), .rs(id_rs_data[i]), .rt(id_rt_data[i]),
                 .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
                 .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(16'h0), 
-                .lsu_we(lsu_we), .lsu_warp_id(lsu_warp_id), .lsu_rd(lsu_rd), .lsu_data(lsu_data) 
+                .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i])
             );
         end
     endgenerate
