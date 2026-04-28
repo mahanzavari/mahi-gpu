@@ -1,15 +1,15 @@
 `default_nettype none
 `timescale 1ns/1ns
 module core #(
-    parameter DATA_MEM_ADDR_BITS = 8,
-    parameter DATA_MEM_DATA_BITS = 16,
-    parameter PROGRAM_MEM_ADDR_BITS = 8,
-    parameter PROGRAM_MEM_DATA_BITS = 16,
+    parameter DATA_MEM_ADDR_BITS = 32,
+    parameter DATA_MEM_DATA_BITS = 32,
+    parameter PROGRAM_MEM_ADDR_BITS = 32,
+    parameter PROGRAM_MEM_DATA_BITS = 32,
     parameter THREADS_PER_BLOCK = 4,
     parameter NUM_WARPS = 4,
     parameter SHARED_MEM_ADDR_BITS      = 8, 
     parameter SHARED_MEM_SIZE           = 256,
-    parameter DATA_BITS = 16,
+    parameter DATA_BITS = 32,
     parameter DEBUG = 1
 ) (
     input wire clk,
@@ -23,7 +23,6 @@ module core #(
     input wire program_mem_read_ready,
     input wire [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data,
     
-    // CHANGED bounds to [THREADS_PER_BLOCK] to prevent array index reversals
     output wire data_mem_read_valid,
     output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address,
     input wire data_mem_read_ready,
@@ -37,7 +36,7 @@ module core #(
 
     wire [THREADS_PER_BLOCK-1:0] lsu_we_array;
     wire [$clog2(NUM_WARPS)-1:0] lsu_warp_id_array [THREADS_PER_BLOCK];
-    wire [3:0] lsu_rd_array;
+    wire [4:0] lsu_rd_array;
     wire [DATA_BITS-1:0] lsu_data_array [THREADS_PER_BLOCK];
 
     wire if_instruction_valid; 
@@ -46,11 +45,11 @@ module core #(
     wire [NUM_WARPS-1:0] flush_warp_mask;
     wire [THREADS_PER_BLOCK-1:0] sched_active_mask;
     wire [$clog2(NUM_WARPS)-1:0] sched_warp_id;
-    wire [7:0] if_pc; 
+    wire [31:0] if_pc; // FIX: 32-bit PC
     wire valid_issue;
     wire frontend_stall = fetch_stall;
     wire fetcher_stall = !core_running; 
-    wire [15:0] if_instruction;
+    wire [31:0] if_instruction;
 
     fetcher #(
         .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
@@ -67,26 +66,26 @@ module core #(
         .instruction_valid(if_instruction_valid),
         .instruction(if_instruction)
     );
-    reg [15:0] id_instruction;
-    reg [7:0]  id_pc;
+    reg [31:0] id_instruction;
+    reg [31:0] id_pc; // FIX: 32-bit PC
     reg [THREADS_PER_BLOCK-1:0] id_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
     always @(posedge clk) begin
         if (reset) begin
-            id_instruction <= 16'h0000;
+            id_instruction <= 0;
             id_pc <= 0;
             id_active_mask <= 0;
             id_warp_id <= 0;
         end else if (flush_warp_mask[sched_warp_id]) begin 
             id_active_mask <= 0;
         end else begin 
-            id_instruction <= if_instruction_valid ? if_instruction : 16'h0000;
+            id_instruction <= if_instruction_valid ? if_instruction : 0;
             id_pc <= if_pc;
             id_warp_id <= sched_warp_id;
             id_active_mask <= if_instruction_valid ? sched_active_mask : 0; 
         end
     end
-    wire [3:0] id_rd, id_rs, id_rt;
+    wire [4:0] id_rd, id_rs, id_rt;
     wire [2:0] id_nzp;
     wire [DATA_BITS-1:0] id_imm;
     wire id_reg_we, id_mem_re, id_mem_we, id_nzp_we;
@@ -96,7 +95,7 @@ module core #(
     wire id_alu_out_mux, id_pc_mux, id_call, id_ret_fn, id_exit, id_sync;
     wire id_shared_re, id_shared_we;
     wire id_use_mem_offset;
-    wire [7:0] id_mem_addr_offset;
+    wire [15:0] id_mem_addr_offset;
     decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
         .instruction(id_instruction),
         .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
@@ -111,16 +110,13 @@ module core #(
         .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we),
         .decoded_ret_fn(id_ret_fn), .decoded_exit(id_exit), .decoded_call(id_call)
     );
-        always @(posedge clk) if (!reset && id_active_mask) $display("[%0t] [PIPE ID->EX] warp=%0d pc=%0d instr=0x%04h act=%b rd=%0d rs=%0d rt=%0d memR=%0b memW=%0b ret=%0b",
-        $time, id_warp_id, id_pc, id_instruction, id_active_mask, id_rd, id_rs, id_rt, id_mem_re, id_mem_we, id_ret_fn);
 
-    // Internal Array Bounds Unified To Prevent Reversal Side-Effects
     wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK];
     wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK];
     reg [THREADS_PER_BLOCK-1:0] ex_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] ex_warp_id;
-    reg [7:0] ex_pc;
-    reg [3:0] ex_rd, ex_rs, ex_rt;
+    reg [31:0] ex_pc; // FIX: 32-bit PC
+    reg [4:0] ex_rd, ex_rs, ex_rt;
     reg ex_rs_re, ex_rt_re;
     reg [2:0] ex_nzp;
     reg [DATA_BITS-1:0] ex_imm;
@@ -132,25 +128,18 @@ module core #(
     reg ex_alu_out_mux, ex_pc_mux, ex_sync;
     reg ex_shared_re, ex_shared_we;
     reg ex_use_mem_offset;
-    reg [7:0] ex_mem_addr_offset;
+    reg [15:0] ex_mem_addr_offset;
     reg ex_call, ex_ret_fn, ex_exit;
     always @(posedge clk) begin
         if (reset) begin
-            ex_active_mask <= 0;
-            ex_warp_id <= 0;
-            ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
-            ex_shared_re <= 0; ex_shared_we <= 0;
-            ex_nzp_we <= 0; ex_sync <= 0; ex_pc_mux <= 0;
-            ex_rs_re <= 0; ex_rt_re <= 0;
-            ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
+            ex_active_mask <= 0; ex_warp_id <= 0; ex_reg_we <= 0; ex_mem_re <= 0; ex_mem_we <= 0;
+            ex_shared_re <= 0; ex_shared_we <= 0; ex_nzp_we <= 0; ex_sync <= 0; ex_pc_mux <= 0;
+            ex_rs_re <= 0; ex_rt_re <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
         end else if (flush_warp_mask[id_warp_id]) begin
             ex_active_mask <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
         end else begin
-            ex_active_mask <= id_active_mask;
-            ex_warp_id <= id_warp_id;
-            ex_pc <= id_pc;
-            ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt;
-            ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
+            ex_active_mask <= id_active_mask; ex_warp_id <= id_warp_id; ex_pc <= id_pc;
+            ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt; ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
             ex_nzp <= id_nzp; ex_imm <= id_imm;
             for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
                 ex_rs_data[j] <= id_rs_data[j];
@@ -161,11 +150,8 @@ module core #(
             ex_alu_arith_mux <= id_alu_arith_mux; ex_alu_out_mux <= id_alu_out_mux;
             ex_pc_mux <= id_pc_mux; ex_sync <= id_sync;
             ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we;
-            ex_use_mem_offset <= id_use_mem_offset;
-            ex_mem_addr_offset <= id_mem_addr_offset;
-            ex_call <= id_call;
-            ex_ret_fn <= id_ret_fn;
-            ex_exit <= id_exit;
+            ex_use_mem_offset <= id_use_mem_offset; ex_mem_addr_offset <= id_mem_addr_offset;
+            ex_call <= id_call; ex_ret_fn <= id_ret_fn; ex_exit <= id_exit;
         end
     end
 
@@ -173,8 +159,8 @@ module core #(
     wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK];
     reg [THREADS_PER_BLOCK-1:0] mem_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] mem_warp_id;
-    reg [7:0] mem_pc; 
-    reg [3:0] mem_rd;
+    reg [31:0] mem_pc; // FIX: 32-bit PC
+    reg [4:0] mem_rd;
     reg [DATA_BITS-1:0] mem_imm;
     reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK];
     reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK];
@@ -182,11 +168,11 @@ module core #(
     reg mem_reg_we, mem_mem_re, mem_mem_we, mem_shared_re, mem_shared_we, mem_ret;
     reg [1:0] mem_reg_mux;
     reg mem_use_mem_offset;
-    reg [7:0] mem_mem_addr_offset;
+    reg [15:0] mem_mem_addr_offset;
 
     reg [THREADS_PER_BLOCK-1:0] wb_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] wb_warp_id;
-    reg [3:0] wb_rd;
+    reg [4:0] wb_rd;
     reg [DATA_BITS-1:0] wb_imm;
     reg [DATA_BITS-1:0] wb_alu_out [THREADS_PER_BLOCK];
     reg wb_reg_we;
@@ -196,57 +182,45 @@ module core #(
 
     always @(posedge clk) begin
         if (reset) begin
-            mem_active_mask <= 0;
-            mem_warp_id <= 0;
-            mem_reg_we <= 0; mem_mem_re <= 0; mem_mem_we <= 0;
-            mem_shared_re <= 0; mem_shared_we <= 0; mem_ret <= 0;
-            mem_use_mem_offset  <= 0;
+            mem_active_mask <= 0; mem_warp_id <= 0; mem_reg_we <= 0; mem_mem_re <= 0; 
+            mem_mem_we <= 0; mem_shared_re <= 0; mem_shared_we <= 0; mem_ret <= 0; mem_use_mem_offset <= 0;
         end else begin 
-            mem_active_mask <= ex_active_mask;
-            mem_warp_id <= ex_warp_id;
-            mem_pc <= ex_pc;
-            mem_rd <= ex_rd;
-            mem_imm <= ex_imm;
+            mem_active_mask <= ex_active_mask; mem_warp_id <= ex_warp_id; mem_pc <= ex_pc;
+            mem_rd <= ex_rd; mem_imm <= ex_imm;
             for (int j = 0; j < THREADS_PER_BLOCK; j++) begin
                 mem_alu_out[j] <= ex_alu_out[j];
                 mem_rs_data[j] <= fwd_ex_rs_data[j]; 
-            mem_rt_data[j] <= fwd_ex_rt_data[j]; 
+                mem_rt_data[j] <= fwd_ex_rt_data[j]; 
             end
             mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
             mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we;
-            mem_reg_mux <= ex_reg_mux;
-            mem_use_mem_offset <= ex_use_mem_offset;
+            mem_reg_mux <= ex_reg_mux; mem_use_mem_offset <= ex_use_mem_offset;
             mem_mem_addr_offset <= ex_mem_addr_offset;
         end
     end
+    
     wire [THREADS_PER_BLOCK-1:0] sh_read_valid, sh_read_ready, sh_write_valid, sh_write_ready;
-    wire [SHARED_MEM_ADDR_BITS-1:0] sh_read_address [THREADS_PER_BLOCK];
-    wire [SHARED_MEM_ADDR_BITS-1:0] sh_write_address [THREADS_PER_BLOCK];
+    wire [31:0] sh_read_address [THREADS_PER_BLOCK]; // FIX: 32-bit Array
+    wire [31:0] sh_write_address [THREADS_PER_BLOCK]; // FIX: 32-bit Array
     wire [DATA_MEM_DATA_BITS-1:0] sh_read_data [THREADS_PER_BLOCK];
     wire [DATA_MEM_DATA_BITS-1:0] sh_write_data [THREADS_PER_BLOCK];
-    shared_mem #( .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(SHARED_MEM_ADDR_BITS), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
-    ) shared_mem_instance (
+    
+    shared_mem #( .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(32), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK) ) shared_mem_instance (
         .clk(clk), .reset(reset),
         .read_valid(sh_read_valid), .read_address(sh_read_address), .read_ready(sh_read_ready), .read_data(sh_read_data),
         .write_valid(sh_write_valid), .write_address(sh_write_address), .write_data(sh_write_data), .write_ready(sh_write_ready)
     );
+
     always @(posedge clk) begin
         if (reset) begin
-            wb_active_mask <= 0;
-            wb_warp_id <= 0;
-            wb_reg_we <= 0;
+            wb_active_mask <= 0; wb_warp_id <= 0; wb_reg_we <= 0;
         end else begin 
             if (mem_mem_re || mem_mem_we || mem_shared_re || mem_shared_we) begin
-                wb_active_mask <= 0;
-                wb_reg_we <= 0;
+                wb_active_mask <= 0; wb_reg_we <= 0;
             end else begin
-                wb_active_mask <= mem_active_mask;
-                wb_warp_id <= mem_warp_id;
-                wb_rd <= mem_rd;
-                wb_imm <= mem_imm;
+                wb_active_mask <= mem_active_mask; wb_warp_id <= mem_warp_id;
+                wb_rd <= mem_rd; wb_imm <= mem_imm; wb_reg_we <= mem_reg_we; wb_reg_mux <= mem_reg_mux;
                 for (int j = 0; j < THREADS_PER_BLOCK; j++) wb_alu_out[j] <= mem_alu_out[j];
-                wb_reg_we <= mem_reg_we;
-                wb_reg_mux <= mem_reg_mux;
             end
         end
     end
@@ -256,8 +230,7 @@ module core #(
     wire [$clog2(NUM_WARPS)-1:0] lsu_done_warp [THREADS_PER_BLOCK];
     reg [3:0] mem_pending_count [NUM_WARPS];
     reg [NUM_WARPS-1:0] warp_mem_ready;
-    integer w, t;
-    reg [3:0] done_sum;
+    integer w, t; reg [3:0] done_sum;
     always @(posedge clk) begin
         if (reset) begin
             for (w = 0; w < NUM_WARPS; w++) mem_pending_count[w] <= 0;
@@ -265,26 +238,22 @@ module core #(
         end else begin
             for (w = 0; w < NUM_WARPS; w++) begin
                 done_sum = 0;
-                for (t = 0; t < THREADS_PER_BLOCK; t++) begin
-                    if (lsu_done_pulse[t] && lsu_done_warp[t] == w) done_sum = done_sum + 1;
-                end
+                for (t = 0; t < THREADS_PER_BLOCK; t++) if (lsu_done_pulse[t] && lsu_done_warp[t] == w) done_sum = done_sum + 1;
+                
                 if (mem_req_valid && mem_warp_id == w) begin
-                    reg [3:0] active_count;
-                    active_count = 0;
+                    reg [3:0] active_count; active_count = 0;
                     for (int b=0; b<THREADS_PER_BLOCK; b++) if (mem_active_mask[b]) active_count++;
                     mem_pending_count[w] <= active_count - done_sum;
                     warp_mem_ready[w] <= 0;
                 end else begin
                     mem_pending_count[w] <= mem_pending_count[w] - done_sum;
-                    if (mem_pending_count[w] > 0 && (mem_pending_count[w] - done_sum) == 0) begin
-                        warp_mem_ready[w] <= 1;
-                    end else begin
-                        warp_mem_ready[w] <= 0;
-                    end
+                    if (mem_pending_count[w] > 0 && (mem_pending_count[w] - done_sum) == 0) warp_mem_ready[w] <= 1;
+                    else warp_mem_ready[w] <= 0;
                 end
             end
         end
     end
+
     lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4) ) lsu_inst (
         .clk(clk), .reset(reset), .enable_mask(mem_active_mask), .warp_id(mem_warp_id),
         .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
@@ -300,15 +269,16 @@ module core #(
         .shared_mem_write_data(sh_write_data), .shared_mem_write_ready(sh_write_ready),
         .lsu_we(lsu_we_array), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array),
         .done_pulse(lsu_done_pulse), .done_warp_id(lsu_done_warp),
-        .addr_offset(mem_mem_addr_offset), .use_offset(mem_use_mem_offset)
+        .addr_offset(mem_mem_addr_offset), .use_offset(mem_use_mem_offset) // FIX: Passes 16-bits
     );
+
     genvar i;
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
-            wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 13) && ex_rs_re && (mem_warp_id == ex_warp_id);
-            wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 13) && ex_rt_re && (mem_warp_id == ex_warp_id);
-            wire fwd_wb_rs_i  = wb_active_mask[i]  && wb_reg_we  && (wb_rd == ex_rs)  && (wb_rd < 13)  && ex_rs_re && !fwd_mem_rs_i && (wb_warp_id == ex_warp_id);
-            wire fwd_wb_rt_i  = wb_active_mask[i]  && wb_reg_we  && (wb_rd == ex_rt)  && (wb_rd < 13)  && ex_rt_re && !fwd_mem_rt_i && (wb_warp_id == ex_warp_id);
+            wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 29) && ex_rs_re && (mem_warp_id == ex_warp_id);
+            wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 29) && ex_rt_re && (mem_warp_id == ex_warp_id);
+            wire fwd_wb_rs_i  = wb_active_mask[i]  && wb_reg_we  && (wb_rd == ex_rs)  && (wb_rd < 29)  && ex_rs_re && !fwd_mem_rs_i && (wb_warp_id == ex_warp_id);
+            wire fwd_wb_rt_i  = wb_active_mask[i]  && wb_reg_we  && (wb_rd == ex_rt)  && (wb_rd < 29)  && ex_rt_re && !fwd_mem_rt_i && (wb_warp_id == ex_warp_id);
             wire [DATA_BITS-1:0] fwd_mem_data_i = (mem_reg_mux == 2'b10) ? mem_imm : mem_alu_out[i];
             wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux == 2'b10) ? wb_imm : wb_alu_out[i];
             assign fwd_ex_rs_data[i] = fwd_mem_rs_i ? fwd_mem_data_i : fwd_wb_rs_i ? fwd_wb_data_i : ex_rs_data[i];
@@ -326,29 +296,24 @@ module core #(
                 .decoded_call(ex_call), .decoded_ret_fn(ex_ret_fn),
                 .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
             );
-
             wire [7:0] physical_thread_id = i; 
             registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
                 .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .block_id(block_id),
                 .thread_id(physical_thread_id),
                 .decoded_rs_address(id_rs), .decoded_rt_address(id_rt), .rs(id_rs_data[i]), .rt(id_rt_data[i]),
                 .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
-                .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(16'h0), 
+                .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(0), 
                 .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i])
             );
         end
     endgenerate
-    scheduler #(
-        .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS)
-    ) scheduler_instance (
+
+    scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS) ) scheduler_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
         .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready),
-        .frontend_stall(frontend_stall), 
-        .flush_warp_mask(flush_warp_mask),
+        .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask),
         .if_pc(if_pc), .sched_active_mask(sched_active_mask), .sched_warp_id(sched_warp_id), .valid_issue(valid_issue),
         .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id), .ex_active_mask(ex_active_mask),
-        .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync),
-        .done(done)
+        .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), .done(done)
     );
-
 endmodule
