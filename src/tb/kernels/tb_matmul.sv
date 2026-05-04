@@ -23,7 +23,7 @@ module tb_matmul;
     wire [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_valid;
     wire [PROGRAM_MEM_ADDR_BITS-1:0] program_mem_read_address [PROGRAM_MEM_NUM_CHANNELS];
     reg [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_ready;
-    reg [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data [PROGRAM_MEM_NUM_CHANNELS];
+    reg [(PROGRAM_MEM_DATA_BITS*4)-1:0] program_mem_read_data [PROGRAM_MEM_NUM_CHANNELS];
 
     wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_read_valid;
     wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [DATA_MEM_NUM_CHANNELS];
@@ -78,7 +78,16 @@ module tb_matmul;
     always @(posedge clk) begin
         for (int i = 0; i < PROGRAM_MEM_NUM_CHANNELS; i++) begin
             program_mem_read_ready[i] <= program_mem_read_valid[i];
-            if (program_mem_read_valid[i]) program_mem_read_data[i] <= p_mem[program_mem_read_address[i]];
+            if (program_mem_read_valid[i]) begin
+                // Block address ? word base address
+                int word_base = program_mem_read_address[i] * 4;
+                program_mem_read_data[i] <= {
+                    p_mem[word_base + 3],
+                    p_mem[word_base + 2],
+                    p_mem[word_base + 1],
+                    p_mem[word_base]
+                };
+            end
         end
         
         for (int i = 0; i < DATA_MEM_NUM_CHANNELS; i++) begin

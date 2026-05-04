@@ -3,10 +3,10 @@
 
 module gpu #(
     parameter DATA_MEM_ADDR_BITS = 8,
-    parameter DATA_MEM_DATA_BITS = 16,
+    parameter DATA_MEM_DATA_BITS = 32,
     parameter DATA_MEM_NUM_CHANNELS = 4,
     parameter PROGRAM_MEM_ADDR_BITS = 8,
-    parameter PROGRAM_MEM_DATA_BITS = 16,
+    parameter PROGRAM_MEM_DATA_BITS = 32,
     parameter PROGRAM_MEM_NUM_CHANNELS = 1,
     parameter NUM_CORES = 2,
     parameter THREADS_PER_BLOCK = 4,
@@ -21,47 +21,68 @@ module gpu #(
     input wire device_control_write_enable,
     input wire [7:0] device_control_data,
 
+    // Program memory interface (now 128‑bit blocks, 4 x 32‑bit instructions)
     output wire [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_valid,
-    output wire [PROGRAM_MEM_ADDR_BITS-1:0] program_mem_read_address [PROGRAM_MEM_NUM_CHANNELS],
-    input wire [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_ready,
-    input wire [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data [PROGRAM_MEM_NUM_CHANNELS],
+    output wire [PROGRAM_MEM_ADDR_BITS-1:0]    program_mem_read_address [PROGRAM_MEM_NUM_CHANNELS],
+    input  wire [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_ready,
+    input  wire [(PROGRAM_MEM_DATA_BITS*4)-1:0] program_mem_read_data [PROGRAM_MEM_NUM_CHANNELS],
 
+    // Data memory interface (unchanged, 128‑bit blocks)
     output wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_read_valid,
-    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [DATA_MEM_NUM_CHANNELS],
-    input wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_read_ready,
-    input wire [(DATA_MEM_DATA_BITS*4)-1:0] data_mem_read_data [DATA_MEM_NUM_CHANNELS],
+    output wire [DATA_MEM_ADDR_BITS-1:0]    data_mem_read_address [DATA_MEM_NUM_CHANNELS],
+    input  wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_read_ready,
+    input  wire [(DATA_MEM_DATA_BITS*4)-1:0] data_mem_read_data [DATA_MEM_NUM_CHANNELS],
     output wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_write_valid,
-    output wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [DATA_MEM_NUM_CHANNELS],
+    output wire [DATA_MEM_ADDR_BITS-1:0]    data_mem_write_address [DATA_MEM_NUM_CHANNELS],
     output wire [(DATA_MEM_DATA_BITS*4)-1:0] data_mem_write_data [DATA_MEM_NUM_CHANNELS],
-    output wire [3:0] data_mem_write_strobe [DATA_MEM_NUM_CHANNELS],
-    input wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_write_ready
+    output wire [3:0]                       data_mem_write_strobe [DATA_MEM_NUM_CHANNELS],
+    input  wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_write_ready
 );
+
     wire [7:0] thread_count;
 
-    // FIX: Using wires for outputs of the dispatch module
-    wire [NUM_CORES-1:0] core_start;
-    wire [NUM_CORES-1:0] core_reset;
-    wire [NUM_CORES-1:0] core_done;
+    // Dispatch outputs
+    wire [NUM_CORES-1:0] core_start, core_reset, core_done;
     wire [7:0] core_block_id [NUM_CORES-1:0];
     wire [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES-1:0];
 
-    localparam NUM_LSUS = NUM_CORES;
-    wire [NUM_LSUS-1:0] lsu_read_valid;
-    wire [DATA_MEM_ADDR_BITS-1:0] lsu_read_address [NUM_LSUS];
-    wire [NUM_LSUS-1:0] lsu_read_ready;
-    wire [(DATA_MEM_DATA_BITS*4)-1:0] lsu_read_data [NUM_LSUS];
-    wire [NUM_LSUS-1:0] lsu_write_valid;
-    wire [DATA_MEM_ADDR_BITS-1:0] lsu_write_address [NUM_LSUS];
-    wire [(DATA_MEM_DATA_BITS*4)-1:0] lsu_write_data [NUM_LSUS];
-    wire [3:0] lsu_write_strobe [NUM_LSUS];
-    wire [NUM_LSUS-1:0] lsu_write_ready;
-
+    // ------------------------------------------------------------------------
+    // Wires between cores and caches (native widths)
     localparam NUM_FETCHERS = NUM_CORES;
-    wire [NUM_FETCHERS-1:0] fetcher_read_valid;
-    wire [PROGRAM_MEM_ADDR_BITS-1:0] fetcher_read_address [NUM_FETCHERS];
-    wire [NUM_FETCHERS-1:0] fetcher_read_ready;
-    wire [PROGRAM_MEM_DATA_BITS-1:0] fetcher_read_data [NUM_FETCHERS];
-    
+    wire [NUM_FETCHERS-1:0]                 core_pmem_read_valid;
+    wire [PROGRAM_MEM_ADDR_BITS-1:0]        core_pmem_read_addr [NUM_FETCHERS];
+    wire [NUM_FETCHERS-1:0]                 core_pmem_read_ready;
+    wire [PROGRAM_MEM_DATA_BITS-1:0]        core_pmem_read_data [NUM_FETCHERS];
+
+    localparam NUM_LSUS = NUM_CORES;
+    wire [NUM_LSUS-1:0]                 core_dmem_read_valid;
+    wire [DATA_MEM_ADDR_BITS-1:0]       core_dmem_read_addr [NUM_LSUS];
+    wire [NUM_LSUS-1:0]                 core_dmem_read_ready;
+    wire [(DATA_MEM_DATA_BITS*4)-1:0]   core_dmem_read_data [NUM_LSUS];
+    wire [NUM_LSUS-1:0]                 core_dmem_write_valid;
+    wire [DATA_MEM_ADDR_BITS-1:0]       core_dmem_write_addr [NUM_LSUS];
+    wire [(DATA_MEM_DATA_BITS*4)-1:0]   core_dmem_write_data [NUM_LSUS];
+    wire [3:0]                          core_dmem_write_strobe [NUM_LSUS];
+    wire [NUM_LSUS-1:0]                 core_dmem_write_ready;
+
+    // Wires between caches and memory controllers (cache‑line widths)
+    wire [NUM_CORES-1:0]                 icache_mem_read_valid;
+    wire [PROGRAM_MEM_ADDR_BITS-1:0]     icache_mem_read_addr [NUM_CORES];
+    wire [NUM_CORES-1:0]                 icache_mem_read_ready;
+    wire [(PROGRAM_MEM_DATA_BITS*4)-1:0] icache_mem_read_data [NUM_CORES];  // 128‑bit
+
+    wire [NUM_CORES-1:0]                 dcache_mem_read_valid;
+    wire [DATA_MEM_ADDR_BITS-1:0]        dcache_mem_read_addr [NUM_CORES];
+    wire [NUM_CORES-1:0]                 dcache_mem_read_ready;
+    wire [(DATA_MEM_DATA_BITS*4)-1:0]    dcache_mem_read_data [NUM_CORES];
+    wire [NUM_CORES-1:0]                 dcache_mem_write_valid;
+    wire [DATA_MEM_ADDR_BITS-1:0]        dcache_mem_write_addr [NUM_CORES];
+    wire [(DATA_MEM_DATA_BITS*4)-1:0]    dcache_mem_write_data [NUM_CORES];
+    wire [3:0]                           dcache_mem_write_strobe [NUM_CORES];
+    wire [NUM_CORES-1:0]                 dcache_mem_write_ready;
+
+    // ------------------------------------------------------------------------
+    // DCR instance
     dcr dcr_instance (
         .clk(clk), .reset(reset),
         .device_control_write_enable(device_control_write_enable),
@@ -69,33 +90,58 @@ module gpu #(
         .thread_count(thread_count)
     );
 
+    // ------------------------------------------------------------------------
+    // Data memory controller (uses dcache_mem_* wires)
     controller #(
         .ADDR_BITS(DATA_MEM_ADDR_BITS), .DATA_BITS(DATA_MEM_DATA_BITS),
         .BLOCK_DATA_BITS(DATA_MEM_DATA_BITS*4),
         .NUM_CONSUMERS(NUM_LSUS), .NUM_CHANNELS(DATA_MEM_NUM_CHANNELS)
     ) data_memory_controller (
         .clk(clk), .reset(reset),
-        .consumer_read_valid(lsu_read_valid), .consumer_read_address(lsu_read_address),
-        .consumer_read_ready(lsu_read_ready), .consumer_read_data(lsu_read_data),
-        .consumer_write_valid(lsu_write_valid), .consumer_write_address(lsu_write_address),
-        .consumer_write_data(lsu_write_data), .consumer_write_strobe(lsu_write_strobe), .consumer_write_ready(lsu_write_ready),
-        .mem_read_valid(data_mem_read_valid), .mem_read_address(data_mem_read_address),
-        .mem_read_ready(data_mem_read_ready), .mem_read_data(data_mem_read_data),
-        .mem_write_valid(data_mem_write_valid), .mem_write_address(data_mem_write_address),
-        .mem_write_data(data_mem_write_data), .mem_write_strobe(data_mem_write_strobe), .mem_write_ready(data_mem_write_ready)
+        .consumer_read_valid(dcache_mem_read_valid),
+        .consumer_read_address(dcache_mem_read_addr),
+        .consumer_read_ready(dcache_mem_read_ready),
+        .consumer_read_data(dcache_mem_read_data),
+        .consumer_write_valid(dcache_mem_write_valid),
+        .consumer_write_address(dcache_mem_write_addr),
+        .consumer_write_data(dcache_mem_write_data),
+        .consumer_write_strobe(dcache_mem_write_strobe),
+        .consumer_write_ready(dcache_mem_write_ready),
+        .mem_read_valid(data_mem_read_valid),
+        .mem_read_address(data_mem_read_address),
+        .mem_read_ready(data_mem_read_ready),
+        .mem_read_data(data_mem_read_data),
+        .mem_write_valid(data_mem_write_valid),
+        .mem_write_address(data_mem_write_address),
+        .mem_write_data(data_mem_write_data),
+        .mem_write_strobe(data_mem_write_strobe),
+        .mem_write_ready(data_mem_write_ready)
     );
 
+    // ------------------------------------------------------------------------
+    // Program memory controller (uses icache_mem_* wires, 128‑bit blocks)
     controller #(
-        .ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .DATA_BITS(PROGRAM_MEM_DATA_BITS), .BLOCK_DATA_BITS(PROGRAM_MEM_DATA_BITS),
-        .NUM_CONSUMERS(NUM_FETCHERS), .NUM_CHANNELS(PROGRAM_MEM_NUM_CHANNELS), .WRITE_ENABLE(0)
+        .ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+        .DATA_BITS(PROGRAM_MEM_DATA_BITS),
+        .BLOCK_DATA_BITS(PROGRAM_MEM_DATA_BITS * 4),   // 128 bits = 4 instructions
+        .NUM_CONSUMERS(NUM_FETCHERS),
+        .NUM_CHANNELS(PROGRAM_MEM_NUM_CHANNELS),
+        .WRITE_ENABLE(0)
     ) program_memory_controller (
         .clk(clk), .reset(reset),
-        .consumer_read_valid(fetcher_read_valid), .consumer_read_address(fetcher_read_address),
-        .consumer_read_ready(fetcher_read_ready), .consumer_read_data(fetcher_read_data),
-        .mem_read_valid(program_mem_read_valid), .mem_read_address(program_mem_read_address),
-        .mem_read_ready(program_mem_read_ready), .mem_read_data(program_mem_read_data)
+        .consumer_read_valid(icache_mem_read_valid),
+        .consumer_read_address(icache_mem_read_addr),
+        .consumer_read_ready(icache_mem_read_ready),
+        .consumer_read_data(icache_mem_read_data),
+        // write ports are not connected (WRITE_ENABLE=0)
+        .mem_read_valid(program_mem_read_valid),
+        .mem_read_address(program_mem_read_address),
+        .mem_read_ready(program_mem_read_ready),
+        .mem_read_data(program_mem_read_data)
     );
 
+    // ------------------------------------------------------------------------
+    // Dispatch unit
     dispatch #(
         .NUM_CORES(NUM_CORES), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS)
     ) dispatch_instance (
@@ -104,62 +150,90 @@ module gpu #(
         .core_block_id(core_block_id), .core_thread_count(core_thread_count), .done(done)
     );
 
-    always @(posedge clk) begin
-        if (start && !reset) begin
-            $display("[%0t] [GPU] Top-level Start. DCR Thread Count=%0d", $time, thread_count);
-        end
-    end
-
+    // ------------------------------------------------------------------------
+    // Per‑core generation with caches
     genvar i;
     generate
-        for (i = 0; i < NUM_CORES; i = i + 1) begin : cores
-            
+        for (i = 0; i < NUM_CORES; i = i + 1) begin : core_block
 
-            // genvar j;
-            // for (j = 0; j < THREADS_PER_BLOCK; j = j + 1) begin
-            //     localparam lsu_index = i * THREADS_PER_BLOCK + j;
-                
-            //     assign lsu_read_address[lsu_index] = core_lsu_read_address[j];
-            //     assign lsu_write_address[lsu_index] = core_lsu_write_address[j];
-            //     assign lsu_write_data[lsu_index] = core_lsu_write_data[j];
-            //     assign core_lsu_read_data[j] = lsu_read_data[lsu_index];
-                
-            //     assign lsu_read_valid[lsu_index] = core_lsu_read_valid[j];
-            //     assign core_lsu_read_ready[j] = lsu_read_ready[lsu_index];
-                
-            //     assign lsu_write_valid[lsu_index] = core_lsu_write_valid[j];
-            //     assign core_lsu_write_ready[j] = lsu_write_ready[lsu_index];
-            // end
-
+            // ----- Core itself (connects to caches) -----
             core #(
-                .DATA_MEM_ADDR_BITS(DATA_MEM_ADDR_BITS), .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
-                .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS),
-                .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS)
-            ) core_instance (
+                .DATA_MEM_ADDR_BITS(DATA_MEM_ADDR_BITS),
+                .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
+                .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+                .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS),
+                .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+                .NUM_WARPS(NUM_WARPS)
+            ) core_inst (
                 .clk(clk), .reset(core_reset[i]), .start(core_start[i]), .done(core_done[i]),
                 .block_id(core_block_id[i]), .thread_count(core_thread_count[i]),
-                
-                .program_mem_read_valid(fetcher_read_valid[i]),
-                .program_mem_read_address(fetcher_read_address[i]),
-                .program_mem_read_ready(fetcher_read_ready[i]),
-                .program_mem_read_data(fetcher_read_data[i]),
 
-                .data_mem_read_valid(lsu_read_valid[i]),
-                .data_mem_read_address(lsu_read_address[i]),
-                .data_mem_read_ready(lsu_read_ready[i]),
-                .data_mem_read_data(lsu_read_data[i]),
-                .data_mem_write_valid(lsu_write_valid[i]),
-                .data_mem_write_address(lsu_write_address[i]),
-                .data_mem_write_data(lsu_write_data[i]),
-                .data_mem_write_strobe(lsu_write_strobe[i]),
-                .data_mem_write_ready(lsu_write_ready[i])
+                .program_mem_read_valid(core_pmem_read_valid[i]),
+                .program_mem_read_address(core_pmem_read_addr[i]),
+                .program_mem_read_ready(core_pmem_read_ready[i]),
+                .program_mem_read_data(core_pmem_read_data[i]),
+
+                .data_mem_read_valid(core_dmem_read_valid[i]),
+                .data_mem_read_address(core_dmem_read_addr[i]),
+                .data_mem_read_ready(core_dmem_read_ready[i]),
+                .data_mem_read_data(core_dmem_read_data[i]),
+                .data_mem_write_valid(core_dmem_write_valid[i]),
+                .data_mem_write_address(core_dmem_write_addr[i]),
+                .data_mem_write_data(core_dmem_write_data[i]),
+                .data_mem_write_strobe(core_dmem_write_strobe[i]),
+                .data_mem_write_ready(core_dmem_write_ready[i])
             );
-            
-            always @(posedge clk) begin
-                if (!reset && core_start[i]) begin
-                    $display("[%0t] [GPU] Wiring core_start[%0d]=1 | block_id=%0d | thread_count_wire=%0d", $time, i, core_block_id[i], core_thread_count[i]);
-                end
-            end
+
+            // ----- Instruction Cache -----
+            icache #(
+                .ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+                .DATA_BITS(PROGRAM_MEM_DATA_BITS),
+                .BLOCK_BITS(PROGRAM_MEM_DATA_BITS * 4),   // 128‑bit line
+                .CACHE_LINES(16)
+            ) icache_inst (
+                .clk(clk), .reset(reset),
+                // core side (native instruction width)
+                .core_read_valid(core_pmem_read_valid[i]),
+                .core_read_addr(core_pmem_read_addr[i]),
+                .core_read_ready(core_pmem_read_ready[i]),
+                .core_read_data(core_pmem_read_data[i]),
+                // memory side (128‑bit blocks → program memory controller)
+                .mem_read_valid(icache_mem_read_valid[i]),
+                .mem_read_block_addr(icache_mem_read_addr[i]),
+                .mem_read_ready(icache_mem_read_ready[i]),
+                .mem_read_block_data(icache_mem_read_data[i])
+            );
+
+            // ----- Data Cache -----
+            dcache #(
+                .ADDR_BITS(DATA_MEM_ADDR_BITS),
+                .BLOCK_BITS(DATA_MEM_DATA_BITS * 4),    // 128‑bit block
+                .CACHE_LINES(16)
+            ) dcache_inst (
+                .clk(clk), .reset(reset),
+                // core side (connected to LSU)
+                .core_read_valid(core_dmem_read_valid[i]),
+                .core_read_block_addr(core_dmem_read_addr[i]),
+                .core_read_ready(core_dmem_read_ready[i]),
+                .core_read_block_data(core_dmem_read_data[i]),
+                .core_write_valid(core_dmem_write_valid[i]),
+                .core_write_block_addr(core_dmem_write_addr[i]),
+                .core_write_block_data(core_dmem_write_data[i]),
+                .core_write_strobe(core_dmem_write_strobe[i]),
+                .core_write_ready(core_dmem_write_ready[i]),
+                // memory side (128‑bit → data memory controller)
+                .mem_read_valid(dcache_mem_read_valid[i]),
+                .mem_read_block_addr(dcache_mem_read_addr[i]),
+                .mem_read_ready(dcache_mem_read_ready[i]),
+                .mem_read_block_data(dcache_mem_read_data[i]),
+                .mem_write_valid(dcache_mem_write_valid[i]),
+                .mem_write_block_addr(dcache_mem_write_addr[i]),
+                .mem_write_block_data(dcache_mem_write_data[i]),
+                .mem_write_strobe(dcache_mem_write_strobe[i]),
+                .mem_write_ready(dcache_mem_write_ready[i])
+            );
+
         end
     endgenerate
+
 endmodule

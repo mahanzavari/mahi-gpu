@@ -172,6 +172,7 @@ module lsu #(
                         current_block_addr <= active_block_addr[first_pending];
                         mem_write_block_address <= active_block_addr[first_pending];
                         mem_write_strobe <= 0;
+                        mem_write_block_data <= 0;                          // ← clear all words
                         for (t = 0; t < THREADS_PER_BLOCK; t++) begin
                             if (pending_threads[t] && active_block_addr[t] == active_block_addr[first_pending]) begin
                                 mem_write_block_data[(active_word_offset[t] * DATA_BITS) +: DATA_BITS] <= req_data_val[active_warp][t];

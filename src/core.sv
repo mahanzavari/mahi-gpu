@@ -70,18 +70,30 @@ module core #(
     reg [31:0] id_pc; // FIX: 32-bit PC
     reg [THREADS_PER_BLOCK-1:0] id_active_mask;
     reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
+    reg [$clog2(NUM_WARPS)-1:0] issued_warp_id;
+
     always @(posedge clk) begin
         if (reset) begin
             id_instruction <= 0;
             id_pc <= 0;
             id_active_mask <= 0;
             id_warp_id <= 0;
+            issued_warp_id <= 0;
         end else if (flush_warp_mask[sched_warp_id]) begin 
             id_active_mask <= 0;
         end else begin 
+        if (valid_issue)
+            issued_warp_id <= sched_warp_id;
+
+        // When the fetched instruction becomes valid, latch its warp ID
+        if (if_instruction_valid)
+            id_warp_id <= issued_warp_id;   // correct warp for this instruction
+        else
+            id_warp_id <= id_warp_id;       // hold previous value (optional, but safe)            
+
             id_instruction <= if_instruction_valid ? if_instruction : 0;
             id_pc <= if_pc;
-            id_warp_id <= sched_warp_id;
+            id_warp_id <= if_instruction_valid ? issued_warp_id : id_warp_id; // same as above, simplified  
             id_active_mask <= if_instruction_valid ? sched_active_mask : 0; 
         end
     end
@@ -225,34 +237,73 @@ module core #(
         end
     end
     wire is_mem_op = mem_mem_re | mem_mem_we | mem_shared_re | mem_shared_we;
-    wire mem_req_valid = (|mem_active_mask) && is_mem_op;
+
+    // Memory completion tracking – added for correct handshaking
+    reg [NUM_WARPS-1:0] mem_in_progress;
+    reg [3:0]           mem_pending_cnt [NUM_WARPS];
+
+    // mem_req_valid goes high only when a warp starts a new memory operation.
+wire mem_req_valid = (|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id];
     wire [THREADS_PER_BLOCK-1:0] lsu_done_pulse;
     wire [$clog2(NUM_WARPS)-1:0] lsu_done_warp [THREADS_PER_BLOCK];
-    reg [3:0] mem_pending_count [NUM_WARPS];
-    reg [NUM_WARPS-1:0] warp_mem_ready;
-    integer w, t; reg [3:0] done_sum;
-    always @(posedge clk) begin
-        if (reset) begin
-            for (w = 0; w < NUM_WARPS; w++) mem_pending_count[w] <= 0;
-            warp_mem_ready <= 0;
-        end else begin
-            for (w = 0; w < NUM_WARPS; w++) begin
-                done_sum = 0;
-                for (t = 0; t < THREADS_PER_BLOCK; t++) if (lsu_done_pulse[t] && lsu_done_warp[t] == w) done_sum = done_sum + 1;
+    // --------------------------------------------------------------------
+    // Correct memory completion tracking
+// --------------------------------------------------------------------
+// Correct memory completion tracking
+reg [NUM_WARPS-1:0] warp_mem_ready;   // pulsed when a warp’s memory operation finishes
+integer w, t;
+integer cnt;
+
+always @(posedge clk) begin
+    if (reset) begin
+        mem_in_progress <= 0;
+        for (w = 0; w < NUM_WARPS; w++) mem_pending_cnt[w] <= 0;
+        warp_mem_ready <= 0;
+    end else begin
+        warp_mem_ready <= 0;   // default – will be pulsed only when a warp finishes
+
+        for (w = 0; w < NUM_WARPS; w = w + 1) begin
+
+            // Detect a fresh memory request (the first cycle it appears)
+            if ((|mem_active_mask) && is_mem_op && mem_warp_id == w && !mem_in_progress[w]) begin
+                mem_in_progress[w] <= 1;
+                // Count how many threads are active in this warp
+                cnt = 0;
+                for (t = 0; t < THREADS_PER_BLOCK; t = t + 1)
+                    if (mem_active_mask[t]) cnt = cnt + 1;
+                mem_pending_cnt[w] <= cnt;
+            end
+
+            // Process finishing memory requests
+            else if (mem_in_progress[w]) begin
                 
-                if (mem_req_valid && mem_warp_id == w) begin
-                    reg [3:0] active_count; active_count = 0;
-                    for (int b=0; b<THREADS_PER_BLOCK; b++) if (mem_active_mask[b]) active_count++;
-                    mem_pending_count[w] <= active_count - done_sum;
-                    warp_mem_ready[w] <= 0;
-                end else begin
-                    mem_pending_count[w] <= mem_pending_count[w] - done_sum;
-                    if (mem_pending_count[w] > 0 && (mem_pending_count[w] - done_sum) == 0) warp_mem_ready[w] <= 1;
-                    else warp_mem_ready[w] <= 0;
+                // 1) Accumulate how many threads finished THIS specific cycle
+                cnt = 0;
+                for (t = 0; t < THREADS_PER_BLOCK; t = t + 1) begin
+                    if (lsu_done_pulse[t] && lsu_done_warp[t] == w) begin
+                        cnt = cnt + 1;
+                    end
+                end
+                
+                // 2) Deduct the accumulated amount from the pending threads tracker
+                if (cnt > 0) begin
+                    if (mem_pending_cnt[w] <= cnt) begin
+                        mem_pending_cnt[w] <= 0;
+                        mem_in_progress[w] <= 0;
+                        warp_mem_ready[w] <= 1;
+                    end else begin
+                        mem_pending_cnt[w] <= mem_pending_cnt[w] - cnt;
+                    end
+                end else if (mem_pending_cnt[w] == 0) begin
+                    // Fallback to safely clear the state in case it already hit 0
+                    mem_in_progress[w] <= 0;
+                    warp_mem_ready[w] <= 1;
                 end
             end
+            
         end
     end
+end
 
     lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4) ) lsu_inst (
         .clk(clk), .reset(reset), .enable_mask(mem_active_mask), .warp_id(mem_warp_id),
@@ -298,8 +349,8 @@ module core #(
             );
             wire [7:0] physical_thread_id = i; 
             registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
-                .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .block_id(block_id),
-                .thread_id(physical_thread_id),
+                .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), 
+                .read_warp_id(id_warp_id), .block_id(block_id), .thread_id(physical_thread_id),
                 .decoded_rs_address(id_rs), .decoded_rt_address(id_rt), .rs(id_rs_data[i]), .rt(id_rt_data[i]),
                 .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), .decoded_reg_input_mux(wb_reg_mux),
                 .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(0), 
