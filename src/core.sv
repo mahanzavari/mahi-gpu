@@ -1,3 +1,4 @@
+// --- Begin: C:\Users\ASUS\Desktop\tiny-gpu\src\core.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -24,7 +25,7 @@ module core #(
     // --- [EXCEPTION] Top-Level Exception Outputs (Optional, good for testbench) ---
     output reg exception_raised,
     output reg [$clog2(NUM_WARPS)-1:0] exception_warp_id,
-    output reg [31:0] exception_pc,
+    output reg [PROGRAM_MEM_ADDR_BITS-1:0] exception_pc,
     output reg [3:0] exception_cause, // 1=Div0, 2=MemFault
 
     output wire                              program_mem_read_valid,
@@ -55,7 +56,7 @@ wire fetch_stall     = !if_instruction_valid;
 wire [NUM_WARPS-1:0]           flush_warp_mask;
 wire [THREADS_PER_BLOCK-1:0]   sched_active_mask;
 wire [$clog2(NUM_WARPS)-1:0]   sched_warp_id;
-wire [31:0]                    if_pc;
+wire [PROGRAM_MEM_ADDR_BITS-1:0] if_pc;
 wire                           valid_issue;
 wire [31:0]                    if_instruction;
 
@@ -72,7 +73,7 @@ fetcher #(
     .instruction_valid(if_instruction_valid), .instruction(if_instruction)
 );
 
-reg [31:0] id_instruction; reg [31:0] id_pc; reg [THREADS_PER_BLOCK-1:0] id_active_mask;
+reg [31:0] id_instruction; reg [PROGRAM_MEM_ADDR_BITS-1:0] id_pc; reg [THREADS_PER_BLOCK-1:0] id_active_mask;
 reg [$clog2(NUM_WARPS)-1:0] id_warp_id; reg [$clog2(NUM_WARPS)-1:0] issued_warp_id;
 
 always @(posedge clk) begin
@@ -91,7 +92,7 @@ end
 
 wire [4:0] id_rd, id_rs, id_rt; wire [2:0] id_nzp; wire [DATA_BITS-1:0] id_imm;
 wire id_reg_we, id_mem_re, id_mem_we, id_nzp_we, id_rs_re, id_rt_re;
-wire [1:0] id_reg_mux; wire [2:0] id_alu_arith_mux;
+wire [1:0] id_reg_mux; wire [3:0] id_alu_arith_mux; // <--- [FIX]: EXPANDED TO 4 BITS
 wire id_alu_out_mux, id_pc_mux, id_call, id_ret_fn, id_exit, id_sync;
 wire id_shared_re, id_shared_we, id_use_mem_offset;
 wire [15:0] id_mem_addr_offset;
@@ -113,12 +114,12 @@ wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK];
 
 reg [THREADS_PER_BLOCK-1:0] ex_active_mask; reg [$clog2(NUM_WARPS)-1:0] ex_warp_id;
 reg [4:0] ex_rd, ex_rs, ex_rt; reg ex_rs_re, ex_rt_re, ex_reg_we, ex_mem_re, ex_mem_we, ex_nzp_we;
-reg [1:0] ex_reg_mux; reg [2:0] ex_alu_arith_mux;
+reg [1:0] ex_reg_mux; reg [3:0] ex_alu_arith_mux; // <--- [FIX]: EXPANDED TO 4 BITS
 reg ex_alu_out_mux, ex_pc_mux, ex_sync, ex_shared_re, ex_shared_we, ex_use_mem_offset;
 reg [15:0] ex_mem_addr_offset; reg ex_call, ex_ret_fn, ex_exit;
 reg [2:0] ex_nzp; reg [DATA_BITS-1:0] ex_imm;
 reg [DATA_BITS-1:0] ex_rs_data [THREADS_PER_BLOCK]; reg [DATA_BITS-1:0] ex_rt_data [THREADS_PER_BLOCK];
-reg [31:0] ex_pc;
+reg [PROGRAM_MEM_ADDR_BITS-1:0] ex_pc;
 
 always @(posedge clk) begin
     if (reset) begin
@@ -145,7 +146,7 @@ always @(posedge clk) begin
 end
 
 reg [THREADS_PER_BLOCK-1:0] mem_active_mask; reg [$clog2(NUM_WARPS)-1:0] mem_warp_id;
-reg [31:0] mem_pc; reg [4:0] mem_rd; reg [DATA_BITS-1:0] mem_imm;
+reg [PROGRAM_MEM_ADDR_BITS-1:0] mem_pc; reg [4:0] mem_rd; reg [DATA_BITS-1:0] mem_imm;
 reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK]; reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK];
 reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK];
 reg mem_reg_we, mem_mem_re, mem_mem_we, mem_shared_re, mem_shared_we, mem_ret;
@@ -169,15 +170,25 @@ generate
         wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 29) && ex_rs_re && (mem_warp_id == ex_warp_id);
         wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 29) && ex_rt_re && (mem_warp_id == ex_warp_id);
         
-        // (wb variables forward declared below)
         wire fwd_wb_rs_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 29) && ex_rs_re && !fwd_mem_rs_i && (wb_warp_id == ex_warp_id);
         wire fwd_wb_rt_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 29) && ex_rt_re && !fwd_mem_rt_i && (wb_warp_id == ex_warp_id);
+        
+        // Asynchronous LSU writeback forwarding logic
+        wire fwd_lsu_rs_i = lsu_we_array[i] && (lsu_rd_array == ex_rs) && (lsu_rd_array < 29) && ex_rs_re && !fwd_mem_rs_i && !fwd_wb_rs_i && (lsu_warp_id_array[0] == ex_warp_id);
+        wire fwd_lsu_rt_i = lsu_we_array[i] && (lsu_rd_array == ex_rt) && (lsu_rd_array < 29) && ex_rt_re && !fwd_mem_rt_i && !fwd_wb_rt_i && (lsu_warp_id_array[0] == ex_warp_id);
         
         wire [DATA_BITS-1:0] fwd_mem_data_i = (mem_reg_mux == 2'b10) ? mem_imm : mem_alu_out[i];
         wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux  == 2'b10) ? wb_imm  : wb_alu_out[i];
 
-        assign fwd_ex_rs_data[i] = fwd_mem_rs_i ? fwd_mem_data_i : fwd_wb_rs_i  ? fwd_wb_data_i  : ex_rs_data[i];
-        assign fwd_ex_rt_data[i] = fwd_mem_rt_i ? fwd_mem_data_i : fwd_wb_rt_i  ? fwd_wb_data_i  : ex_rt_data[i];
+        assign fwd_ex_rs_data[i] = fwd_mem_rs_i ? fwd_mem_data_i :
+                                   fwd_wb_rs_i  ? fwd_wb_data_i  :
+                                   fwd_lsu_rs_i ? lsu_data_array[i] :
+                                   ex_rs_data[i];
+                                   
+        assign fwd_ex_rt_data[i] = fwd_mem_rt_i ? fwd_mem_data_i :
+                                   fwd_wb_rt_i  ? fwd_wb_data_i  :
+                                   fwd_lsu_rt_i ? lsu_data_array[i] :
+                                   ex_rt_data[i];
 
         alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
             .enable(ex_active_mask[i]), .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
@@ -268,13 +279,13 @@ end
 
 wire [THREADS_PER_BLOCK-1:0]     sh_read_valid,  sh_read_ready;
 wire [THREADS_PER_BLOCK-1:0]     sh_write_valid, sh_write_ready;
-wire [31:0]                      sh_read_address  [THREADS_PER_BLOCK];
-wire [31:0]                      sh_write_address [THREADS_PER_BLOCK];
+wire [DATA_MEM_ADDR_BITS-1:0]    sh_read_address  [THREADS_PER_BLOCK];
+wire [DATA_MEM_ADDR_BITS-1:0]    sh_write_address [THREADS_PER_BLOCK];
 wire [DATA_MEM_DATA_BITS-1:0]    sh_read_data     [THREADS_PER_BLOCK];
 wire [DATA_MEM_DATA_BITS-1:0]    sh_write_data    [THREADS_PER_BLOCK];
 
 shared_mem #(
-    .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(32), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
+    .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(DATA_MEM_ADDR_BITS), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
 ) shared_mem_instance (
     .clk(clk), .reset(reset), .read_valid(sh_read_valid), .read_address(sh_read_address),
     .read_ready(sh_read_ready), .read_data(sh_read_data), .write_valid(sh_write_valid),
@@ -330,7 +341,7 @@ always @(posedge clk) begin
     end
 end
 
-lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4) ) lsu_inst (
+lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4), .ADDR_BITS(DATA_MEM_ADDR_BITS) ) lsu_inst (
     .clk(clk), .reset(reset), .enable_mask(mem_active_mask), .warp_id(mem_warp_id),
     .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
     .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
@@ -348,7 +359,7 @@ lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_
     .decoded_atomic(mem_atomic)
 );
 
-scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS) ) scheduler_instance (
+scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) scheduler_instance (
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready),
     .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
@@ -358,3 +369,4 @@ scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS) ) sche
     .done(done)
 );
 endmodule
+// --- End: C:\Users\ASUS\Desktop\tiny-gpu\src\core.sv ---

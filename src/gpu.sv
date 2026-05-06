@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module gpu #(
-    parameter DATA_MEM_ADDR_BITS = 8,
+    parameter DATA_MEM_ADDR_BITS = 32,
     parameter DATA_MEM_DATA_BITS = 32,
     parameter DATA_MEM_NUM_CHANNELS = 4,
-    parameter PROGRAM_MEM_ADDR_BITS = 8,
+    parameter PROGRAM_MEM_ADDR_BITS = 32,
     parameter PROGRAM_MEM_DATA_BITS = 32,
     parameter PROGRAM_MEM_NUM_CHANNELS = 1,
     parameter NUM_CORES = 2,
@@ -43,8 +43,8 @@ module gpu #(
 
     // Dispatch outputs
     wire [NUM_CORES-1:0] core_start, core_reset, core_done;
-    wire [7:0] core_block_id [NUM_CORES-1:0];
-    wire [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES-1:0];
+    wire [7:0] core_block_id [NUM_CORES];
+    wire [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES];
 
     // ------------------------------------------------------------------------
     // Wires between cores and caches (native widths)

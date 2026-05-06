@@ -6,6 +6,7 @@ module lsu #(
     parameter NUM_WARPS = 4,
     parameter THREADS_PER_BLOCK = 4,
     parameter WORDS_PER_BLOCK = 4,
+    parameter ADDR_BITS = 32,
     parameter DEBUG = 1
 ) (
     input wire clk,
@@ -26,23 +27,23 @@ module lsu #(
     input wire        use_offset,
 
     output reg mem_read_valid,
-    output reg [31:0] mem_read_block_address,
+    output reg [ADDR_BITS-1:0] mem_read_block_address,
     input wire mem_read_ready,
     input wire [(DATA_BITS*WORDS_PER_BLOCK)-1:0] mem_read_block_data,
     
     output reg mem_write_valid,
-    output reg [31:0] mem_write_block_address,
+    output reg [ADDR_BITS-1:0] mem_write_block_address,
     output reg [(DATA_BITS*WORDS_PER_BLOCK)-1:0] mem_write_block_data,
     output reg [WORDS_PER_BLOCK-1:0] mem_write_strobe,
     input wire mem_write_ready,
 
     output reg [THREADS_PER_BLOCK-1:0] shared_mem_read_valid,    
-    output reg [31:0] shared_mem_read_address [THREADS_PER_BLOCK],
+    output reg [ADDR_BITS-1:0] shared_mem_read_address [THREADS_PER_BLOCK],
     input wire [THREADS_PER_BLOCK-1:0] shared_mem_read_ready,
     input wire [DATA_BITS-1:0] shared_mem_read_data [THREADS_PER_BLOCK],
     
     output reg [THREADS_PER_BLOCK-1:0] shared_mem_write_valid,
-    output reg [31:0] shared_mem_write_address [THREADS_PER_BLOCK],
+    output reg [ADDR_BITS-1:0] shared_mem_write_address [THREADS_PER_BLOCK],
     output reg [DATA_BITS-1:0] shared_mem_write_data [THREADS_PER_BLOCK],
     input wire [THREADS_PER_BLOCK-1:0] shared_mem_write_ready,
 
@@ -58,15 +59,15 @@ module lsu #(
     reg req_valid [NUM_WARPS];
     reg [2:0] req_type [NUM_WARPS]; 
     reg [THREADS_PER_BLOCK-1:0] req_mask [NUM_WARPS];
-    reg [31:0] req_addr [NUM_WARPS][THREADS_PER_BLOCK];
+    reg [ADDR_BITS-1:0] req_addr [NUM_WARPS][THREADS_PER_BLOCK];
     reg [DATA_BITS-1:0] req_data_val [NUM_WARPS][THREADS_PER_BLOCK];
     reg [4:0] req_rd [NUM_WARPS]; 
 
-    wire [31:0] incoming_effective_addr [THREADS_PER_BLOCK];
+    wire [ADDR_BITS-1:0] incoming_effective_addr [THREADS_PER_BLOCK];
     genvar i;
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i++) begin
-            assign incoming_effective_addr[i] = use_offset ? (rs[i] + {{16{addr_offset[15]}}, addr_offset}) : rs[i];
+            assign incoming_effective_addr[i] = use_offset ? (rs[i] + {{ (ADDR_BITS-16){addr_offset[15]} }, addr_offset}) : rs[i];
         end
     endgenerate
 
@@ -79,10 +80,10 @@ module lsu #(
 
     reg [$clog2(NUM_WARPS)-1:0] active_warp;
     reg [THREADS_PER_BLOCK-1:0] pending_threads;
-    reg [31:0] current_block_addr;
+    reg [ADDR_BITS-1:0] current_block_addr;
     reg [2:0] active_t; // Serial tracking for atomics
 
-    wire [31:0] active_block_addr [THREADS_PER_BLOCK];
+    wire [ADDR_BITS-1:0] active_block_addr [THREADS_PER_BLOCK];
     wire [1:0] active_word_offset [THREADS_PER_BLOCK];
     
     generate
@@ -94,7 +95,10 @@ module lsu #(
 
     integer w, t;
 
-    always @(posedge clk) begin
+    always @(posedge clk) begin : lsu_fsm
+        int selected_w;
+        int first_pending;
+
         if (reset) begin
             state <= IDLE; mem_read_valid <= 0; mem_write_valid <= 0;
             shared_mem_read_valid <= 0; shared_mem_write_valid <= 0;
@@ -122,7 +126,7 @@ module lsu #(
 
             case (state)
                 IDLE: begin
-                    int selected_w = -1;
+                    selected_w = -1;
                     for (w = 0; w < NUM_WARPS; w++) begin
                         if (selected_w == -1 && req_valid[w]) selected_w = w;
                     end
@@ -152,7 +156,7 @@ module lsu #(
 
                 COALESCE_READ: begin
                     if (|pending_threads) begin
-                        int first_pending = -1;
+                        first_pending = -1;
                         for (t = 0; t < THREADS_PER_BLOCK; t++) if (first_pending == -1 && pending_threads[t]) first_pending = t;
                         current_block_addr <= active_block_addr[first_pending];
                         mem_read_block_address <= active_block_addr[first_pending];
@@ -178,7 +182,7 @@ module lsu #(
 
                 COALESCE_WRITE: begin
                     if (|pending_threads) begin
-                        int first_pending = -1;
+                        first_pending = -1;
                         for (t = 0; t < THREADS_PER_BLOCK; t++) if (first_pending == -1 && pending_threads[t]) first_pending = t;
                         current_block_addr <= active_block_addr[first_pending];
                         mem_write_block_address <= active_block_addr[first_pending];
@@ -223,7 +227,7 @@ module lsu #(
                 // --- ATOMIC SERIALIZATION ENGINE -----------------------------
                 ATOMIC_READ: begin
                     if (|pending_threads) begin
-                        int first_pending = -1;
+                        first_pending = -1;
                         for (t = 0; t < THREADS_PER_BLOCK; t++) 
                             if (first_pending == -1 && pending_threads[t]) first_pending = t;
                             

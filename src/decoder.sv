@@ -1,3 +1,4 @@
+// --- Begin: C:\Users\ASUS\Desktop\tiny-gpu\src\decoder.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -24,7 +25,7 @@ module decoder #(
     output logic decoded_mem_write_enable,           
     output logic decoded_nzp_write_enable,           
     output logic [1:0] decoded_reg_input_mux,        
-    output logic [2:0] decoded_alu_arithmetic_mux,   
+    output logic [3:0] decoded_alu_arithmetic_mux, // FIX: Expanded to 4 bits
     output logic decoded_alu_output_mux,             
     output logic decoded_pc_mux,                     
 
@@ -53,7 +54,18 @@ module decoder #(
                CALL     = 6'd13,
                RET_FN   = 6'd14,
                EXIT     = 6'd15,
-               ATOM_ADD = 6'd16; 
+               ATOM_ADD = 6'd16,
+               // --- NEW OPCODES ---
+               AND      = 6'd17,
+               OR       = 6'd18,
+               XOR      = 6'd19,
+               SHL      = 6'd20,
+               SHR      = 6'd21,
+               MOD      = 6'd22,
+               MIN      = 6'd23,
+               MAX      = 6'd24,
+               ABS      = 6'd25,
+               NEG      = 6'd26;
 
     always_comb begin
         decoded_rd_address = instruction[25:21];
@@ -77,7 +89,7 @@ module decoder #(
         decoded_rs_read_enable     = 0; decoded_rt_read_enable     = 0;
         decoded_reg_write_enable   = 0; decoded_mem_read_enable    = 0;
         decoded_mem_write_enable   = 0; decoded_nzp_write_enable   = 0;
-        decoded_reg_input_mux      = 2'b00; decoded_alu_arithmetic_mux = 3'b000;
+        decoded_reg_input_mux      = 2'b00; decoded_alu_arithmetic_mux = 4'b0000;
         decoded_alu_output_mux     = 0; decoded_pc_mux             = 0;
         decoded_call               = 0; decoded_ret_fn             = 0;
         decoded_exit               = 0; decoded_sync               = 0;
@@ -92,19 +104,59 @@ module decoder #(
             end
             ADD: begin 
                 decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 3'b000;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd0;
             end
             SUB: begin 
                 decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 3'b001;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd1;
             end
             MUL: begin 
                 decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 3'b010;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd2;
             end
             DIV: begin 
                 decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 3'b011;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd3;
+            end
+            AND: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd4;
+            end
+            OR: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd5;
+            end
+            XOR: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd6;
+            end
+            SHL: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd7;
+            end
+            SHR: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd8;
+            end
+            MOD: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd9;
+            end
+            MIN: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd10;
+            end
+            MAX: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd11;
+            end
+            ABS: begin 
+                decoded_rs_read_enable = 1; // ABS only needs Rs
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd12;
+            end
+            NEG: begin 
+                decoded_rs_read_enable = 1; // NEG only needs Rs
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd13;
             end
             LDR: begin
                 decoded_rs_read_enable = 1; decoded_reg_write_enable = 1;

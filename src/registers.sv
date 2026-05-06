@@ -37,7 +37,7 @@ module registers #(
     localparam ARITHMETIC = 2'b00, MEMORY = 2'b01, CONSTANT = 2'b10, SHARED = 2'b11;
 
     // 32 registers per warp
-    reg [DATA_BITS-1:0] registers [NUM_WARPS-1:0][31:0];
+    reg [DATA_BITS-1:0] registers [NUM_WARPS][32];
 
     // Data to be written back (from ALU, memory, constant, or shared load)
     wire [DATA_BITS-1:0] write_data = (decoded_reg_input_mux == ARITHMETIC) ? alu_out :
@@ -47,14 +47,19 @@ module registers #(
 
     // Write‑back logic – uses write‑back warp ID
     wire is_writing = enable && decoded_reg_write_enable && (decoded_rd_address < 29);
+    wire is_lsu_writing = lsu_we && (lsu_rd < 29);
 
     // ---- Read ports now use the ID stage warp ID ----
     assign rs = (is_writing && (decoded_rs_address == decoded_rd_address) && (read_warp_id == warp_id))
                 ? write_data
+                : (is_lsu_writing && (decoded_rs_address == lsu_rd) && (read_warp_id == lsu_warp_id))
+                ? lsu_data
                 : registers[read_warp_id][decoded_rs_address];
 
     assign rt = (is_writing && (decoded_rt_address == decoded_rd_address) && (read_warp_id == warp_id))
                 ? write_data
+                : (is_lsu_writing && (decoded_rt_address == lsu_rd) && (read_warp_id == lsu_warp_id))
+                ? lsu_data
                 : registers[read_warp_id][decoded_rt_address];
 
     integer w, i;
@@ -62,13 +67,13 @@ module registers #(
         if (reset) begin
             for (w = 0; w < NUM_WARPS; w = w + 1) begin
                 for (i = 0; i < 29; i = i + 1) registers[w][i] <= 0;
-                registers[w][29] <= 0;                                        // block_id placeholder
-                registers[w][30] <= THREADS_PER_BLOCK * NUM_WARPS;           // warp size
-                registers[w][31] <= (w * THREADS_PER_BLOCK) + thread_id;     // thread ID
+                registers[w][29] <= 0;                                       
+                registers[w][30] <= THREADS_PER_BLOCK * NUM_WARPS;           
+                registers[w][31] <= (w * THREADS_PER_BLOCK) + thread_id;     
             end
         end else begin
             for (w = 0; w < NUM_WARPS; w = w + 1) begin
-                registers[w][29] <= {{(DATA_BITS-8){1'b0}}, block_id};       // hardware ID update
+                registers[w][29] <= {{(DATA_BITS-8){1'b0}}, block_id};       
             end
             if (lsu_we && (lsu_rd < 29))
                 registers[lsu_warp_id][lsu_rd] <= lsu_data;

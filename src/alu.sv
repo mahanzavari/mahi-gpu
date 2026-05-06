@@ -5,7 +5,7 @@ module alu #(
     parameter DATA_BITS = 16
 ) (
     input wire enable, // Active mask bit for this thread in the EX stage
-    input wire [2:0] decoded_alu_arithmetic_mux,
+    input wire [3:0] decoded_alu_arithmetic_mux,
     input wire decoded_alu_output_mux,
 
     input wire [DATA_BITS-1:0] rs,
@@ -22,7 +22,11 @@ module alu #(
                XOR = 4'd6, 
                SHL = 4'd7,
                SHR = 4'd8, 
-               MOD = 4'd9;
+               MOD = 4'd9,
+               MIN = 4'd10,
+               MAX = 4'd11,
+               ABS = 4'd12,
+               NEG = 4'd13;
 
     // always_comb, combinational logic
     always @(*) begin 
@@ -49,8 +53,9 @@ module alu #(
                 AND: alu_out = rs & rt;
                 OR:  alu_out = rs | rt;
                 XOR: alu_out = rs ^ rt;
-                SHL: alu_out = rs << rt[3:0];
-                SHR: alu_out = rs >> rt[3:0];
+                // FIX: Support shifting for 32-bit registers by evaluating full rt
+                SHL: alu_out = rs << rt;
+                SHR: alu_out = rs >> rt;
                 MOD: begin
                     if (rt == 0) begin
                         alu_out = {DATA_BITS{1'b0}};
@@ -59,6 +64,12 @@ module alu #(
                         alu_out = rs % rt;
                     end
                 end
+                // --- NEW SHADER MATH 
+                MIN: alu_out = ($signed(rs) < $signed(rt)) ? rs : rt;
+                MAX: alu_out = ($signed(rs) > $signed(rt)) ? rs : rt;
+                ABS: alu_out = ($signed(rs) < 0) ? -$signed(rs) : rs;
+                NEG: alu_out = -$signed(rs);
+                
                 default: alu_out = {DATA_BITS{1'b0}};
             endcase
         end
