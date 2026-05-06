@@ -3,37 +3,37 @@
 
 module tb_matmul;
 
-    // Testbench parameters: 2 Cores, 2 Warps per core, 8 Threads per Warp -> 32 Threads Total
-    localparam DATA_MEM_ADDR_BITS = 8;
-    localparam DATA_MEM_DATA_BITS = 16;
-    localparam DATA_MEM_NUM_CHANNELS = 16; // 2 cores * 8 Active Threads
-    localparam PROGRAM_MEM_ADDR_BITS = 8;
-    localparam PROGRAM_MEM_DATA_BITS = 16;
-    localparam PROGRAM_MEM_NUM_CHANNELS = 2; // 2 Cores fetching
+    localparam DATA_MEM_ADDR_BITS = 32;
+    localparam DATA_MEM_DATA_BITS = 32;
+    localparam PROGRAM_MEM_ADDR_BITS = 32;
+    localparam PROGRAM_MEM_DATA_BITS = 32;
+    
+    localparam WORDS_PER_BLOCK = 4;
+    localparam BLOCK_DATA_BITS = DATA_MEM_DATA_BITS * WORDS_PER_BLOCK; 
+    
+    localparam DATA_MEM_NUM_CHANNELS = 2; // 2 Cores
+    localparam PROGRAM_MEM_NUM_CHANNELS = 2; 
     localparam NUM_CORES = 2; 
     localparam THREADS_PER_BLOCK = 8;        
     localparam NUM_WARPS = 2;                
 
-    reg clk;
-    reg reset;
-    reg start;
-    wire done;
-    reg device_control_write_enable;
-    reg [7:0] device_control_data;
+    reg clk; reg reset; reg start; wire done;
+    reg device_control_write_enable; reg [7:0] device_control_data;
 
     wire [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_valid;
     wire [PROGRAM_MEM_ADDR_BITS-1:0] program_mem_read_address [PROGRAM_MEM_NUM_CHANNELS];
     reg [PROGRAM_MEM_NUM_CHANNELS-1:0] program_mem_read_ready;
-    reg [PROGRAM_MEM_DATA_BITS-1:0] program_mem_read_data [PROGRAM_MEM_NUM_CHANNELS];
+    reg [(PROGRAM_MEM_DATA_BITS*4)-1:0] program_mem_read_data [PROGRAM_MEM_NUM_CHANNELS];
 
     wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_read_valid;
     wire [DATA_MEM_ADDR_BITS-1:0] data_mem_read_address [DATA_MEM_NUM_CHANNELS];
     reg [DATA_MEM_NUM_CHANNELS-1:0] data_mem_read_ready;
-    reg [DATA_MEM_DATA_BITS-1:0] data_mem_read_data [DATA_MEM_NUM_CHANNELS];
+    reg [BLOCK_DATA_BITS-1:0] data_mem_read_data [DATA_MEM_NUM_CHANNELS];
     
     wire [DATA_MEM_NUM_CHANNELS-1:0] data_mem_write_valid;
     wire [DATA_MEM_ADDR_BITS-1:0] data_mem_write_address [DATA_MEM_NUM_CHANNELS];
-    wire [DATA_MEM_DATA_BITS-1:0] data_mem_write_data [DATA_MEM_NUM_CHANNELS];
+    wire [BLOCK_DATA_BITS-1:0] data_mem_write_data [DATA_MEM_NUM_CHANNELS];
+    wire [3:0] data_mem_write_strobe [DATA_MEM_NUM_CHANNELS];
     reg [DATA_MEM_NUM_CHANNELS-1:0] data_mem_write_ready;
 
     gpu #(
@@ -53,137 +53,146 @@ module tb_matmul;
         .data_mem_read_ready(data_mem_read_ready), .data_mem_read_data(data_mem_read_data),
         
         .data_mem_write_valid(data_mem_write_valid), .data_mem_write_address(data_mem_write_address),
-        .data_mem_write_data(data_mem_write_data), .data_mem_write_ready(data_mem_write_ready)
+        .data_mem_write_data(data_mem_write_data), .data_mem_write_strobe(data_mem_write_strobe), .data_mem_write_ready(data_mem_write_ready)
     );
 
     reg [PROGRAM_MEM_DATA_BITS-1:0] p_mem [0:255];
-    reg [DATA_MEM_DATA_BITS-1:0]    d_mem [0:255];
+    reg [DATA_MEM_DATA_BITS-1:0]    d_mem [0:255]; 
 
-    // Single Cycle Memory Latency
+    function [31:0] encode_R(input [5:0] op, input [4:0] rd, input [4:0] rs, input [4:0] rt);
+        encode_R = {op, rd, rs, rt, 11'd0};
+    endfunction
+
+    function [31:0] encode_I(input [5:0] op, input [4:0] rd, input [4:0] rs, input [15:0] imm);
+        encode_I = {op, rd, rs, imm};
+    endfunction
+
+    function [31:0] encode_BR(input [2:0] nzp, input [15:0] imm);
+        encode_BR = {6'd1, nzp, 2'b00, 5'd0, imm}; 
+    endfunction
+
+    localparam OP_BRNZP = 6'd1, OP_CMP = 6'd2, OP_ADD = 6'd3, OP_SUB = 6'd4,
+               OP_MUL = 6'd5, OP_DIV = 6'd6, OP_LDR = 6'd7, OP_STR = 6'd8,
+               OP_CONST = 6'd9, OP_CALL = 6'd13, OP_RET_FN = 6'd14, OP_EXIT = 6'd15;
+
     always @(posedge clk) begin
         for (int i = 0; i < PROGRAM_MEM_NUM_CHANNELS; i++) begin
             program_mem_read_ready[i] <= program_mem_read_valid[i];
-            if (program_mem_read_valid[i]) program_mem_read_data[i] <= p_mem[program_mem_read_address[i]];
+            if (program_mem_read_valid[i]) begin
+                // Block address ? word base address
+                int word_base = program_mem_read_address[i] * 4;
+                program_mem_read_data[i] <= {
+                    p_mem[word_base + 3],
+                    p_mem[word_base + 2],
+                    p_mem[word_base + 1],
+                    p_mem[word_base]
+                };
+            end
         end
         
         for (int i = 0; i < DATA_MEM_NUM_CHANNELS; i++) begin
+            // FIX: PACK 128-BIT BLOCK (4 x 32-bit words)
             data_mem_read_ready[i] <= data_mem_read_valid[i];
-            if (data_mem_read_valid[i]) data_mem_read_data[i] <= d_mem[data_mem_read_address[i]];
+            if (data_mem_read_valid[i]) begin
+                int b = data_mem_read_address[i];
+                data_mem_read_data[i] <= {d_mem[b*4+3], d_mem[b*4+2], d_mem[b*4+1], d_mem[b*4+0]};
+            end
             
+            // FIX: UNPACK AND STROBE 128-BIT WRITE
             data_mem_write_ready[i] <= data_mem_write_valid[i];
-            if (data_mem_write_valid[i]) d_mem[data_mem_write_address[i]] <= data_mem_write_data[i];
+            if (data_mem_write_valid[i]) begin
+                int b = data_mem_write_address[i];
+                if (data_mem_write_strobe[i][0]) d_mem[b*4+0] <= data_mem_write_data[i][31:0];
+                if (data_mem_write_strobe[i][1]) d_mem[b*4+1] <= data_mem_write_data[i][63:32];
+                if (data_mem_write_strobe[i][2]) d_mem[b*4+2] <= data_mem_write_data[i][95:64];
+                if (data_mem_write_strobe[i][3]) d_mem[b*4+3] <= data_mem_write_data[i][127:96];
+            end
         end
     end
 
     initial begin
-        clk = 0;
-        forever #5 clk = ~clk; 
+        clk = 0; forever #5 clk = ~clk; 
     end
 
     initial begin
         $display("=========================================================");
-        $display(" PHASE 5: MATMUL (CALL/RET STACK & DIVERGENT BRANCHES)   ");
+        $display(" PHASE 5: MATMUL (32-BIT RISC ARCHITECTURE)              ");
         $display("=========================================================");
 
         for (int i = 0; i < 256; i++) begin
             d_mem[i] = 0;
-            p_mem[i] = 16'h0000;
+            p_mem[i] = 0;
         end
 
-        // ---------------------------------------------------------------------
-        // DATA INITIALIZATION (5x5 Matrices)
-        // Memory Map:
-        //   A: 0-24  (Identity Matrix -> 1 on diagonal, 0 elsewhere)
-        //   B: 25-49 (Values 0 to 24 sequentially)
-        //   C: 50-74 (Output -> Should be identical to B since A is Identity)
-        // ---------------------------------------------------------------------
-        d_mem[0] = 1; d_mem[6] = 1; d_mem[12] = 1; d_mem[18] = 1; d_mem[24] = 1; // Identity matrix
-        for (int i = 0; i < 25; i++) begin
-            d_mem[25 + i] = i; 
-        end
+        d_mem[0] = 1; d_mem[6] = 1; d_mem[12] = 1; d_mem[18] = 1; d_mem[24] = 1;
+        for (int i = 0; i < 25; i++) d_mem[25 + i] = i; 
 
-        // ---------------------------------------------------------------------
-        // ASSEMBLY PROGRAM: 5x5 Matrix Multiplication
-        // Launch 32 Threads -> 25 Calculate, 7 Exit immediately (Divergence!)
-        // ---------------------------------------------------------------------
-
-        // --- MAIN KERNEL ---
-        // Calc Global TID: R0 = R13 * 16 + R15
-        p_mem[0]  = 16'h9710; // CONST R7, 16      
-        p_mem[1]  = 16'h50D7; // MUL R0, R13, R7   
-        p_mem[2]  = 16'h300F; // ADD R0, R0, R15   
+        // Calc Global TID: R0 = R29(BlockID) * 16 + R31(ThreadID)
+        p_mem[0]  = encode_I(OP_CONST, 7, 0, 16);           // CONST R7, 16
+        p_mem[1]  = encode_R(OP_MUL, 0, 29, 7);             // MUL R0, R29, R7
+        p_mem[2]  = encode_R(OP_ADD, 0, 0, 31);             // ADD R0, R0, R31
         
-        // Bounds check: if (R0 < 25) branch to MAIN_BODY, else EXIT
-        p_mem[3]  = 16'h9119; // CONST R1, 25      
-        p_mem[4]  = 16'h2001; // CMP R0, R1        
-        p_mem[5]  = 16'h1807; // BRn 07 (jump over EXIT)
-        p_mem[6]  = 16'hF000; // EXIT (Threads 25-31 diverge and terminate here)
+        // Bounds check: if (R0 < 25) branch to MAIN_BODY(7), else EXIT
+        p_mem[3]  = encode_I(OP_CONST, 1, 0, 25);           // CONST R1, 25
+        p_mem[4]  = encode_R(OP_CMP, 0, 0, 1);              // CMP R0, R1
+        p_mem[5]  = encode_BR(3'b100, 7);                   // BRn 07
+        p_mem[6]  = encode_I(OP_EXIT, 0, 0, 0);             // EXIT
         
         // MAIN_BODY: Row = R0 / 5
-        p_mem[7]  = 16'h9405; // CONST R4, 5       
-        p_mem[8]  = 16'h6204; // DIV R2, R0, R4    
+        p_mem[7]  = encode_I(OP_CONST, 4, 0, 5);            // CONST R4, 5
+        p_mem[8]  = encode_R(OP_DIV, 2, 0, 4);              // DIV R2, R0, R4
         
         // Col = R0 - Row * 5
-        p_mem[9]  = 16'h5324; // MUL R3, R2, R4    
-        p_mem[10] = 16'h4303; // SUB R3, R0, R3    
+        p_mem[9]  = encode_R(OP_MUL, 3, 2, 4);              // MUL R3, R2, R4
+        p_mem[10] = encode_R(OP_SUB, 3, 0, 3);              // SUB R3, R0, R3
 
         // Function Call: R5 = DotProduct(Row, Col)
-        p_mem[11] = 16'hD010; // CALL 16 (Jump to subroutine)
+        p_mem[11] = encode_I(OP_CALL, 0, 0, 16);            // CALL 16
 
         // Store Result: C[R0] = R5
-        p_mem[12] = 16'h9732; // CONST R7, 50 (Base_C)
-        p_mem[13] = 16'h3770; // ADD R7, R7, R0    
-        p_mem[14] = 16'h8075; // STR [R7+0], R5    
-        p_mem[15] = 16'hF000; // EXIT (Threads 0-24 terminate here)
+        p_mem[12] = encode_I(OP_CONST, 7, 0, 50);           // CONST R7, 50
+        p_mem[13] = encode_R(OP_ADD, 7, 7, 0);              // ADD R7, R7, R0
+        p_mem[14] = encode_I(OP_STR, 5, 7, 0);              // STR [R7+0], R5 (Rs=Base, Rd=Data, Imm=Offset)
+        p_mem[15] = encode_I(OP_EXIT, 0, 0, 0);             // EXIT
 
         // --- SUBROUTINE: DOT_PROD (PC = 16) ---
-        p_mem[16] = 16'h9500; // CONST R5, 0 (Accumulator Result = 0)
-        p_mem[17] = 16'h9600; // CONST R6, 0 (Loop counter k = 0)
+        p_mem[16] = encode_I(OP_CONST, 5, 0, 0);            // CONST R5, 0
+        p_mem[17] = encode_I(OP_CONST, 6, 0, 0);            // CONST R6, 0
 
-        // LOOP_START (PC = 18): if (k < 5) loop, else RET_FN
-        p_mem[18] = 16'h2064; // CMP R6, R4        
-        p_mem[19] = 16'h1815; // BRn 21 (Jump to LOOP_BODY)
-        p_mem[20] = 16'hE000; // RET_FN (Return to PC 12 via hardware stack)
+        // LOOP_START (PC = 18)
+        p_mem[18] = encode_R(OP_CMP, 0, 6, 4);              // CMP R6, R4
+        p_mem[19] = encode_BR(3'b100, 21);                  // BRn 21
+        p_mem[20] = encode_I(OP_RET_FN, 0, 0, 0);           // RET_FN
 
-        // LOOP_BODY (PC = 21)
-        // A_addr = Base_A(0) + Row * 5 + k
-        p_mem[21] = 16'h5824; // MUL R8, R2, R4    
-        p_mem[22] = 16'h3886; // ADD R8, R8, R6    
+        // LOOP_BODY (PC = 21) -> A_addr = Base_A(0) + Row * 5 + k
+        p_mem[21] = encode_R(OP_MUL, 8, 2, 4);              // MUL R8, R2, R4
+        p_mem[22] = encode_R(OP_ADD, 8, 8, 6);              // ADD R8, R8, R6
         
         // B_addr = Base_B(25) + k * 5 + Col
-        p_mem[23] = 16'h9719; // CONST R7, 25      
-        p_mem[24] = 16'h5964; // MUL R9, R6, R4    
-        p_mem[25] = 16'h3997; // ADD R9, R9, R7    
-        p_mem[26] = 16'h3993; // ADD R9, R9, R3    
+        p_mem[23] = encode_I(OP_CONST, 7, 0, 25);           // CONST R7, 25
+        p_mem[24] = encode_R(OP_MUL, 9, 6, 4);              // MUL R9, R6, R4
+        p_mem[25] = encode_R(OP_ADD, 9, 9, 7);              // ADD R9, R9, R7
+        p_mem[26] = encode_R(OP_ADD, 9, 9, 3);              // ADD R9, R9, R3
 
         // Load Values
-        p_mem[27] = 16'h7880; // LDR R8, [R8+0]    (A_val)
-        p_mem[28] = 16'h7990; // LDR R9, [R9+0]    (B_val)
+        p_mem[27] = encode_I(OP_LDR, 8, 8, 0);              // LDR R8, [R8+0]
+        p_mem[28] = encode_I(OP_LDR, 9, 9, 0);              // LDR R9, [R9+0]
 
         // Result += A_val * B_val
-        p_mem[29] = 16'h5A89; // MUL R10, R8, R9   
-        p_mem[30] = 16'h355A; // ADD R5, R5, R10   
+        p_mem[29] = encode_R(OP_MUL, 10, 8, 9);             // MUL R10, R8, R9
+        p_mem[30] = encode_R(OP_ADD, 5, 5, 10);             // ADD R5, R5, R10
 
         // k++
-        p_mem[31] = 16'h9701; // CONST R7, 1       
-        p_mem[32] = 16'h3667; // ADD R6, R6, R7    
-        p_mem[33] = 16'h1E12; // BRnzp 18 (Jump back to LOOP_START)
+        p_mem[31] = encode_I(OP_CONST, 7, 0, 1);            // CONST R7, 1
+        p_mem[32] = encode_R(OP_ADD, 6, 6, 7);              // ADD R6, R6, R7
+        p_mem[33] = encode_BR(3'b111, 18);                  // BRnzp 18
 
-        reset = 1;
-        start = 0;
-        device_control_write_enable = 0;
-        device_control_data = 0;
+        reset = 1; start = 0; device_control_write_enable = 0; device_control_data = 0;
         
-        #100 reset = 0;
-        #50;
-
-        device_control_write_enable = 1;
-        device_control_data = 32; // Launch exactly 32 threads (2 cores * 1 block * 16 threads)
-        #50 device_control_write_enable = 0;
-        #50;
-
-        start = 1;
-        #50 start = 0;
+        #100 reset = 0; #50;
+        device_control_write_enable = 1; device_control_data = 32; 
+        #50 device_control_write_enable = 0; #50;
+        start = 1; #50 start = 0;
 
         fork
             begin
@@ -203,27 +212,21 @@ module tb_matmul;
         
         begin
             int errors = 0;
-            // Expected: Since A is an Identity matrix, C = A * B should just equal B
             for (int i = 0; i < 25; i++) begin
                 int expected_val = i;
-                if (d_mem[50 + i] == expected_val) begin
-                    $display("Matrix C Element %02d (Computed by Thread %02d): %02d [PASS]", i, i, d_mem[50+i]);
-                end else begin
+                if (d_mem[50 + i] == expected_val) $display("Matrix C Element %02d (Computed by Thread %02d): %02d [PASS]", i, i, d_mem[50+i]);
+                else begin
                     $display("Matrix C Element %02d (Computed by Thread %02d): %02d ... EXPECTED %02d [FAIL]", i, i, d_mem[50+i], expected_val);
                     errors++;
                 end
             end
-
-            // Verify memory where the 7 diverged threads would have written (it should be untouched)
             for (int i = 25; i < 32; i++) begin
-                if (d_mem[50 + i] == 0) begin
-                    $display("Diverged Thread %02d Memory Space Untouched [PASS]", i);
-                end else begin
+                if (d_mem[50 + i] == 0) $display("Diverged Thread %02d Memory Space Untouched [PASS]", i);
+                else begin
                     $display("Diverged Thread %02d Unexpectedly modified memory to %0d [FAIL]", i, d_mem[50+i]);
                     errors++;
                 end
             end
-
             if (errors == 0) $display("\nMATMUL DIVERGENCE AND CALL/RET STACK TESTS PASSED!");
             else $display("\nTEST FAILED WITH %0d ERRORS.", errors);
         end

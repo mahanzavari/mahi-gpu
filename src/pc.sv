@@ -3,7 +3,7 @@
 
 module pc #(
     parameter DATA_MEM_DATA_BITS = 16,
-    parameter PROGRAM_MEM_ADDR_BITS = 8,
+    parameter PROGRAM_MEM_ADDR_BITS = 32,
     parameter NUM_WARPS = 4
 ) (
     input wire clk,
@@ -25,13 +25,13 @@ module pc #(
     output reg [PROGRAM_MEM_ADDR_BITS-1:0] next_pc
 );
 
-    // Per‑warp condition codes (unchanged)
-    reg [2:0] nzp [NUM_WARPS-1:0];
+    // Per‑warp condition codes
+    reg [2:0] nzp [NUM_WARPS];
 
-    // ─── Hardware return stack (per warp) ───
+    // --- Hardware return stack (per warp) ---
     localparam STACK_DEPTH = 8;
-    reg [PROGRAM_MEM_ADDR_BITS-1:0] return_stack [NUM_WARPS-1:0][STACK_DEPTH-1:0];
-    reg [$clog2(STACK_DEPTH)-1:0]   stack_ptr    [NUM_WARPS-1:0];
+    reg [PROGRAM_MEM_ADDR_BITS-1:0] return_stack [NUM_WARPS][STACK_DEPTH];
+    reg [$clog2(STACK_DEPTH)-1:0]   stack_ptr    [NUM_WARPS];
 
     // Combinational next PC
     always @(*) begin
@@ -57,7 +57,6 @@ module pc #(
             for (i = 0; i < NUM_WARPS; i++) begin
                 nzp[i] <= 3'b0;
                 stack_ptr[i] <= 0;
-                // Stack entries do not need explicit reset (undefined until used)
             end
         end else if (enable) begin
             // NZP update (CMP)

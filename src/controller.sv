@@ -4,6 +4,7 @@
 module controller #(
     parameter ADDR_BITS = 8,
     parameter DATA_BITS = 16,
+    parameter BLOCK_DATA_BITS = 64,
     parameter NUM_CONSUMERS = 4,
     parameter NUM_CHANNELS = 1,
     parameter WRITE_ENABLE = 1
@@ -14,21 +15,23 @@ module controller #(
     input wire [NUM_CONSUMERS-1:0] consumer_read_valid,
     input wire [ADDR_BITS-1:0] consumer_read_address [NUM_CONSUMERS],
     output logic [NUM_CONSUMERS-1:0] consumer_read_ready,
-    output logic [DATA_BITS-1:0] consumer_read_data [NUM_CONSUMERS],
+    output logic [BLOCK_DATA_BITS-1:0] consumer_read_data [NUM_CONSUMERS],
     
     input wire [NUM_CONSUMERS-1:0] consumer_write_valid,
     input wire [ADDR_BITS-1:0] consumer_write_address [NUM_CONSUMERS],
-    input wire [DATA_BITS-1:0] consumer_write_data [NUM_CONSUMERS],
+    input wire [BLOCK_DATA_BITS-1:0] consumer_write_data [NUM_CONSUMERS],
+    input wire [3:0] consumer_write_strobe [NUM_CONSUMERS],
     output logic [NUM_CONSUMERS-1:0] consumer_write_ready,
     
     output logic [NUM_CHANNELS-1:0] mem_read_valid,
     output logic [ADDR_BITS-1:0] mem_read_address [NUM_CHANNELS],
     input wire [NUM_CHANNELS-1:0] mem_read_ready,
-    input wire [DATA_BITS-1:0] mem_read_data [NUM_CHANNELS],
+    input wire [BLOCK_DATA_BITS-1:0] mem_read_data [NUM_CHANNELS],
     
     output logic [NUM_CHANNELS-1:0] mem_write_valid,
     output logic [ADDR_BITS-1:0] mem_write_address [NUM_CHANNELS],
-    output logic [DATA_BITS-1:0] mem_write_data [NUM_CHANNELS],
+    output logic [BLOCK_DATA_BITS-1:0] mem_write_data [NUM_CHANNELS],
+    output logic [3:0] mem_write_strobe [NUM_CHANNELS],
     input wire [NUM_CHANNELS-1:0] mem_write_ready
 );
 
@@ -102,6 +105,7 @@ module controller #(
                                     mem_write_valid[i] <= 1;
                                     mem_write_address[i] <= consumer_write_address[j];
                                     mem_write_data[i] <= consumer_write_data[j];
+                                    mem_write_strobe[i] <= consumer_write_strobe[j];
                                     controller_state[i] <= WRITE_WAITING;
                                     
                                     $display("[%0t] CONTROLLER (%m): Ch %0d accepted WRITE from Consumer %0d, Addr=%0d, Data=%0d", $time, i, j, consumer_write_address[j], consumer_write_data[j]);

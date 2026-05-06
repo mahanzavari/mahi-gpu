@@ -15,8 +15,8 @@ module dispatch #(
     input wire [NUM_CORES-1:0] core_done,
     output reg [NUM_CORES-1:0] core_start,
     output reg [NUM_CORES-1:0] core_reset,
-    output reg [7:0] core_block_id [NUM_CORES-1:0],
-    output reg [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES-1:0],
+    output reg [7:0] core_block_id [NUM_CORES],
+    output reg [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES],
 
     output reg done
 );

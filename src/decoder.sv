@@ -1,166 +1,196 @@
+// --- Begin: C:\Users\ASUS\Desktop\tiny-gpu\src\decoder.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
 module decoder #(
-    parameter DATA_BITS = 16
+    parameter DATA_BITS = 32
 ) (
-    input wire [15:0] instruction,
+    input wire [31:0] instruction,
     
     // Instruction Signals
-    output logic [3:0] decoded_rd_address,
-    output logic [3:0] decoded_rs_address,
-    output logic [3:0] decoded_rt_address,
+    output logic [4:0] decoded_rd_address,
+    output logic [4:0] decoded_rs_address,
+    output logic [4:0] decoded_rt_address,
     output logic [2:0] decoded_nzp,
     output logic [DATA_BITS-1:0] decoded_immediate,
 
-    // Immediate offset addressing
     output logic decoded_use_mem_offset,
-    output logic [7:0] decoded_mem_addr_offset,
+    output logic [15:0] decoded_mem_addr_offset,
 
-    // Hazard & Forwarding
     output logic decoded_rs_read_enable,
     output logic decoded_rt_read_enable,
     
-    // Control
     output logic decoded_reg_write_enable,           
     output logic decoded_mem_read_enable,            
     output logic decoded_mem_write_enable,           
     output logic decoded_nzp_write_enable,           
     output logic [1:0] decoded_reg_input_mux,        
-    output logic [2:0] decoded_alu_arithmetic_mux,   
+    output logic [3:0] decoded_alu_arithmetic_mux, // FIX: Expanded to 4 bits
     output logic decoded_alu_output_mux,             
     output logic decoded_pc_mux,                     
 
-    // Function call / return
     output logic decoded_call,
     output logic decoded_ret_fn,
-    output logic decoded_exit,           // thread termination (was RET)
+    output logic decoded_exit,           
     output logic decoded_sync,
     output logic decoded_shared_read_enable,
-    output logic decoded_shared_write_enable
+    output logic decoded_shared_write_enable,
+    output logic decoded_atomic
 );
 
-    localparam NOP     = 4'b0000,
-               BRnzp   = 4'b0001,
-               CMP     = 4'b0010,
-               ADD     = 4'b0011,
-               SUB     = 4'b0100,
-               MUL     = 4'b0101,
-               DIV     = 4'b0110,
-               LDR     = 4'b0111,
-               STR     = 4'b1000,
-               CONST   = 4'b1001,
-               SYNC    = 4'b1010,
-               LDSH    = 4'b1011,
-               STSH    = 4'b1100,
-               CALL    = 4'b1101,   // freed by merging LDR_IMM
-               RET_FN  = 4'b1110,   // function return
-               EXIT    = 4'b1111;   // thread exit (previously RET)
+    localparam NOP      = 6'd0,
+               BRnzp    = 6'd1,
+               CMP      = 6'd2,
+               ADD      = 6'd3,
+               SUB      = 6'd4,
+               MUL      = 6'd5,
+               DIV      = 6'd6,
+               LDR      = 6'd7,
+               STR      = 6'd8,
+               CONST    = 6'd9,
+               SYNC     = 6'd10,
+               LDSH     = 6'd11,
+               STSH     = 6'd12,
+               CALL     = 6'd13,
+               RET_FN   = 6'd14,
+               EXIT     = 6'd15,
+               ATOM_ADD = 6'd16,
+               // --- NEW OPCODES ---
+               AND      = 6'd17,
+               OR       = 6'd18,
+               XOR      = 6'd19,
+               SHL      = 6'd20,
+               SHR      = 6'd21,
+               MOD      = 6'd22,
+               MIN      = 6'd23,
+               MAX      = 6'd24,
+               ABS      = 6'd25,
+               NEG      = 6'd26;
 
     always_comb begin
-        // Direct field extraction
-        decoded_rd_address = instruction[11:8];
-        decoded_rs_address = instruction[7:4];
-        decoded_rt_address = instruction[3:0];
-        decoded_immediate  = {8'b0, instruction[7:0]};
-        decoded_nzp        = instruction[11:9];
+        decoded_rd_address = instruction[25:21];
+        decoded_rs_address = instruction[20:16];
+        
+        // FIX: For memory stores, the immediate takes up the Rt field.
+        // Route the source data to the Rd field so we can use [15:0] as the offset.
+        if (instruction[31:26] == STR || instruction[31:26] == STSH) begin
+            decoded_rt_address = instruction[25:21];
+        end else begin
+            decoded_rt_address = instruction[15:11];
+        end
 
-        // Default all control signals to zero
-        decoded_rs_read_enable     = 0;
-        decoded_rt_read_enable     = 0;
-        decoded_reg_write_enable   = 0;
-        decoded_mem_read_enable    = 0;
-        decoded_mem_write_enable   = 0;
-        decoded_nzp_write_enable   = 0;
-        decoded_reg_input_mux      = 2'b00;
-        decoded_alu_arithmetic_mux = 3'b000;
-        decoded_alu_output_mux     = 0;
-        decoded_pc_mux             = 0;
-        decoded_call               = 0;
-        decoded_ret_fn             = 0;
-        decoded_exit               = 0;
-        decoded_sync               = 0;
-        decoded_shared_read_enable = 0;
-        decoded_shared_write_enable= 0;
-        decoded_use_mem_offset     = 0;
-        decoded_mem_addr_offset    = 0;
+        decoded_nzp        = instruction[25:23];
+        
+        // Sign extend the 16-bit immediate to 32-bits
+        decoded_immediate  = {{ (DATA_BITS-16){instruction[15]} }, instruction[15:0]};
+        decoded_mem_addr_offset = instruction[15:0];
 
-        case (instruction[15:12])
-            BRnzp: begin
-                decoded_pc_mux = 1;
-            end
+        // Defaults
+        decoded_rs_read_enable     = 0; decoded_rt_read_enable     = 0;
+        decoded_reg_write_enable   = 0; decoded_mem_read_enable    = 0;
+        decoded_mem_write_enable   = 0; decoded_nzp_write_enable   = 0;
+        decoded_reg_input_mux      = 2'b00; decoded_alu_arithmetic_mux = 4'b0000;
+        decoded_alu_output_mux     = 0; decoded_pc_mux             = 0;
+        decoded_call               = 0; decoded_ret_fn             = 0;
+        decoded_exit               = 0; decoded_sync               = 0;
+        decoded_shared_read_enable = 0; decoded_shared_write_enable= 0;
+        decoded_use_mem_offset     = 0; decoded_atomic = 0;
+
+        case (instruction[31:26])
+            BRnzp: decoded_pc_mux = 1;
             CMP: begin 
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
-                decoded_alu_output_mux = 1;
-                decoded_nzp_write_enable = 1;
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_alu_output_mux = 1; decoded_nzp_write_enable = 1;
             end
             ADD: begin 
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1;
-                decoded_alu_arithmetic_mux = 3'b000; // ADD
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd0;
             end
             SUB: begin 
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1;
-                decoded_alu_arithmetic_mux = 3'b001; // SUB
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd1;
             end
             MUL: begin 
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1;
-                decoded_alu_arithmetic_mux = 3'b010; // MUL
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd2;
             end
             DIV: begin 
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
-                decoded_reg_write_enable = 1;
-                decoded_alu_arithmetic_mux = 3'b011; // DIV
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd3;
             end
-            LDR: begin   // now LDR Rd, [Rs + imm4] – imm4 from rt field
-                decoded_rs_read_enable = 1;
-                decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b01;       // Memory
-                decoded_mem_read_enable = 1;
-                decoded_use_mem_offset = 1;
-                decoded_mem_addr_offset = {4'b0, instruction[3:0]}; // rt field
+            AND: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd4;
             end
-            STR: begin   // STR [Rs + imm4], Rt – imm4 from rd field
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
-                decoded_mem_write_enable = 1;
+            OR: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd5;
+            end
+            XOR: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd6;
+            end
+            SHL: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd7;
+            end
+            SHR: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd8;
+            end
+            MOD: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd9;
+            end
+            MIN: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd10;
+            end
+            MAX: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd11;
+            end
+            ABS: begin 
+                decoded_rs_read_enable = 1; // ABS only needs Rs
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd12;
+            end
+            NEG: begin 
+                decoded_rs_read_enable = 1; // NEG only needs Rs
+                decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd13;
+            end
+            LDR: begin
+                decoded_rs_read_enable = 1; decoded_reg_write_enable = 1;
+                decoded_reg_input_mux = 2'b01; decoded_mem_read_enable = 1;
                 decoded_use_mem_offset = 1;
-                decoded_mem_addr_offset = {4'b0, instruction[11:8]}; // rd field
+            end
+            STR: begin
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
+                decoded_mem_write_enable = 1; decoded_use_mem_offset = 1;
             end
             CONST: begin 
-                decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b10;       // Immediate
+                decoded_reg_write_enable = 1; decoded_reg_input_mux = 2'b10;
             end
-            SYNC: begin
-                decoded_sync = 1;
-            end
+            SYNC: decoded_sync = 1;
             LDSH: begin
-                decoded_rs_read_enable = 1;
-                decoded_shared_read_enable = 1;
-                decoded_reg_input_mux = 2'b11;       // Shared
-                decoded_reg_write_enable = 1;
+                decoded_rs_read_enable = 1; decoded_shared_read_enable = 1;
+                decoded_reg_input_mux = 2'b11; decoded_reg_write_enable = 1;
             end
             STSH: begin
-                decoded_rs_read_enable = 1;
-                decoded_rt_read_enable = 1;
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1;
                 decoded_shared_write_enable = 1;
             end
             CALL: begin
-                decoded_call = 1;                    // new: function call
-                decoded_pc_mux = 1;                  // jump to immediate
+                decoded_call = 1; decoded_pc_mux = 1;
             end
-            RET_FN: begin
-                decoded_ret_fn = 1;                  // function return
-            end
-            EXIT: begin
-                decoded_exit = 1;                    // thread termination
+            RET_FN: decoded_ret_fn = 1;
+            EXIT: decoded_exit = 1;
+            ATOM_ADD: begin
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1;
+                decoded_reg_input_mux = 2'b01; // Assign output from MEMORY (LSU writes old_val to Rd)
+                decoded_atomic = 1;
+                decoded_use_mem_offset = 0;
             end
             default: ; // NOP
         endcase
