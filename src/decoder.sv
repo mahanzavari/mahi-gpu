@@ -33,25 +33,27 @@ module decoder #(
     output logic decoded_exit,           
     output logic decoded_sync,
     output logic decoded_shared_read_enable,
-    output logic decoded_shared_write_enable
+    output logic decoded_shared_write_enable,
+    output logic decoded_atomic
 );
 
-    localparam NOP     = 6'd0,
-               BRnzp   = 6'd1,
-               CMP     = 6'd2,
-               ADD     = 6'd3,
-               SUB     = 6'd4,
-               MUL     = 6'd5,
-               DIV     = 6'd6,
-               LDR     = 6'd7,
-               STR     = 6'd8,
-               CONST   = 6'd9,
-               SYNC    = 6'd10,
-               LDSH    = 6'd11,
-               STSH    = 6'd12,
-               CALL    = 6'd13,
-               RET_FN  = 6'd14,
-               EXIT    = 6'd15;
+    localparam NOP      = 6'd0,
+               BRnzp    = 6'd1,
+               CMP      = 6'd2,
+               ADD      = 6'd3,
+               SUB      = 6'd4,
+               MUL      = 6'd5,
+               DIV      = 6'd6,
+               LDR      = 6'd7,
+               STR      = 6'd8,
+               CONST    = 6'd9,
+               SYNC     = 6'd10,
+               LDSH     = 6'd11,
+               STSH     = 6'd12,
+               CALL     = 6'd13,
+               RET_FN   = 6'd14,
+               EXIT     = 6'd15,
+               ATOM_ADD = 6'd16; 
 
     always_comb begin
         decoded_rd_address = instruction[25:21];
@@ -80,7 +82,7 @@ module decoder #(
         decoded_call               = 0; decoded_ret_fn             = 0;
         decoded_exit               = 0; decoded_sync               = 0;
         decoded_shared_read_enable = 0; decoded_shared_write_enable= 0;
-        decoded_use_mem_offset     = 0;
+        decoded_use_mem_offset     = 0; decoded_atomic = 0;
 
         case (instruction[31:26])
             BRnzp: decoded_pc_mux = 1;
@@ -130,6 +132,14 @@ module decoder #(
             end
             RET_FN: decoded_ret_fn = 1;
             EXIT: decoded_exit = 1;
+            ATOM_ADD: begin
+                decoded_rs_read_enable = 1;
+                decoded_rt_read_enable = 1;
+                decoded_reg_write_enable = 1;
+                decoded_reg_input_mux = 2'b01; // Assign output from MEMORY (LSU writes old_val to Rd)
+                decoded_atomic = 1;
+                decoded_use_mem_offset = 0;
+            end
             default: ; // NOP
         endcase
     end

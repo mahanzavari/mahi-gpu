@@ -2,7 +2,7 @@
 `timescale 1ns/1ns
 module shared_mem #(
      parameter DATA_BITS         = 16,
-     parameter ADDR_BITS         = 8,
+     parameter ADDR_BITS         = 32,
      parameter SIZE              = 256,
      parameter THREADS_PER_BLOCK = 4
 ) (

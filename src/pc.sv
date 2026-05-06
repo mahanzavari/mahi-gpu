@@ -28,7 +28,7 @@ module pc #(
     // Per‑warp condition codes (unchanged)
     reg [2:0] nzp [NUM_WARPS-1:0];
 
-    // ─── Hardware return stack (per warp) ───
+    // --- Hardware return stack (per warp) ---
     localparam STACK_DEPTH = 8;
     reg [PROGRAM_MEM_ADDR_BITS-1:0] return_stack [NUM_WARPS-1:0][STACK_DEPTH-1:0];
     reg [$clog2(STACK_DEPTH)-1:0]   stack_ptr    [NUM_WARPS-1:0];

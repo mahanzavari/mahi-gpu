@@ -26,13 +26,14 @@ module scheduler #(
     input wire [31:0] ex_next_pc [THREADS_PER_BLOCK],
     input wire ex_exit,
     input wire ex_sync,
+    input wire ex_exception_valid, // <--- [EXCEPTION]
     output reg done
 );
 
-    typedef enum logic [2:0] { IDLE, READY, WAITING_MEM, WAITING_BARRIER, DONE_STATE } warp_state_t;
+    // <--- [EXCEPTION] Added FAULTED state
+    typedef enum logic [2:0] { IDLE, READY, WAITING_MEM, WAITING_BARRIER, DONE_STATE, FAULTED } warp_state_t;
     warp_state_t warp_state [NUM_WARPS];
 
-    // --- HARDWARE SIMT RECONVERGENCE STACK ---
     localparam STACK_DEPTH = 4;
     reg [31:0] current_pc [NUM_WARPS];
     reg [THREADS_PER_BLOCK-1:0] current_mask [NUM_WARPS];
@@ -46,11 +47,9 @@ module scheduler #(
     logic [$clog2(NUM_WARPS+1):0] num_active_warps_comb;
     logic all_warps_done;
 
-    // ─── Combinational flush inhibit for same‑cycle protection ───
     logic [NUM_WARPS-1:0] warp_flush_inhibit;
-
-    // Combinational branch/divergence detection
     logic ex_is_branch, ex_has_divergence;
+
     always_comb begin
         ex_is_branch = 1'b0;
         ex_has_divergence = 1'b0;
@@ -78,14 +77,14 @@ module scheduler #(
         if (ex_valid && ex_active_mask != 0 &&
             !(mem_req_valid && mem_warp_id == ex_warp_id) &&
             warp_state[ex_warp_id] != WAITING_MEM) begin
-            if (ex_exit || ex_has_divergence || ex_is_branch || ex_sync)
+            // <--- [EXCEPTION] Don't issue if an exception is raised
+            if (ex_exception_valid || ex_exit || ex_has_divergence || ex_is_branch || ex_sync)
                 warp_flush_inhibit[ex_warp_id] = 1'b1;
         end
         if (mem_req_valid && warp_state[mem_warp_id] != WAITING_MEM)
             warp_flush_inhibit[mem_warp_id] = 1'b1;
     end
 
-    // ─── State updates ───
     integer w, t;
     always @(posedge clk) begin
         if (reset) begin
@@ -127,76 +126,81 @@ module scheduler #(
                 current_pc[mem_warp_id] <= mem_pc + 1;
             end
 
-            // EX stage processing (unchanged except removed duplicate flush logic)
+            // EX stage processing
             if (ex_valid && ex_active_mask != 0 &&
                 !(mem_req_valid && mem_warp_id == ex_warp_id) &&
                 warp_state[ex_warp_id] != WAITING_MEM) begin
                 
-                logic [31:0] target_a, target_b;
-                logic [THREADS_PER_BLOCK-1:0] mask_a, mask_b;
-                logic is_divergent, is_branch, is_reconverge;
-
-                target_a = 32'hFFFFFFFF; target_b = 32'hFFFFFFFF;
-                mask_a = 0; mask_b = 0;
-                is_divergent = 0; is_branch = 0;
-
-                for (t = 0; t < THREADS_PER_BLOCK; t++) begin
-                    if (ex_active_mask[t]) begin
-                        if (!ex_exit) begin
-                            if (target_a == 32'hFFFFFFFF) begin
-                                target_a = ex_next_pc[t]; mask_a[t] = 1'b1;
-                            end else if (ex_next_pc[t] == target_a) begin
-                                mask_a[t] = 1'b1;
-                            end else begin
-                                target_b = ex_next_pc[t]; mask_b[t] = 1'b1;
-                                is_divergent = 1;
-                            end
-                            if (ex_next_pc[t] != (ex_pc + 1)) is_branch = 1;
-                        end
-                    end
-                end
-
-                if (ex_exit) begin
-                    if (stack_ptr[ex_warp_id] > 0) begin
-                        stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1;
-                        current_pc[ex_warp_id] <= stack_pc[ex_warp_id][stack_ptr[ex_warp_id] - 1];
-                        current_mask[ex_warp_id] <= stack_mask[ex_warp_id][stack_ptr[ex_warp_id] - 1];
-                        flush_warp_mask[ex_warp_id] <= 1'b1;
-                    end else begin
-                        warp_state[ex_warp_id] <= DONE_STATE;
-                        current_mask[ex_warp_id] <= 0;
-                        flush_warp_mask[ex_warp_id] <= 1'b1;
-                    end
-                end else if (is_divergent) begin
-                    stack_pc[ex_warp_id][stack_ptr[ex_warp_id]] <= target_b;
-                    stack_mask[ex_warp_id][stack_ptr[ex_warp_id]] <= mask_b;
-                    stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] + 1;
-
-                    current_pc[ex_warp_id] <= target_a;
-                    current_mask[ex_warp_id] <= mask_a;
+                // <--- [EXCEPTION] Trap faulting warps immediately
+                if (ex_exception_valid) begin
+                    warp_state[ex_warp_id] <= FAULTED;
                     flush_warp_mask[ex_warp_id] <= 1'b1;
                 end else begin
-                    is_reconverge = (stack_ptr[ex_warp_id] > 0 &&
-                                     target_a == stack_pc[ex_warp_id][stack_ptr[ex_warp_id]-1]);
+                    logic [31:0] target_a, target_b;
+                    logic [THREADS_PER_BLOCK-1:0] mask_a, mask_b;
+                    logic is_divergent, is_branch, is_reconverge;
 
-                    if (is_reconverge) begin
-                        current_pc[ex_warp_id] <= target_a;
-                        current_mask[ex_warp_id] <= mask_a | stack_mask[ex_warp_id][stack_ptr[ex_warp_id]-1];
-                        stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1;
-                        flush_warp_mask[ex_warp_id] <= 1'b1;
-                    end else if (is_branch || ex_sync) begin
+                    target_a = 32'hFFFFFFFF; target_b = 32'hFFFFFFFF;
+                    mask_a = 0; mask_b = 0;
+                    is_divergent = 0; is_branch = 0;
+
+                    for (t = 0; t < THREADS_PER_BLOCK; t++) begin
+                        if (ex_active_mask[t]) begin
+                            if (!ex_exit) begin
+                                if (target_a == 32'hFFFFFFFF) begin
+                                    target_a = ex_next_pc[t]; mask_a[t] = 1'b1;
+                                end else if (ex_next_pc[t] == target_a) begin
+                                    mask_a[t] = 1'b1;
+                                end else begin
+                                    target_b = ex_next_pc[t]; mask_b[t] = 1'b1;
+                                    is_divergent = 1;
+                                end
+                                if (ex_next_pc[t] != (ex_pc + 1)) is_branch = 1;
+                            end
+                        end
+                    end
+
+                    if (ex_exit) begin
+                        if (stack_ptr[ex_warp_id] > 0) begin
+                            stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1;
+                            current_pc[ex_warp_id] <= stack_pc[ex_warp_id][stack_ptr[ex_warp_id] - 1];
+                            current_mask[ex_warp_id] <= stack_mask[ex_warp_id][stack_ptr[ex_warp_id] - 1];
+                            flush_warp_mask[ex_warp_id] <= 1'b1;
+                        end else begin
+                            warp_state[ex_warp_id] <= DONE_STATE;
+                            current_mask[ex_warp_id] <= 0;
+                            flush_warp_mask[ex_warp_id] <= 1'b1;
+                        end
+                    end else if (is_divergent) begin
+                        stack_pc[ex_warp_id][stack_ptr[ex_warp_id]] <= target_b;
+                        stack_mask[ex_warp_id][stack_ptr[ex_warp_id]] <= mask_b;
+                        stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] + 1;
+
                         current_pc[ex_warp_id] <= target_a;
                         current_mask[ex_warp_id] <= mask_a;
                         flush_warp_mask[ex_warp_id] <= 1'b1;
-                        if (ex_sync) begin
-                            warp_state[ex_warp_id] <= WAITING_BARRIER;
-                            barrier_count <= barrier_count + 1;
+                    end else begin
+                        is_reconverge = (stack_ptr[ex_warp_id] > 0 &&
+                                         target_a == stack_pc[ex_warp_id][stack_ptr[ex_warp_id]-1]);
+
+                        if (is_reconverge) begin
+                            current_pc[ex_warp_id] <= target_a;
+                            current_mask[ex_warp_id] <= mask_a | stack_mask[ex_warp_id][stack_ptr[ex_warp_id]-1];
+                            stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1;
+                            flush_warp_mask[ex_warp_id] <= 1'b1;
+                        end else if (is_branch || ex_sync) begin
+                            current_pc[ex_warp_id] <= target_a;
+                            current_mask[ex_warp_id] <= mask_a;
+                            flush_warp_mask[ex_warp_id] <= 1'b1;
+                            if (ex_sync) begin
+                                warp_state[ex_warp_id] <= WAITING_BARRIER;
+                                barrier_count <= barrier_count + 1;
+                            end
                         end
                     end
                 end
             end
 
-            // Barrier release
             if (barrier_count >= num_active_warps_comb && num_active_warps_comb > 0) begin
                 for (int w_rel = 0; w_rel < NUM_WARPS; w_rel++) begin
                     if (warp_state[w_rel] == WAITING_BARRIER)
@@ -205,7 +209,6 @@ module scheduler #(
                 barrier_count <= 0;
             end
 
-            // ─── Issue logic (protected by warp_flush_inhibit) ───
             if (start && !done && (!frontend_stall || flush_warp_mask[sched_warp_id])) begin
                 automatic logic found = 0;
                 automatic logic [$clog2(NUM_WARPS)-1:0] next_rr = rr_ptr;
@@ -214,7 +217,7 @@ module scheduler #(
                     automatic logic [$clog2(NUM_WARPS)-1:0] check_w = (rr_ptr + i) % NUM_WARPS;
                     if (!found && warp_state[check_w] == READY &&
                         current_mask[check_w] != 0 &&
-                        !warp_flush_inhibit[check_w]) begin   // ← critical guard
+                        !warp_flush_inhibit[check_w]) begin
                         found = 1; next_rr = check_w;
                     end
                 end
@@ -233,7 +236,8 @@ module scheduler #(
 
             all_warps_done = 1;
             for (w = 0; w < NUM_WARPS; w++) begin
-                if (warp_state[w] != DONE_STATE && warp_state[w] != IDLE)
+                // <--- [EXCEPTION] Treat FAULTED warps as 'done' so the GPU can safely complete
+                if (warp_state[w] != DONE_STATE && warp_state[w] != IDLE && warp_state[w] != FAULTED)
                     all_warps_done = 0;
             end
             if (start && all_warps_done && warp_state[0] != IDLE) done <= 1;

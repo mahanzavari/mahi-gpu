@@ -17,31 +17,32 @@ module lsu #(
     input wire decoded_mem_write_enable,
     input wire decoded_shared_read_enable,
     input wire decoded_shared_write_enable,
+    input wire decoded_atomic, // <--- [ATOMIC] Port 
     input wire [4:0] decoded_rd,
     input wire [DATA_BITS-1:0] rs [THREADS_PER_BLOCK],
     input wire [DATA_BITS-1:0] rt [THREADS_PER_BLOCK],
 
-    input wire [15:0] addr_offset, // FIX: 16-bit offset from decoder
+    input wire [15:0] addr_offset,
     input wire        use_offset,
 
     output reg mem_read_valid,
-    output reg [31:0] mem_read_block_address, // FIX: 32-bit Array Address
+    output reg [31:0] mem_read_block_address,
     input wire mem_read_ready,
     input wire [(DATA_BITS*WORDS_PER_BLOCK)-1:0] mem_read_block_data,
     
     output reg mem_write_valid,
-    output reg [31:0] mem_write_block_address, // FIX: 32-bit Array Address
+    output reg [31:0] mem_write_block_address,
     output reg [(DATA_BITS*WORDS_PER_BLOCK)-1:0] mem_write_block_data,
     output reg [WORDS_PER_BLOCK-1:0] mem_write_strobe,
     input wire mem_write_ready,
 
     output reg [THREADS_PER_BLOCK-1:0] shared_mem_read_valid,    
-    output reg [31:0] shared_mem_read_address [THREADS_PER_BLOCK], // FIX: 32-bit Address
+    output reg [31:0] shared_mem_read_address [THREADS_PER_BLOCK],
     input wire [THREADS_PER_BLOCK-1:0] shared_mem_read_ready,
     input wire [DATA_BITS-1:0] shared_mem_read_data [THREADS_PER_BLOCK],
     
     output reg [THREADS_PER_BLOCK-1:0] shared_mem_write_valid,
-    output reg [31:0] shared_mem_write_address [THREADS_PER_BLOCK], // FIX: 32-bit Address
+    output reg [31:0] shared_mem_write_address [THREADS_PER_BLOCK],
     output reg [DATA_BITS-1:0] shared_mem_write_data [THREADS_PER_BLOCK],
     input wire [THREADS_PER_BLOCK-1:0] shared_mem_write_ready,
 
@@ -57,11 +58,11 @@ module lsu #(
     reg req_valid [NUM_WARPS];
     reg [2:0] req_type [NUM_WARPS]; 
     reg [THREADS_PER_BLOCK-1:0] req_mask [NUM_WARPS];
-    reg [31:0] req_addr [NUM_WARPS][THREADS_PER_BLOCK]; // FIX: 32-bit Tracking
+    reg [31:0] req_addr [NUM_WARPS][THREADS_PER_BLOCK];
     reg [DATA_BITS-1:0] req_data_val [NUM_WARPS][THREADS_PER_BLOCK];
     reg [4:0] req_rd [NUM_WARPS]; 
 
-    wire [31:0] incoming_effective_addr [THREADS_PER_BLOCK]; // FIX: 32-bit Calculation
+    wire [31:0] incoming_effective_addr [THREADS_PER_BLOCK];
     genvar i;
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i++) begin
@@ -69,15 +70,21 @@ module lsu #(
         end
     endgenerate
 
-    typedef enum logic [2:0] { IDLE, COALESCE_READ, WAIT_READ, COALESCE_WRITE, WAIT_WRITE, WAIT_SHARED } state_t;
+    typedef enum logic [3:0] { 
+        IDLE, COALESCE_READ, WAIT_READ, COALESCE_WRITE, WAIT_WRITE, WAIT_SHARED,
+        ATOMIC_READ, ATOMIC_WAIT_READ, ATOMIC_WAIT_WRITE 
+    } state_t;
+    
     state_t state;
 
     reg [$clog2(NUM_WARPS)-1:0] active_warp;
     reg [THREADS_PER_BLOCK-1:0] pending_threads;
-    reg [31:0] current_block_addr; // FIX: 32-bit tracking
-    
-    wire [31:0] active_block_addr [THREADS_PER_BLOCK]; // FIX: 32-bit address blocks
+    reg [31:0] current_block_addr;
+    reg [2:0] active_t; // Serial tracking for atomics
+
+    wire [31:0] active_block_addr [THREADS_PER_BLOCK];
     wire [1:0] active_word_offset [THREADS_PER_BLOCK];
+    
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i++) begin
             assign active_block_addr[i] = req_addr[active_warp][i] >> $clog2(WORDS_PER_BLOCK);
@@ -96,7 +103,7 @@ module lsu #(
         end else begin
             lsu_we <= 0; done_pulse <= 0;
 
-            if (|enable_mask && (decoded_mem_read_enable || decoded_mem_write_enable || decoded_shared_read_enable || decoded_shared_write_enable)) begin
+            if (|enable_mask && (decoded_mem_read_enable || decoded_mem_write_enable || decoded_shared_read_enable || decoded_shared_write_enable || decoded_atomic)) begin
                 req_valid[warp_id] <= 1;
                 req_mask[warp_id] <= enable_mask;
                 req_rd[warp_id] <= decoded_rd;
@@ -104,7 +111,10 @@ module lsu #(
                     req_addr[warp_id][t] <= incoming_effective_addr[t];
                     req_data_val[warp_id][t] <= rt[t];
                 end
-                if (decoded_mem_read_enable) req_type[warp_id] <= 3'd0;
+                
+                // Priority Routing
+                if (decoded_atomic) req_type[warp_id] <= 3'd4;
+                else if (decoded_mem_read_enable) req_type[warp_id] <= 3'd0;
                 else if (decoded_mem_write_enable) req_type[warp_id] <= 3'd1;
                 else if (decoded_shared_read_enable) req_type[warp_id] <= 3'd2;
                 else req_type[warp_id] <= 3'd3;
@@ -123,6 +133,7 @@ module lsu #(
 
                         if (req_type[selected_w] == 3'd0) state <= COALESCE_READ;
                         else if (req_type[selected_w] == 3'd1) state <= COALESCE_WRITE;
+                        else if (req_type[selected_w] == 3'd4) state <= ATOMIC_READ; // Route to ATOM_ADD
                         else begin
                             for (t = 0; t < THREADS_PER_BLOCK; t++) begin
                                 if (req_mask[selected_w][t]) begin
@@ -171,15 +182,27 @@ module lsu #(
                         for (t = 0; t < THREADS_PER_BLOCK; t++) if (first_pending == -1 && pending_threads[t]) first_pending = t;
                         current_block_addr <= active_block_addr[first_pending];
                         mem_write_block_address <= active_block_addr[first_pending];
-                        mem_write_strobe <= 0;
-                        mem_write_block_data <= 0;                          // ← clear all words
-                        for (t = 0; t < THREADS_PER_BLOCK; t++) begin
-                            if (pending_threads[t] && active_block_addr[t] == active_block_addr[first_pending]) begin
-                                mem_write_block_data[(active_word_offset[t] * DATA_BITS) +: DATA_BITS] <= req_data_val[active_warp][t];
-                                mem_write_strobe[active_word_offset[t]] <= 1'b1;
+                        
+                        // Robust Write Combination logic
+                        begin : coalesce_wr
+                            logic [(DATA_BITS*WORDS_PER_BLOCK)-1:0] next_wd;
+                            logic [WORDS_PER_BLOCK-1:0] next_strobe;
+                            next_wd = 0;
+                            next_strobe = 0;
+                            
+                            for (t = 0; t < THREADS_PER_BLOCK; t++) begin
+                                if (pending_threads[t] && active_block_addr[t] == active_block_addr[first_pending]) begin
+                                    next_wd[(active_word_offset[t] * DATA_BITS) +: DATA_BITS] = req_data_val[active_warp][t];
+                                    next_strobe[active_word_offset[t]] = 1'b1;
+                                end
                             end
+                            
+                            mem_write_block_data <= next_wd;
+                            mem_write_strobe <= next_strobe;
                         end
-                        mem_write_valid <= 1; state <= WAIT_WRITE;
+                        
+                        mem_write_valid <= 1; 
+                        state <= WAIT_WRITE;
                     end else begin
                         req_valid[active_warp] <= 0; state <= IDLE;
                     end
@@ -197,6 +220,70 @@ module lsu #(
                     end
                 end
                 
+                // --- ATOMIC SERIALIZATION ENGINE -----------------------------
+                ATOMIC_READ: begin
+                    if (|pending_threads) begin
+                        int first_pending = -1;
+                        for (t = 0; t < THREADS_PER_BLOCK; t++) 
+                            if (first_pending == -1 && pending_threads[t]) first_pending = t;
+                            
+                        active_t <= first_pending;
+                        current_block_addr <= active_block_addr[first_pending];
+                        mem_read_block_address <= active_block_addr[first_pending];
+                        mem_read_valid <= 1;
+                        state <= ATOMIC_WAIT_READ;
+                    end else begin
+                        req_valid[active_warp] <= 0; 
+                        state <= IDLE;
+                    end
+                end
+                
+                ATOMIC_WAIT_READ: begin
+                    if (mem_read_ready) begin
+                        mem_read_valid <= 0;
+                        
+                        // Robust compute block: No partial/non-blocking vector overwrites
+                        begin : atomic_math
+                            logic [DATA_BITS-1:0] old_val;
+                            logic [DATA_BITS-1:0] sum;
+                            
+                            // 1. Shift and Mask out the correct old value word
+                            old_val = (mem_read_block_data >> (active_word_offset[active_t] * DATA_BITS)) & 32'hFFFFFFFF;
+                            
+                            // 2. Perform the Addition
+                            sum = old_val + req_data_val[active_warp][active_t];
+                            
+                            // 3. Prep the target old value to write back to Rd
+                            lsu_data[active_t] <= old_val;
+                            
+                            // 4. Setup the LSU output pins explicitly (Clean assignments)
+                            mem_write_block_address <= current_block_addr;
+                            mem_write_strobe <= (4'b0001 << active_word_offset[active_t]);
+                            mem_write_block_data <= ({96'd0, sum} << (active_word_offset[active_t] * DATA_BITS));
+                        end
+                        
+                        mem_write_valid <= 1;
+                        state <= ATOMIC_WAIT_WRITE;
+                    end
+                end
+                
+                ATOMIC_WAIT_WRITE: begin
+                    if (mem_write_ready) begin
+                        mem_write_valid <= 0;
+                        
+                        // Clean bitwise clear prevents array-overwrite simulation bugs
+                        pending_threads <= pending_threads & ~(1 << active_t);
+                        
+                        // Awaken the thread simultaneously with the write acknowledgement
+                        lsu_we[active_t] <= 1;
+                        done_pulse[active_t] <= 1;
+                        done_warp_id[active_t] <= lsu_warp_id;
+                        
+                        state <= ATOMIC_READ; // Loop to next thread
+                    end
+                end
+                // -------------------------------------------------------------
+
                 WAIT_SHARED: begin
                     for (t = 0; t < THREADS_PER_BLOCK; t++) begin
                         if (pending_threads[t]) begin
