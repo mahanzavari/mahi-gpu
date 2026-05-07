@@ -59,7 +59,6 @@ After understanding the fundamentals laid out in this project, you can check out
 
 </br><br>
 
-
 The GPU is built to execute a single kernel at a time.
 
 In order to launch a kernel, we need to do the following:
@@ -91,12 +90,18 @@ The GPU is built to interface with an external global memory. Data memory and pr
 #### Global Memory
 
 The data memory has the following specifications:
-- 8-bit addressability (256 total rows of data memory)
-- 16-bit data
+- 32-bit addressability
+- 32-bit data (grouped into 128-bit blocks for caches)
 
 The program memory has the following specifications:
-- 8-bit addressability (256 rows of program memory)
-- 16-bit data (each instruction is 16 bits as specified by the ISA)
+- 32-bit addressability
+- 32-bit data (each instruction is 32 bits as specified by the ISA)
+
+#### Cache Hierarchy (L1)
+
+To reduce latency, each core features dedicated L1 caches:
+- **Instruction Cache (I-Cache):** Caches 128-bit blocks (4 instructions per block) from program memory.
+- **Data Cache (D-Cache):** A Write-Through/Write-Update cache that manages 128-bit blocks of data, drastically speeding up global memory accesses.
 
 #### Shared Memory
 
@@ -104,11 +109,11 @@ Each core has a shared memory block for faster communication and data sharing am
 
 #### Memory Controllers
 
-Global memory has fixed read/write bandwidth, but there may be far more incoming requests across all cores. The memory controllers manage outgoing requests, throttle them based on actual external memory bandwidth, and relay responses back to the proper resources.
+Global memory has fixed read/write bandwidth, but there may be far more incoming requests across all cores. The memory controllers handle arbitration using a round-robin system to manage outgoing requests from the L1 caches, throttling them based on actual external memory bandwidth.
 
 ### Core
 
-Each core processes one block at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, and register file. Additionally, the core contains a scheduler that manages warp execution and handles control flow divergence.
+Each core processes one block at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, and register file. Additionally, the core contains a scheduler that manages warp execution and handles control flow divergence and hardware exceptions.
 
 #### Scheduler
 
@@ -118,59 +123,71 @@ The scheduler manages the continuous flow of instructions into the pipeline. Bec
 - **Branching and divergence**: Monitoring the Execute stage for branch instructions and flushing the pipeline if a jump is taken. Individual threads can diverge; the scheduler tracks per-thread program counters and active masks to serialize divergent paths.
 - **Synchronization**: Supporting `SYNC` instructions as a barrier across warps within a block. The scheduler counts arriving warps and releases them when all active warps have reached the barrier.
 - **Warp scheduling**: Round-robin selection of ready warps to issue instructions, maximizing utilization even when some warps are stalled on memory or barriers.
+- **Exception Handling**: Trapping faults (like divide-by-zero or out-of-bounds memory access) and isolating the offending warp into a `FAULTED` state to prevent memory corruption while letting other warps safely complete.
 
 #### Thread Units
-- **Fetcher**: Asynchronously fetches the instruction at the current program counter from program memory.
-- **Decoder**: Purely combinational unit that translates 16-bit instructions into pipeline control signals.
+- **Fetcher**: Asynchronously fetches the instruction at the current program counter via the L1 Instruction Cache.
+- **Decoder**: Purely combinational unit that translates 32-bit instructions into pipeline control signals.
 - **Register Files**: Each thread has its own dedicated register file, holding general-purpose registers and read-only special registers (`%blockIdx`, `%blockDim`, `%threadIdx`), enabling the SIMD pattern.
-- **ALUs**: Dedicated arithmetic-logic unit for each thread, supporting addition, subtraction, multiplication, division, and comparisons.
-- **LSUs**: Dedicated load-store unit for each thread to access global data memory and shared memory asynchronously.
+- **ALUs**: Dedicated arithmetic-logic unit for each thread, supporting standard arithmetic, bitwise logic, and advanced shader math operations (`MIN`, `MAX`, `ABS`, `NEG`).
+- **LSUs**: Dedicated load-store unit for each thread. Handles global data, shared memory, and atomic memory operations (`ATOM_ADD`), providing hardware-level serialization for data consistency.
 
 ## ISA
 
-| Mnemonic | Opcode | Type | Notes |
-|:--------:|:------:|:----:|:-----:|
-| `NOP`    | 0000   | —    | No operation |
-| `BRnzp`  | 0001   | I    | Conditional branch on NZP flags |
-| `CMP`    | 0010   | R    | Compare rs, rt → update NZP |
-| `ADD`    | 0011   | R    | rd = rs + rt |
-| `SUB`    | 0100   | R    | rd = rs - rt |
-| `MUL`    | 0101   | R    | rd = rs * rt |
-| `DIV`    | 0110   | R    | rd = rs / rt |
-| `LDR`    | 0111   | R    | rd = MEM[rs + offset] (offset from rt or immediate field) |
-| `STR`    | 1000   | R    | MEM[rs + offset] = rt (offset from rd or immediate field) |
-| `CONST`  | 1001   | I    | rd = sign/zero-extended immediate |
-| `SYNC`   | 1010   | —    | Barrier synchronization (all threads in block wait) |
-| `LDSH`   | 1011   | R    | Load from shared memory |
-| `STSH`   | 1100   | R    | Store to shared memory |
-| `CALL`   | 1101   | I    | Function call (pushes return address) |
-| `RET_FN` | 1110   | —    | Function return (pops return address) |
-| `EXIT`   | 1111   | —    | Thread termination |
+| Mnemonic   | Opcode | Type | Notes |
+|:----------:|:------:|:----:|:-----:|
+| `NOP`      | 0      | —    | No operation |
+| `BRnzp`    | 1      | I    | Conditional branch on NZP flags |
+| `CMP`      | 2      | R    | Compare rs, rt → update NZP |
+| `ADD`      | 3      | R    | rd = rs + rt |
+| `SUB`      | 4      | R    | rd = rs - rt |
+| `MUL`      | 5      | R    | rd = rs * rt |
+| `DIV`      | 6      | R    | rd = rs / rt (Throws DIV0 Exception) |
+| `LDR`      | 7      | R    | rd = MEM[rs + offset] |
+| `STR`      | 8      | R    | MEM[rs + offset] = rt |
+| `CONST`    | 9      | I    | rd = sign/zero-extended immediate |
+| `SYNC`     | 10     | —    | Barrier synchronization |
+| `LDSH`     | 11     | R    | Load from shared memory |
+| `STSH`     | 12     | R    | Store to shared memory |
+| `CALL`     | 13     | I    | Function call (pushes return address) |
+| `RET_FN`   | 14     | —    | Function return (pops return address) |
+| `EXIT`     | 15     | —    | Thread termination |
+| `ATOM_ADD` | 16     | R    | Atomic addition to global memory |
+| `AND`      | 17     | R    | Bitwise AND |
+| `OR`       | 18     | R    | Bitwise OR |
+| `XOR`      | 19     | R    | Bitwise XOR |
+| `SHL`      | 20     | R    | Shift Left |
+| `SHR`      | 21     | R    | Shift Right |
+| `MOD`      | 22     | R    | rd = rs % rt |
+| `MIN`      | 23     | R    | rd = min(rs, rt) |
+| `MAX`      | 24     | R    | rd = max(rs, rt) |
+| `ABS`      | 25     | R    | rd = abs(rs) |
+| `NEG`      | 26     | R    | rd = -rs |
 
 ## Instruction Format
 
-All instructions are 16 bits.
+All instructions are 32 bits.
 
+```text
+31        26 25    21 20    16 15    11 10              0
++------------+--------+--------+--------+---------------+
+|  OPCODE    |   RD   |   RS   |   RT   |    UNUSED     |  (R-type)
++------------+--------+--------+--------+---------------+
+
+31        26 25    21 20    16 15                       0
++------------+--------+--------+------------------------+
+|  OPCODE    | RD/NZP |   RS   |     IMMEDIATE[15:0]    |  (I-type: BR, CONST, CALL, LDR, STR)
++------------+--------+--------+------------------------+
 ```
-15        12 11        8 7        4 3         0
-+------------+-----------+-----------+-----------+
-|  OPCODE    |    RD     |    RS     |    RT     |  (R-type)
-+------------+-----------+-----------+-----------+
 
-15        12 11        8 7                                0
-+------------+-----------+-------------------------------+
-|  OPCODE    |    NZP    |         IMMEDIATE[7:0]        |  (I-type: BR, CONST, CALL)
-+------------+-----------+-------------------------------+
-```
-
-For `LDR` and `STR`, the offset is taken from the `rt` field (for `LDR`) or `rd` field (for `STR`) and zero-extended to 8 bits.
+For `LDR` and `STR`, the immediate 16-bit offset is taken and added to the address computed from `rs`.
 
 ## Registers
 
-Each thread has 16 registers:
+Each thread has 32 registers (32-bit width):
 
-- 13 general-purpose registers (R0–R12) — readable and writable
-- 3 read-only special registers (R13–R15) — automatically set, not writable by the program
+- General-purpose registers (R0–R28) — readable and writable
+- Read-only special registers (R29–R31) — automatically set, not writable by the program
 
 These special registers mirror CUDA-style registers that allow each thread to know:
 1. Which block it belongs to
@@ -179,10 +196,10 @@ These special registers mirror CUDA-style registers that allow each thread to kn
 
 | Register Index | Name (Conceptual) | Width | Read/Write | Initialization | Purpose |
 |:--------------:|:----------------:|:-----:|:----------:|:--------------:|---------|
-| 0–12           | General Purpose Registers (GPRs) | DATA_BITS | R/W | Zero | Used for arithmetic, memory ops, constants, etc. |
-| 13             | %blockIdx        | DATA_BITS | Read-only | Set to block_id on reset and every cycle | Identifies which block this thread belongs to |
-| 14             | %blockDim        | DATA_BITS | Read-only | Constant = THREADS_PER_BLOCK | Number of threads per block |
-| 15             | %threadIdx       | DATA_BITS | Read-only | Constant = THREAD_ID | Thread index within the block |
+| 0–28           | General Purpose Registers (GPRs) | 32-bit | R/W | Zero | Used for arithmetic, memory ops, constants, etc. |
+| 29             | %blockIdx        | 32-bit | Read-only | Set to block_id | Identifies which block this thread belongs to |
+| 30             | %blockDim        | 32-bit | Read-only | Constant = THREADS_PER_BLOCK * WARPS | Number of threads per block |
+| 31             | %threadIdx       | 32-bit | Read-only | Constant = THREAD_ID | Thread index within the block |
 
 ## Execution Pipeline
 
@@ -194,57 +211,40 @@ The core implements a classic 5-stage RISC pipeline with hardware forwarding and
 
 ### Stages
 
-1. **IF (Instruction Fetch)**: The Fetcher requests the instruction at the current PC from program memory. The scheduler selects which warp and which threads issue the next instruction.
-2. **ID (Instruction Decode)**: The Decoder translates the 16-bit instruction into control signals. The register file is read asynchronously, and forwarding paths are applied to resolve Read-After-Write hazards without stalling.
-3. **EX (Execute)**: The ALU performs arithmetic or comparisons. Branch targets and conditions are evaluated here. The NZP condition codes are updated for compare instructions.
-4. **MEM (Memory Access)**: The LSU performs asynchronous reads/writes to global or shared memory. The pipeline may stall if memory is not immediately ready, and the scheduler moves to another warp.
+1. **IF (Instruction Fetch)**: The Fetcher requests the 32-bit instruction at the current PC from the I-Cache.
+2. **ID (Instruction Decode)**: The Decoder translates the instruction into control signals. The register file is read asynchronously, and forwarding paths are applied.
+3. **EX (Execute)**: The ALU performs arithmetic or comparisons. Branch targets and conditions are evaluated here. Hardware faults (memory bounds, DIV0) are detected here, tripping the pipeline into an exception state.
+4. **MEM (Memory Access)**: The LSU performs asynchronous reads/writes to global or shared memory via the D-Cache, as well as complex serialized `ATOM_ADD` actions.
 5. **WB (Write Back)**: The result from the ALU or LSU is written back synchronously to the register file.
 
 ### Hardware Data Forwarding
 
-The pipeline includes forwarding logic that bypasses the register file when a later stage (MEM or WB) has a pending write to a register that is being read in the EX stage. This eliminates the need for compiler-inserted NOPs for most arithmetic dependencies, though memory loads still require careful scheduling due to the asynchronous memory interface.
+The pipeline includes forwarding logic that bypasses the register file when a later stage (MEM or WB) has a pending write to a register that is being read in the EX stage. This eliminates the need for compiler-inserted NOPs for most arithmetic dependencies.
 
 ### Branch Divergence Handling
 
-The scheduler maintains per-thread architectural and speculative program counters along with an active mask. When a branch occurs, threads that take the branch continue along the new path while others are masked out. Divergent control flow is serialized by the scheduler, which resynchronizes threads when they reconverge. The `SYNC` instruction provides an explicit barrier across all threads in a block.
-
-### Warp Scheduling and Barriers
-
-Warps (groups of threads) are scheduled round-robin by the scheduler. Warps can be in one of several states: `IDLE`, `READY`, `WAITING_MEM`, `WAITING_BARRIER`, or `DONE_STATE`. The barrier mechanism uses a counter to track how many warps have reached a `SYNC` instruction; when the counter equals the number of active warps, all waiting warps are released.
+The scheduler maintains per-thread architectural and speculative program counters along with an active mask. When a branch occurs, threads that take the branch continue along the new path while others are masked out. Divergent control flow is serialized by the scheduler, which resynchronizes threads when they reconverge.
 
 ## Kernels
 
 ### Matrix Multiplication
 
-The following kernel performs a 5x5 matrix multiplication \( C = A \times B \), where \( A \) is the identity matrix and \( B \) contains values 0 through 24 laid out sequentially. The output matrix \( C \) should therefore equal \( B \) exactly.
-
-This example demonstrates several advanced features:
-- Thread indexing using `%blockDim` (R14) and `%threadIdx` (R15) to compute a global thread ID.
-- Bounds checking with conditional branches, causing 7 threads (IDs 25‑31) to diverge and exit immediately.
-- A subroutine (`DOT_PROD`) called via `CALL` and returned from via `RET_FN`, exercising the per‑warp hardware return stack.
-- Loop constructs with iteration over the inner dimension (`k` from 0 to 4).
-- Global memory loads/stores with offset addressing.
-
-**Memory layout**:
-- Matrix A: addresses 0‑24 (identity matrix: 1 on diagonal, 0 elsewhere)
-- Matrix B: addresses 25‑49 (values 0 to 24 in row‑major order)
-- Matrix C: addresses 50‑74 (output)
+The following kernel performs a 5x5 matrix multiplication \( C = A \times B \).
 
 **Assembly program** (addresses shown as PC):
 
 ```asm
 // --- MAIN KERNEL ---
-// R13 = %blockIdx, R15 = %threadIdx, R14 = %blockDim (16)
+// R29 = %blockIdx, R31 = %threadIdx, R30 = %blockDim
 0:  CONST R7, 16                // R7 = 16
-1:  MUL   R0, R13, R7           // R0 = blockIdx * 16
-2:  ADD   R0, R0, R15           // R0 = global thread ID
+1:  MUL   R0, R29, R7           // R0 = blockIdx * 16
+2:  ADD   R0, R0, R31           // R0 = global thread ID
 
 // Bounds check: if (R0 < 25) goto MAIN_BODY, else EXIT
 3:  CONST R1, 25
 4:  CMP   R0, R1
 5:  BRn   7                     // branch to MAIN_BODY if R0 < 25
 6:  EXIT                        // threads 25-31 diverge and terminate
-                                // (these are the extra threads beyond the 5x5 matrix)
 
 // MAIN_BODY: compute row = R0 / 5, col = R0 % 5
 7:  CONST R4, 5
@@ -287,38 +287,21 @@ This example demonstrates several advanced features:
 33: BRnzp 18                    // jump back to LOOP_START
 ```
 
-**Execution notes**:
-- The first 25 threads (global IDs 0‑24) compute one element of the 5x5 output matrix.
-- Threads 25‑31 immediately diverge and exit – they do not write to memory.
-- The `CALL`/`RET_FN` pair uses the per‑warp hardware stack, allowing nested function calls (up to a depth of 8).
-- The scheduler handles the divergent exit automatically: threads that exit are marked inactive and do not issue further instructions.
-- Memory loads have single‑cycle latency in the simulation, but the general pattern works with any memory latency because the LSU buffers requests per warp.
-
 ## Simulation
 
 The GPU is set up to simulate the execution of the above kernel. You can run the kernel simulations within tools like Xilinx Vivado or Altera Quartus.
 
-Executing the simulations will output a text console trace consisting of scheduler events, pipeline stage progress, memory controller handshakes, and register writes.
+Executing the simulations will output a text console trace consisting of scheduler events, exception traps, pipeline stage progress, memory controller handshakes, cache hits/misses, and register writes.
 
 ## Advanced Functionality
 
-For the sake of simplicity, there are additional features implemented in modern GPUs that heavily improve performance and functionality which this design currently omits or simplifies:
-
-### Memory Coalescing
-Multiple threads running in parallel often need to access sequential addresses in memory (e.g., neighboring elements in a matrix). Memory coalescing analyzes queued memory requests and combines neighboring requests into a single wide transaction, minimizing time spent on addressing.
+Features implemented to emulate modern hardware functionality:
 
 ### Cache Hierarchy
-Many GPUs include L1 and L2 caches for data and instructions to reduce average memory latency. This design currently has no caches beyond the shared memory.
+The GPU includes L1 Instruction and Data Caches, minimizing external requests over the memory controllers and dramatically improving throughput on repetitive or localized memory access patterns.
 
-### Dynamic Warp Scheduling
-While the scheduler implements round-robin selection, more sophisticated scheduling policies (e.g., priority-based, age-based) can further improve throughput.
+### Memory Fault & Exception Handling
+If an instruction requests a global array operation out-of-bounds or attempts to divide by zero, the EX pipeline stage correctly flags an exception. The scheduler catches this, flushes the offending warp's speculative instruction path, and moves the warp to an isolated `FAULTED` state preventing memory corruption.
 
-## Next Steps
-
-Potential improvements and additions for the future:
-
-- Add a simple instruction cache
-- Implement basic memory coalescing in the memory controller
-- Write a simple graphics kernel or add basic graphics hardware
-- Add support for multiple kernel launches without reset
-- Extend the ISA with floating-point operations
+### Atomic Memory Access
+Hardware atomic functions (`ATOM_ADD`) allow multi-threading patterns like global counter increments without race conditions.

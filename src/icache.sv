@@ -87,4 +87,27 @@ module icache #(
             endcase
         end
     end
+
+    // --- Performance Counters ---
+    (* keep = "true" *) reg [31:0] stat_accesses;
+    (* keep = "true" *) reg [31:0] stat_hits;
+    (* keep = "true" *) reg [31:0] stat_latency_cycles;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            stat_accesses <= 0;
+            stat_hits <= 0;
+            stat_latency_cycles <= 0;
+        end else begin
+            if (state == IDLE && core_read_valid) begin
+                stat_accesses <= stat_accesses + 1;
+                if (hit) stat_hits <= stat_hits + 1;
+            end
+            
+            // Track stall cycles for AMAT (Total Latency = Accesses + Stall Cycles)
+            if (core_read_valid && !core_read_ready) begin
+                stat_latency_cycles <= stat_latency_cycles + 1;
+            end
+        end
+    end
 endmodule

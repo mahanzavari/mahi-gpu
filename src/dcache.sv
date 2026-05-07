@@ -128,4 +128,37 @@ module dcache #(
             endcase
         end
     end
+
+  // --- Performance Counters ---
+    (* keep = "true" *) reg [31:0] stat_read_accesses;
+    (* keep = "true" *) reg [31:0] stat_read_hits;
+    (* keep = "true" *) reg [31:0] stat_write_accesses;
+    (* keep = "true" *) reg [31:0] stat_write_hits;
+    (* keep = "true" *) reg [31:0] stat_read_latency_cycles;
+    (* keep = "true" *) reg [31:0] stat_write_latency_cycles;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            stat_read_accesses <= 0;
+            stat_read_hits <= 0;
+            stat_write_accesses <= 0;
+            stat_write_hits <= 0;
+            stat_read_latency_cycles <= 0;
+            stat_write_latency_cycles <= 0;
+        end else begin
+            if (state == IDLE) begin
+                if (core_read_valid) begin
+                    stat_read_accesses <= stat_read_accesses + 1;
+                    if (read_hit) stat_read_hits <= stat_read_hits + 1;
+                end else if (core_write_valid) begin
+                    stat_write_accesses <= stat_write_accesses + 1;
+                    if (write_hit) stat_write_hits <= stat_write_hits + 1;
+                end
+            end
+            
+            // Track stall cycles for AMAT
+            if (core_read_valid && !core_read_ready) stat_read_latency_cycles <= stat_read_latency_cycles + 1;
+            if (core_write_valid && !core_write_ready) stat_write_latency_cycles <= stat_write_latency_cycles + 1;
+        end
+    end
 endmodule

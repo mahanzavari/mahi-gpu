@@ -1,4 +1,3 @@
-// --- Begin: C:\Users\ASUS\Desktop\tiny-gpu\src\decoder.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -7,7 +6,6 @@ module decoder #(
 ) (
     input wire [31:0] instruction,
     
-    // Instruction Signals
     output logic [4:0] decoded_rd_address,
     output logic [4:0] decoded_rs_address,
     output logic [4:0] decoded_rt_address,
@@ -25,7 +23,7 @@ module decoder #(
     output logic decoded_mem_write_enable,           
     output logic decoded_nzp_write_enable,           
     output logic [1:0] decoded_reg_input_mux,        
-    output logic [3:0] decoded_alu_arithmetic_mux, // FIX: Expanded to 4 bits
+    output logic [3:0] decoded_alu_arithmetic_mux, 
     output logic decoded_alu_output_mux,             
     output logic decoded_pc_mux,                     
 
@@ -35,7 +33,8 @@ module decoder #(
     output logic decoded_sync,
     output logic decoded_shared_read_enable,
     output logic decoded_shared_write_enable,
-    output logic decoded_atomic
+    output logic [1:0] decoded_atomic,     // <--- [FIX] EXPANDED TO 2 BITS (0=None, 1=ADD, 2=CAS)
+    output logic decoded_rd_read_enable
 );
 
     localparam NOP      = 6'd0,
@@ -55,7 +54,6 @@ module decoder #(
                RET_FN   = 6'd14,
                EXIT     = 6'd15,
                ATOM_ADD = 6'd16,
-               // --- NEW OPCODES ---
                AND      = 6'd17,
                OR       = 6'd18,
                XOR      = 6'd19,
@@ -65,14 +63,14 @@ module decoder #(
                MIN      = 6'd23,
                MAX      = 6'd24,
                ABS      = 6'd25,
-               NEG      = 6'd26;
+               NEG      = 6'd26,
+               MAC      = 6'd27,
+               ATOM_CAS = 6'd28; 
 
     always_comb begin
         decoded_rd_address = instruction[25:21];
         decoded_rs_address = instruction[20:16];
         
-        // FIX: For memory stores, the immediate takes up the Rt field.
-        // Route the source data to the Rd field so we can use [15:0] as the offset.
         if (instruction[31:26] == STR || instruction[31:26] == STSH) begin
             decoded_rt_address = instruction[25:21];
         end else begin
@@ -80,8 +78,6 @@ module decoder #(
         end
 
         decoded_nzp        = instruction[25:23];
-        
-        // Sign extend the 16-bit immediate to 32-bits
         decoded_immediate  = {{ (DATA_BITS-16){instruction[15]} }, instruction[15:0]};
         decoded_mem_addr_offset = instruction[15:0];
 
@@ -94,7 +90,7 @@ module decoder #(
         decoded_call               = 0; decoded_ret_fn             = 0;
         decoded_exit               = 0; decoded_sync               = 0;
         decoded_shared_read_enable = 0; decoded_shared_write_enable= 0;
-        decoded_use_mem_offset     = 0; decoded_atomic = 0;
+        decoded_use_mem_offset     = 0; decoded_atomic = 2'b00; decoded_rd_read_enable = 0;
 
         case (instruction[31:26])
             BRnzp: decoded_pc_mux = 1;
@@ -151,12 +147,19 @@ module decoder #(
                 decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd11;
             end
             ABS: begin 
-                decoded_rs_read_enable = 1; // ABS only needs Rs
+                decoded_rs_read_enable = 1;
                 decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd12;
             end
             NEG: begin 
-                decoded_rs_read_enable = 1; // NEG only needs Rs
+                decoded_rs_read_enable = 1;
                 decoded_reg_write_enable = 1; decoded_alu_arithmetic_mux = 4'd13;
+            end
+            MAC: begin
+                decoded_rs_read_enable   = 1;
+                decoded_rt_read_enable   = 1;
+                decoded_rd_read_enable   = 1;
+                decoded_reg_write_enable = 1;
+                decoded_alu_arithmetic_mux = 4'd14;
             end
             LDR: begin
                 decoded_rs_read_enable = 1; decoded_reg_write_enable = 1;
@@ -188,8 +191,17 @@ module decoder #(
                 decoded_rs_read_enable = 1;
                 decoded_rt_read_enable = 1;
                 decoded_reg_write_enable = 1;
-                decoded_reg_input_mux = 2'b01; // Assign output from MEMORY (LSU writes old_val to Rd)
-                decoded_atomic = 1;
+                decoded_reg_input_mux = 2'b01; 
+                decoded_atomic = 2'b01; // ype 1
+                decoded_use_mem_offset = 0;
+            end
+            ATOM_CAS: begin
+                decoded_rs_read_enable = 1; // Addr
+                decoded_rt_read_enable = 1; // New Value
+                decoded_rd_read_enable = 1; // Expected Value
+                decoded_reg_write_enable = 1; // Write old value back
+                decoded_reg_input_mux = 2'b01;
+                decoded_atomic = 2'b10; //  Type 2
                 decoded_use_mem_offset = 0;
             end
             default: ; // NOP

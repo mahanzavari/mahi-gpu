@@ -268,4 +268,38 @@ module scheduler #(
             end
         end
     end
+
+    // --- Performance Counters ---
+    (* keep = "true" *) reg [31:0] stat_diverged_warps;
+    (* keep = "true" *) reg [31:0] stat_warp_switches;
+    (* keep = "true" *) reg [31:0] stat_scheduler_idle;
+    (* keep = "true" *) reg [$clog2(NUM_WARPS)-1:0] prev_issued_warp;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            stat_diverged_warps <= 0;
+            stat_warp_switches <= 0;
+            stat_scheduler_idle <= 0;
+            prev_issued_warp <= 0;
+        end else if (start && !done) begin
+            // Track Idle Scheduler Cycles
+            if (!valid_issue && !frontend_stall) stat_scheduler_idle <= stat_scheduler_idle + 1;
+            
+            // Track Warp Switches
+            if (valid_issue) begin
+                if (sched_warp_id != prev_issued_warp) stat_warp_switches <= stat_warp_switches + 1;
+                prev_issued_warp <= sched_warp_id;
+            end
+            
+            // Track Divergence events (evaluated in EX)
+            if (ex_valid && ex_active_mask != 0 &&
+                !(mem_req_valid && mem_warp_id == ex_warp_id) &&
+                warp_state[ex_warp_id] != WAITING_MEM) begin
+                
+                if (!ex_exception_valid && !ex_exit && ex_has_divergence) begin
+                    stat_diverged_warps <= stat_diverged_warps + 1;
+                end
+            end
+        end
+    end
 endmodule

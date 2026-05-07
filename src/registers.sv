@@ -11,13 +11,14 @@ module registers #(
     
     input wire enable, 
     input wire [$clog2(NUM_WARPS)-1:0] warp_id,        // Write‑back warp ID
-    input wire [$clog2(NUM_WARPS)-1:0] read_warp_id,   // ID stage warp ID (new)
+    input wire [$clog2(NUM_WARPS)-1:0] read_warp_id,   // ID stage warp ID
     input wire [7:0] block_id,
     input wire [7:0] thread_id, 
 
-    input wire [4:0] decoded_rd_address,
-    input wire [4:0] decoded_rs_address,
-    input wire [4:0] decoded_rt_address,
+    input wire [4:0] decoded_rd_address, // Write Destination
+    input wire [4:0] read_rd_address,    // Read Source (For MAC/CAS)
+    input wire [4:0] decoded_rs_address, // Read Source
+    input wire [4:0] decoded_rt_address, // Read Source
 
     input wire decoded_reg_write_enable,
     input wire [1:0] decoded_reg_input_mux,
@@ -32,24 +33,22 @@ module registers #(
     input wire [DATA_BITS-1:0] lsu_data,
 
     output wire [DATA_BITS-1:0] rs,
-    output wire [DATA_BITS-1:0] rt
+    output wire [DATA_BITS-1:0] rt,
+    output wire [DATA_BITS-1:0] rd_val
 );
     localparam ARITHMETIC = 2'b00, MEMORY = 2'b01, CONSTANT = 2'b10, SHARED = 2'b11;
 
     // 32 registers per warp
     reg [DATA_BITS-1:0] registers [NUM_WARPS][32];
 
-    // Data to be written back (from ALU, memory, constant, or shared load)
     wire [DATA_BITS-1:0] write_data = (decoded_reg_input_mux == ARITHMETIC) ? alu_out :
                                       (decoded_reg_input_mux == MEMORY)     ? lsu_out :
                                       (decoded_reg_input_mux == CONSTANT)   ? decoded_immediate :
                                                                               lsu_out;
 
-    // Write‑back logic – uses write‑back warp ID
     wire is_writing = enable && decoded_reg_write_enable && (decoded_rd_address < 29);
     wire is_lsu_writing = lsu_we && (lsu_rd < 29);
 
-    // ---- Read ports now use the ID stage warp ID ----
     assign rs = (is_writing && (decoded_rs_address == decoded_rd_address) && (read_warp_id == warp_id))
                 ? write_data
                 : (is_lsu_writing && (decoded_rs_address == lsu_rd) && (read_warp_id == lsu_warp_id))
@@ -61,6 +60,13 @@ module registers #(
                 : (is_lsu_writing && (decoded_rt_address == lsu_rd) && (read_warp_id == lsu_warp_id))
                 ? lsu_data
                 : registers[read_warp_id][decoded_rt_address];
+                
+    // Fix: Using read_rd_address to fetch the 3rd source register properly
+    assign rd_val = (is_writing && (read_rd_address == decoded_rd_address) && (read_warp_id == warp_id))
+                ? write_data
+                : (is_lsu_writing && (read_rd_address == lsu_rd) && (read_warp_id == lsu_warp_id))
+                ? lsu_data
+                : registers[read_warp_id][read_rd_address];
 
     integer w, i;
     always @(posedge clk) begin

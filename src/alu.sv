@@ -10,6 +10,7 @@ module alu #(
 
     input wire [DATA_BITS-1:0] rs,
     input wire [DATA_BITS-1:0] rt,
+    input wire [DATA_BITS-1:0] rd_val,
     output reg [DATA_BITS-1:0] alu_out,
     output reg div_by_zero // Div0 flag EXCEPTION
 );
@@ -26,7 +27,8 @@ module alu #(
                MIN = 4'd10,
                MAX = 4'd11,
                ABS = 4'd12,
-               NEG = 4'd13;
+               NEG = 4'd13,
+               MAC = 4'd14;
 
     // always_comb, combinational logic
     always @(*) begin 
@@ -64,12 +66,11 @@ module alu #(
                         alu_out = rs % rt;
                     end
                 end
-                // --- NEW SHADER MATH 
                 MIN: alu_out = ($signed(rs) < $signed(rt)) ? rs : rt;
                 MAX: alu_out = ($signed(rs) > $signed(rt)) ? rs : rt;
                 ABS: alu_out = ($signed(rs) < 0) ? -$signed(rs) : rs;
                 NEG: alu_out = -$signed(rs);
-                
+                MAC: alu_out = rd_val + ($signed(rs) * $signed(rt));
                 default: alu_out = {DATA_BITS{1'b0}};
             endcase
         end
