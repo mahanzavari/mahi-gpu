@@ -39,7 +39,28 @@ module core #(
     output wire [DATA_MEM_ADDR_BITS-1:0]     data_mem_write_address,
     output wire [(DATA_MEM_DATA_BITS*4)-1:0] data_mem_write_data,
     output wire [3:0]                        data_mem_write_strobe,
-    input  wire                              data_mem_write_ready
+    input  wire                              data_mem_write_ready,
+
+    // --- PMU Config & Readout ---
+    input  wire [4:0]  pmu_cfg_0,
+    input  wire [4:0]  pmu_cfg_1,
+    input  wire [4:0]  pmu_cfg_2,
+    input  wire [4:0]  pmu_cfg_3,
+    output wire [31:0] pmu_cnt_0,
+    output wire [31:0] pmu_cnt_1,
+    output wire [31:0] pmu_cnt_2,
+    output wire [31:0] pmu_cnt_3,
+
+    // --- External Cache Events (Route these in gpu.sv) ---
+    input wire ic_ev_access,
+    input wire ic_ev_hit,
+    input wire ic_ev_stall,
+    input wire dc_ev_read_acc,
+    input wire dc_ev_read_hit,
+    input wire dc_ev_read_stall,
+    input wire dc_ev_write_acc,
+    input wire dc_ev_write_hit,
+    input wire dc_ev_write_stall
 );
 
 wire [THREADS_PER_BLOCK-1:0]           lsu_we_array;
@@ -94,8 +115,8 @@ wire [1:0] id_reg_mux; wire [3:0] id_alu_arith_mux;
 wire id_alu_out_mux, id_pc_mux, id_call, id_ret_fn, id_exit, id_sync;
 wire id_shared_re, id_shared_we, id_use_mem_offset;
 wire [15:0] id_mem_addr_offset;
-wire [1:0] id_atomic; // <--- FIX
-reg [1:0] ex_atomic;  // <--- FIX
+wire [1:0] id_atomic; 
+reg [1:0] ex_atomic;  
 
 decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
     .instruction(id_instruction), .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
@@ -159,7 +180,7 @@ reg [PROGRAM_MEM_ADDR_BITS-1:0] mem_pc; reg [4:0] mem_rd; reg [DATA_BITS-1:0] me
 reg [DATA_BITS-1:0] mem_alu_out [THREADS_PER_BLOCK]; 
 reg [DATA_BITS-1:0] mem_rs_data [THREADS_PER_BLOCK];
 reg [DATA_BITS-1:0] mem_rt_data [THREADS_PER_BLOCK];
-reg [DATA_BITS-1:0] mem_rd_data [THREADS_PER_BLOCK]; // <--- FIX FOR LSU rd_val AT MEM STAGE
+reg [DATA_BITS-1:0] mem_rd_data [THREADS_PER_BLOCK]; 
 reg mem_reg_we, mem_mem_re, mem_mem_we, mem_shared_re, mem_shared_we, mem_ret;
 reg [1:0] mem_reg_mux; reg mem_use_mem_offset; reg [15:0] mem_mem_addr_offset;
 
@@ -208,7 +229,6 @@ generate
                                    fwd_lsu_rd_i ? lsu_data_array[i] :
                                    ex_rd_data[i];
 
-
         alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
             .enable(ex_active_mask[i]), .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
             .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .rd_val(fwd_ex_rd_data[i]), .alu_out(ex_alu_out[i]), 
@@ -232,11 +252,11 @@ generate
         registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
             .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .read_warp_id(id_warp_id),
             .block_id(block_id), .thread_id(physical_thread_id), 
-            .read_rd_address(id_rd),   
+            .read_rd_address(id_rd),      
             .decoded_rs_address(id_rs), 
             .decoded_rt_address(id_rt),
             .rs(id_rs_data[i]), .rt(id_rt_data[i]), .rd_val(id_rd_data[i]), 
-            .decoded_rd_address(wb_rd),  
+            .decoded_rd_address(wb_rd),   
             .decoded_reg_write_enable(wb_reg_we), 
             .decoded_reg_input_mux(wb_reg_mux), .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(0),
             .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i])
@@ -257,7 +277,6 @@ always @(posedge clk) begin
         exception_warp_id <= ex_warp_id;
         exception_pc <= ex_pc;
         exception_cause <= ex_exception_cause;
-        $display("[%0t] [CORE] EXCEPTION! Warp %0d, Cause: %0d, PC: %0d", $time, ex_warp_id, ex_exception_cause, ex_pc);
     end
 end
 
@@ -269,7 +288,7 @@ reg [DATA_BITS-1:0]           wb_alu_out [THREADS_PER_BLOCK];
 reg                           wb_reg_we;
 reg [1:0]                     wb_reg_mux;
 
-reg [1:0] mem_atomic; // <--- FIX
+reg [1:0] mem_atomic; 
 reg [NUM_WARPS-1:0] mem_in_progress;
 wire is_mem_op = mem_mem_re | mem_mem_we | mem_shared_re | mem_shared_we | (|mem_atomic);
 wire mem_req_valid = (|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id];
@@ -290,7 +309,7 @@ always @(posedge clk) begin
             mem_alu_out[j] <= ex_alu_out[j]; 
             mem_rs_data[j] <= fwd_ex_rs_data[j]; 
             mem_rt_data[j] <= fwd_ex_rt_data[j];
-            mem_rd_data[j] <= fwd_ex_rd_data[j]; // <--- FIX: Propagate into LSU's stage
+            mem_rd_data[j] <= fwd_ex_rd_data[j]; 
         end
         mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
         mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we; mem_reg_mux <= ex_reg_mux;
@@ -367,7 +386,7 @@ lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_
     .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
     .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
     .decoded_rd(mem_rd), .rs(mem_rs_data), .rt(mem_rt_data), 
-    .rd_val(mem_rd_data), // <--- [FIX] PASSING EXPECTED VALUE FOR CAS
+    .rd_val(mem_rd_data), 
     .mem_read_valid(data_mem_read_valid), .mem_read_block_address(data_mem_read_address),
     .mem_read_ready(data_mem_read_ready), .mem_read_block_data(data_mem_read_data),
     .mem_write_valid(data_mem_write_valid), .mem_write_block_address(data_mem_write_address),
@@ -381,6 +400,8 @@ lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_
     .decoded_atomic(mem_atomic)
 );
 
+wire sched_ev_idle, sched_ev_warp_switch, sched_ev_diverge;
+
 scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) scheduler_instance (
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready),
@@ -388,50 +409,51 @@ scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .PROG
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 
     .ex_exception_valid(ex_exception_valid),
-    .done(done)
+    .done(done),
+    .ev_scheduler_idle(sched_ev_idle),
+    .ev_warp_switch(sched_ev_warp_switch),
+    .ev_diverge(sched_ev_diverge)
 );
 
+// --- PMU Event Bus & Instantiation ---
+wire ev_cycle       = core_running;
+wire ev_active      = core_running && (|ex_active_mask);
+wire ev_issue       = core_running && valid_issue;
+wire ev_fetch_stall = core_running && fetch_stall;
+wire ev_flush       = core_running && (|flush_warp_mask);
+wire ev_mem         = core_running && (|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id];
 
-    // --- Performance Counters ---
-    (* keep = "true" *) reg [31:0] stat_cycles;
-    (* keep = "true" *) reg [31:0] stat_active_cycles;
-    (* keep = "true" *) reg [31:0] stat_warp_inst_issued;
-    (* keep = "true" *) reg [31:0] stat_thread_inst_executed;
-    
-    (* keep = "true" *) reg [31:0] stat_flush_cycles;
-    (* keep = "true" *) reg [31:0] stat_mem_insts;
-    (* keep = "true" *) reg [31:0] stat_fetch_stalls;
+// Use explicit index assignment to ensure MUX selectors match perfectly
+wire [31:0] event_bus;
+assign event_bus[31:24] = 8'd0;
+assign event_bus[23]    = dc_ev_write_stall;
+assign event_bus[22]    = dc_ev_write_hit;
+assign event_bus[21]    = dc_ev_write_acc;
+assign event_bus[20]    = dc_ev_read_stall;
+assign event_bus[19]    = dc_ev_read_hit;
+assign event_bus[18]    = dc_ev_read_acc;
+assign event_bus[17:15] = 3'd0;
+assign event_bus[14]    = sched_ev_diverge;
+assign event_bus[13]    = sched_ev_warp_switch;
+assign event_bus[12]    = sched_ev_idle;
+assign event_bus[11]    = ic_ev_stall;
+assign event_bus[10]    = ic_ev_hit;
+assign event_bus[9]     = ic_ev_access;
+assign event_bus[8]     = ev_mem;
+assign event_bus[7]     = ev_flush;
+assign event_bus[6]     = ev_fetch_stall;
+assign event_bus[5]     = ev_issue;
+assign event_bus[4]     = ev_active;
+assign event_bus[3]     = ev_cycle;
+assign event_bus[2:0]   = 3'd0;
 
-    integer popcount, j_cnt;
-    always @(posedge clk) begin
-        if (reset) begin
-            stat_cycles <= 0;
-            stat_active_cycles <= 0;
-            stat_warp_inst_issued <= 0;
-            stat_thread_inst_executed <= 0;
-            stat_flush_cycles <= 0;
-            stat_mem_insts <= 0;
-            stat_fetch_stalls <= 0;
-        end else if (core_running) begin
-            stat_cycles <= stat_cycles + 1;
-            
-            if (fetch_stall) stat_fetch_stalls <= stat_fetch_stalls + 1;
-            if (|flush_warp_mask) stat_flush_cycles <= stat_flush_cycles + 1;
-            
-            if (valid_issue) stat_warp_inst_issued <= stat_warp_inst_issued + 1;
-            
-            if (|ex_active_mask) begin
-                stat_active_cycles <= stat_active_cycles + 1;
-                popcount = 0;
-                for (j_cnt = 0; j_cnt < THREADS_PER_BLOCK; j_cnt = j_cnt + 1) begin
-                    if (ex_active_mask[j_cnt]) popcount = popcount + 1;
-                end
-                stat_thread_inst_executed <= stat_thread_inst_executed + popcount;
-            end
-            
-            if ((|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id]) begin
-                stat_mem_insts <= stat_mem_insts + 1;
-            end
-        end
-    end
+core_pmu pmu_inst (
+    .clk(clk), .reset(reset),
+    .events(event_bus),
+    .cfg_mux_sel_0(pmu_cfg_0), .cfg_mux_sel_1(pmu_cfg_1), 
+    .cfg_mux_sel_2(pmu_cfg_2), .cfg_mux_sel_3(pmu_cfg_3),
+    .counter_0(pmu_cnt_0), .counter_1(pmu_cnt_1), 
+    .counter_2(pmu_cnt_2), .counter_3(pmu_cnt_3)
+);
+
 endmodule

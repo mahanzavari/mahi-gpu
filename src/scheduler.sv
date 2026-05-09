@@ -27,11 +27,15 @@ module scheduler #(
     input wire [PROGRAM_MEM_ADDR_BITS-1:0] ex_next_pc [THREADS_PER_BLOCK],
     input wire ex_exit,
     input wire ex_sync,
-    input wire ex_exception_valid, // <--- [EXCEPTION]
-    output reg done
+    input wire ex_exception_valid,
+    output reg done,
+
+    // --- PMU Event Pulses ---
+    output wire ev_scheduler_idle,
+    output wire ev_warp_switch,
+    output wire ev_diverge
 );
 
-    // <--- [EXCEPTION] Added FAULTED state
     typedef enum logic [2:0] { IDLE, READY, WAITING_MEM, WAITING_BARRIER, DONE_STATE, FAULTED } warp_state_t;
     warp_state_t warp_state [NUM_WARPS];
 
@@ -84,11 +88,9 @@ module scheduler #(
             end
         end
 
-        // Inhibit if any flush-causing event occurs in this cycle
         if (ex_valid && ex_active_mask != 0 &&
             !(mem_req_valid && mem_warp_id == ex_warp_id) &&
             warp_state[ex_warp_id] != WAITING_MEM) begin
-            // <--- [EXCEPTION] Don't issue if an exception is raised
             if (ex_exception_valid || ex_exit || ex_has_divergence || ex_is_branch || ex_sync)
                 warp_flush_inhibit[ex_warp_id] = 1'b1;
         end
@@ -129,25 +131,21 @@ module scheduler #(
                 end
             end
 
-            // Wake from memory
             for (w = 0; w < NUM_WARPS; w++) begin
                 if (warp_state[w] == WAITING_MEM && warp_mem_ready[w])
                     warp_state[w] <= READY;
             end
 
-            // Memory request transition
             if (mem_req_valid && warp_state[mem_warp_id] != WAITING_MEM) begin
                 warp_state[mem_warp_id] <= WAITING_MEM;
                 flush_warp_mask[mem_warp_id] <= 1'b1;
                 current_pc[mem_warp_id] <= mem_pc + 1;
             end
 
-            // EX stage processing
             if (ex_valid && ex_active_mask != 0 &&
                 !(mem_req_valid && mem_warp_id == ex_warp_id) &&
                 warp_state[ex_warp_id] != WAITING_MEM) begin
                 
-                // <--- [EXCEPTION] Trap faulting warps immediately
                 if (ex_exception_valid) begin
                     warp_state[ex_warp_id] <= FAULTED;
                     flush_warp_mask[ex_warp_id] <= 1'b1;
@@ -257,7 +255,6 @@ module scheduler #(
 
             all_warps_done = 1;
             for (w = 0; w < NUM_WARPS; w++) begin
-                // <--- [EXCEPTION] Treat FAULTED warps as 'done' so the GPU can safely complete
                 if (warp_state[w] != DONE_STATE && warp_state[w] != IDLE && warp_state[w] != FAULTED)
                     all_warps_done = 0;
             end
@@ -269,37 +266,18 @@ module scheduler #(
         end
     end
 
-    // --- Performance Counters ---
-    (* keep = "true" *) reg [31:0] stat_diverged_warps;
-    (* keep = "true" *) reg [31:0] stat_warp_switches;
-    (* keep = "true" *) reg [31:0] stat_scheduler_idle;
-    (* keep = "true" *) reg [$clog2(NUM_WARPS)-1:0] prev_issued_warp;
-
+    // --- 1-Bit PMU Event Pulses ---
+    reg [$clog2(NUM_WARPS)-1:0] prev_issued_warp;
     always @(posedge clk) begin
-        if (reset) begin
-            stat_diverged_warps <= 0;
-            stat_warp_switches <= 0;
-            stat_scheduler_idle <= 0;
-            prev_issued_warp <= 0;
-        end else if (start && !done) begin
-            // Track Idle Scheduler Cycles
-            if (!valid_issue && !frontend_stall) stat_scheduler_idle <= stat_scheduler_idle + 1;
-            
-            // Track Warp Switches
-            if (valid_issue) begin
-                if (sched_warp_id != prev_issued_warp) stat_warp_switches <= stat_warp_switches + 1;
-                prev_issued_warp <= sched_warp_id;
-            end
-            
-            // Track Divergence events (evaluated in EX)
-            if (ex_valid && ex_active_mask != 0 &&
-                !(mem_req_valid && mem_warp_id == ex_warp_id) &&
-                warp_state[ex_warp_id] != WAITING_MEM) begin
-                
-                if (!ex_exception_valid && !ex_exit && ex_has_divergence) begin
-                    stat_diverged_warps <= stat_diverged_warps + 1;
-                end
-            end
-        end
+        if (reset) prev_issued_warp <= 0;
+        else if (start && !done && valid_issue) prev_issued_warp <= sched_warp_id;
     end
+
+    assign ev_scheduler_idle = (start && !done && !valid_issue && !frontend_stall);
+    assign ev_warp_switch    = (start && !done && valid_issue && (sched_warp_id != prev_issued_warp));
+    assign ev_diverge        = (start && !done && ex_valid && ex_active_mask != 0 && 
+                               !(mem_req_valid && mem_warp_id == ex_warp_id) && 
+                               warp_state[ex_warp_id] != WAITING_MEM && 
+                               !ex_exception_valid && !ex_exit && ex_has_divergence);
+
 endmodule

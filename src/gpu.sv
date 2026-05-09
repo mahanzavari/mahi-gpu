@@ -155,8 +155,11 @@ module gpu #(
     genvar i;
     generate
         for (i = 0; i < NUM_CORES; i = i + 1) begin : core_block
+            wire ic_ev_acc, ic_ev_hit, ic_ev_stall;
+            wire dc_ev_r_acc, dc_ev_r_hit, dc_ev_r_stall;
+            wire dc_ev_w_acc, dc_ev_w_hit, dc_ev_w_stall;
 
-            // ----- Core itself (connects to caches) -----
+            // ----- Core itself ---
             core #(
                 .DATA_MEM_ADDR_BITS(DATA_MEM_ADDR_BITS),
                 .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
@@ -181,7 +184,10 @@ module gpu #(
                 .data_mem_write_address(core_dmem_write_addr[i]),
                 .data_mem_write_data(core_dmem_write_data[i]),
                 .data_mem_write_strobe(core_dmem_write_strobe[i]),
-                .data_mem_write_ready(core_dmem_write_ready[i])
+                .data_mem_write_ready(core_dmem_write_ready[i]),
+                .ic_ev_access(ic_ev_acc), .ic_ev_hit(ic_ev_hit), .ic_ev_stall(ic_ev_stall),
+                .dc_ev_read_acc(dc_ev_r_acc), .dc_ev_read_hit(dc_ev_r_hit), .dc_ev_read_stall(dc_ev_r_stall),
+                .dc_ev_write_acc(dc_ev_w_acc), .dc_ev_write_hit(dc_ev_w_hit), .dc_ev_write_stall(dc_ev_w_stall)
             );
 
             // ----- Instruction Cache -----
@@ -201,7 +207,10 @@ module gpu #(
                 .mem_read_valid(icache_mem_read_valid[i]),
                 .mem_read_block_addr(icache_mem_read_addr[i]),
                 .mem_read_ready(icache_mem_read_ready[i]),
-                .mem_read_block_data(icache_mem_read_data[i])
+                .mem_read_block_data(icache_mem_read_data[i]),
+                .ev_access(ic_ev_acc), 
+                .ev_hit(ic_ev_hit), 
+                .ev_stall(ic_ev_stall)
             );
 
             // ----- Data Cache -----
@@ -230,7 +239,9 @@ module gpu #(
                 .mem_write_block_addr(dcache_mem_write_addr[i]),
                 .mem_write_block_data(dcache_mem_write_data[i]),
                 .mem_write_strobe(dcache_mem_write_strobe[i]),
-                .mem_write_ready(dcache_mem_write_ready[i])
+                .mem_write_ready(dcache_mem_write_ready[i]),
+                .ev_read_acc(dc_ev_r_acc), .ev_read_hit(dc_ev_r_hit), .ev_read_stall(dc_ev_r_stall),
+                .ev_write_acc(dc_ev_w_acc), .ev_write_hit(dc_ev_w_hit), .ev_write_stall(dc_ev_w_stall)
             );
 
         end

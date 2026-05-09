@@ -4,7 +4,7 @@
 module dcache #(
     parameter ADDR_BITS = 32,
     parameter BLOCK_BITS = 128,
-    parameter CACHE_LINES = 16 // 16 lines of 128-bits = 256 bytes L1 D-Cache
+    parameter CACHE_LINES = 16 
 ) (
     input wire clk,
     input wire reset,
@@ -31,18 +31,24 @@ module dcache #(
     output logic [ADDR_BITS-1:0] mem_write_block_addr,
     output logic [BLOCK_BITS-1:0] mem_write_block_data,
     output logic [3:0] mem_write_strobe,
-    input wire mem_write_ready
+    input wire mem_write_ready,
+
+    // --- PMU Event Pulses ---
+    output wire ev_read_acc,
+    output wire ev_read_hit,
+    output wire ev_read_stall,
+    output wire ev_write_acc,
+    output wire ev_write_hit,
+    output wire ev_write_stall
 );
 
     localparam INDEX_BITS = $clog2(CACHE_LINES);
     localparam TAG_BITS = ADDR_BITS - INDEX_BITS;
 
-    // Cache Storage
     reg valid_array [CACHE_LINES];
     reg [TAG_BITS-1:0] tag_array [CACHE_LINES];
     reg [BLOCK_BITS-1:0] data_array [CACHE_LINES];
 
-    // Address Decoding (Block Address provided by LSU)
     wire [INDEX_BITS-1:0] read_index = core_read_block_addr[INDEX_BITS-1:0];
     wire [TAG_BITS-1:0] read_tag = core_read_block_addr[ADDR_BITS-1:INDEX_BITS];
 
@@ -68,16 +74,12 @@ module dcache #(
             case (state)
                 IDLE: begin
                     if (core_write_valid) begin
-                        $display("[%0t] [DCACHE] WRITE REQ: BlockAddr=%0d, Strobe=%b, Hit=%b", $time, core_write_block_addr, core_write_strobe, write_hit);
-                        
-                        // Write-Through: Send to memory immediately
                         mem_write_valid <= 1;
                         mem_write_block_addr <= core_write_block_addr;
                         mem_write_block_data <= core_write_block_data;
                         mem_write_strobe <= core_write_strobe;
                         state <= WRITING_MEM;
 
-                        // Write-Update: If it's in the cache, update the cached line too!
                         if (write_hit) begin
                             if (core_write_strobe[0]) data_array[write_index][31:0]   <= core_write_block_data[31:0];
                             if (core_write_strobe[1]) data_array[write_index][63:32]  <= core_write_block_data[63:32];
@@ -87,13 +89,9 @@ module dcache #(
                     end 
                     else if (core_read_valid) begin
                         if (read_hit) begin
-                            $display("[%0t] [DCACHE] READ HIT: BlockAddr=%0d", $time, core_read_block_addr);
-                            // CACHE HIT: Return data in 1 cycle
                             core_read_block_data <= data_array[read_index];
                             core_read_ready <= 1;
                         end else begin
-                            $display("[%0t] [DCACHE] READ MISS: BlockAddr=%0d. Fetching from memory...", $time, core_read_block_addr);
-                            // CACHE MISS: Fetch from memory
                             mem_read_valid <= 1;
                             mem_read_block_addr <= core_read_block_addr;
                             state <= FETCHING_MEM;
@@ -103,14 +101,11 @@ module dcache #(
 
                 FETCHING_MEM: begin
                     if (mem_read_ready) begin
-                        $display("[%0t] [DCACHE] MEM FETCH DONE: BlockAddr=%0d", $time, core_read_block_addr);
                         mem_read_valid <= 0;
-                        // Allocate in Cache
                         valid_array[read_index] <= 1;
                         tag_array[read_index] <= read_tag;
                         data_array[read_index] <= mem_read_block_data;
                         
-                        // Return to Core
                         core_read_block_data <= mem_read_block_data;
                         core_read_ready <= 1;
                         state <= IDLE;
@@ -119,7 +114,6 @@ module dcache #(
 
                 WRITING_MEM: begin
                     if (mem_write_ready) begin
-                        $display("[%0t] [DCACHE] MEM WRITE DONE: BlockAddr=%0d", $time, core_write_block_addr);
                         mem_write_valid <= 0;
                         core_write_ready <= 1;
                         state <= IDLE;
@@ -129,36 +123,13 @@ module dcache #(
         end
     end
 
-  // --- Performance Counters ---
-    (* keep = "true" *) reg [31:0] stat_read_accesses;
-    (* keep = "true" *) reg [31:0] stat_read_hits;
-    (* keep = "true" *) reg [31:0] stat_write_accesses;
-    (* keep = "true" *) reg [31:0] stat_write_hits;
-    (* keep = "true" *) reg [31:0] stat_read_latency_cycles;
-    (* keep = "true" *) reg [31:0] stat_write_latency_cycles;
+    // --- 1-Bit PMU Event Pulses ---
+    assign ev_read_acc  = (state == IDLE && core_read_valid);
+    assign ev_read_hit  = (state == IDLE && core_read_valid && read_hit);
+    assign ev_read_stall= (core_read_valid && !core_read_ready);
+    
+    assign ev_write_acc = (state == IDLE && core_write_valid);
+    assign ev_write_hit = (state == IDLE && core_write_valid && write_hit);
+    assign ev_write_stall=(core_write_valid && !core_write_ready);
 
-    always @(posedge clk) begin
-        if (reset) begin
-            stat_read_accesses <= 0;
-            stat_read_hits <= 0;
-            stat_write_accesses <= 0;
-            stat_write_hits <= 0;
-            stat_read_latency_cycles <= 0;
-            stat_write_latency_cycles <= 0;
-        end else begin
-            if (state == IDLE) begin
-                if (core_read_valid) begin
-                    stat_read_accesses <= stat_read_accesses + 1;
-                    if (read_hit) stat_read_hits <= stat_read_hits + 1;
-                end else if (core_write_valid) begin
-                    stat_write_accesses <= stat_write_accesses + 1;
-                    if (write_hit) stat_write_hits <= stat_write_hits + 1;
-                end
-            end
-            
-            // Track stall cycles for AMAT
-            if (core_read_valid && !core_read_ready) stat_read_latency_cycles <= stat_read_latency_cycles + 1;
-            if (core_write_valid && !core_write_ready) stat_write_latency_cycles <= stat_write_latency_cycles + 1;
-        end
-    end
 endmodule
