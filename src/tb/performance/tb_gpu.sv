@@ -303,7 +303,7 @@ module tb_gpu;
             end
         end
         
-        if (test_errors == 0) $display("SUCCESS: All 64 elements computed properly!");
+        if (test_errors == 0) $display("SUCCESS: All 64 elements computed properly! (NATIVE FLUSH WORKED!)");
         else $display("FAILED: %0d elements yielded errors.", test_errors);
         
         $finish;

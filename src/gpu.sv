@@ -80,6 +80,9 @@ module gpu #(
     wire [(DATA_MEM_DATA_BITS*4)-1:0]    dcache_mem_write_data [NUM_CORES];
     wire [3:0]                           dcache_mem_write_strobe [NUM_CORES];
     wire [NUM_CORES-1:0]                 dcache_mem_write_ready;
+    
+    wire flush_caches_global;
+    wire [NUM_CORES-1:0] core_cache_flush_done;
 
     // ------------------------------------------------------------------------
     // DCR instance
@@ -147,7 +150,10 @@ module gpu #(
     ) dispatch_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
         .core_done(core_done), .core_start(core_start), .core_reset(core_reset),
-        .core_block_id(core_block_id), .core_thread_count(core_thread_count), .done(done)
+        .core_block_id(core_block_id), .core_thread_count(core_thread_count), 
+        .flush_caches(flush_caches_global),
+        .cache_flush_done(core_cache_flush_done),
+        .done(done)
     );
 
     // ------------------------------------------------------------------------
@@ -214,35 +220,41 @@ module gpu #(
             );
 
             // ----- Data Cache -----
-            dcache #(
-                .ADDR_BITS(DATA_MEM_ADDR_BITS),
-                .BLOCK_BITS(DATA_MEM_DATA_BITS * 4),    // 128‑bit block
-                .CACHE_LINES(16)
-            ) dcache_inst (
-                .clk(clk), .reset(reset),
-                // core side (connected to LSU)
-                .core_read_valid(core_dmem_read_valid[i]),
-                .core_read_block_addr(core_dmem_read_addr[i]),
-                .core_read_ready(core_dmem_read_ready[i]),
-                .core_read_block_data(core_dmem_read_data[i]),
-                .core_write_valid(core_dmem_write_valid[i]),
-                .core_write_block_addr(core_dmem_write_addr[i]),
-                .core_write_block_data(core_dmem_write_data[i]),
-                .core_write_strobe(core_dmem_write_strobe[i]),
-                .core_write_ready(core_dmem_write_ready[i]),
-                // memory side (128‑bit → data memory controller)
-                .mem_read_valid(dcache_mem_read_valid[i]),
-                .mem_read_block_addr(dcache_mem_read_addr[i]),
-                .mem_read_ready(dcache_mem_read_ready[i]),
-                .mem_read_block_data(dcache_mem_read_data[i]),
-                .mem_write_valid(dcache_mem_write_valid[i]),
-                .mem_write_block_addr(dcache_mem_write_addr[i]),
-                .mem_write_block_data(dcache_mem_write_data[i]),
-                .mem_write_strobe(dcache_mem_write_strobe[i]),
-                .mem_write_ready(dcache_mem_write_ready[i]),
-                .ev_read_acc(dc_ev_r_acc), .ev_read_hit(dc_ev_r_hit), .ev_read_stall(dc_ev_r_stall),
-                .ev_write_acc(dc_ev_w_acc), .ev_write_hit(dc_ev_w_hit), .ev_write_stall(dc_ev_w_stall)
-            );
+// In gpu.sv, add to the generate block for dcache:
+
+dcache #(
+    .ADDR_BITS(DATA_MEM_ADDR_BITS),
+    .BLOCK_BITS(DATA_MEM_DATA_BITS * 4),
+    .CACHE_LINES(16)
+) dcache_inst (
+    .clk(clk), .reset(reset),
+    // core side
+    .core_read_valid(core_dmem_read_valid[i]),
+    .core_read_block_addr(core_dmem_read_addr[i]),
+    .core_read_ready(core_dmem_read_ready[i]),
+    .core_read_block_data(core_dmem_read_data[i]),
+    .core_write_valid(core_dmem_write_valid[i]),
+    .core_write_block_addr(core_dmem_write_addr[i]),
+    .core_write_block_data(core_dmem_write_data[i]),
+    .core_write_strobe(core_dmem_write_strobe[i]),
+    .core_write_ready(core_dmem_write_ready[i]),
+    // memory side
+    .mem_read_valid(dcache_mem_read_valid[i]),
+    .mem_read_block_addr(dcache_mem_read_addr[i]),
+    .mem_read_ready(dcache_mem_read_ready[i]),
+    .mem_read_block_data(dcache_mem_read_data[i]),
+    .mem_write_valid(dcache_mem_write_valid[i]),
+    .mem_write_block_addr(dcache_mem_write_addr[i]),
+    .mem_write_block_data(dcache_mem_write_data[i]),
+    .mem_write_strobe(dcache_mem_write_strobe[i]),
+    .mem_write_ready(dcache_mem_write_ready[i]),
+    // *** FIX: Connect flush ports ***
+    .flush_en(flush_caches_global),
+    .flush_done(core_cache_flush_done[i]),
+    // PMU
+    .ev_read_acc(dc_ev_r_acc), .ev_read_hit(dc_ev_r_hit), .ev_read_stall(dc_ev_r_stall),
+    .ev_write_acc(dc_ev_w_acc), .ev_write_hit(dc_ev_w_hit), .ev_write_stall(dc_ev_w_stall)
+);
 
         end
     endgenerate

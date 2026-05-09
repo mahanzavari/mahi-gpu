@@ -18,6 +18,10 @@ module dispatch #(
     output reg [7:0] core_block_id [NUM_CORES],
     output reg [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES],
 
+    // --- Flush Control ---
+    output reg flush_caches,
+    input wire [NUM_CORES-1:0] cache_flush_done,
+
     output reg done
 );
     localparam THREADS_PER_CORE = THREADS_PER_BLOCK * NUM_WARPS;
@@ -27,6 +31,7 @@ module dispatch #(
     reg [7:0] blocks_done; 
     reg start_execution; 
     reg is_running; 
+    reg flushing;
 
     always @(posedge clk) begin
         if (reset) begin
@@ -35,6 +40,8 @@ module dispatch #(
             blocks_done = 0;
             start_execution <= 0;
             is_running <= 0;
+            flush_caches <= 0;
+            flushing <= 0;
 
             for (int i = 0; i < NUM_CORES; i++) begin
                 core_start[i] <= 0;
@@ -49,41 +56,46 @@ module dispatch #(
                 if (!start_execution) begin 
                     start_execution <= 1;
                     for (int i = 0; i < NUM_CORES; i++) core_reset[i] <= 1;
-                    $display("[%0t] [DISPATCH] Started. Global Threads=%0d, Blocks=%0d, ThreadsPerCore=%0d", $time, thread_count, total_blocks, THREADS_PER_CORE);
                 end
 
                 for (int i = 0; i < NUM_CORES; i++) begin
-                    if (core_reset[i]) begin 
+                    if (core_reset[i] && !flushing) begin 
                         core_reset[i] <= 0;
                         if (blocks_dispatched < total_blocks) begin 
                             core_start[i] <= 1;
                             core_block_id[i] <= blocks_dispatched;
                             
-                            // Calculate remainder threads for the last block
                             if (blocks_dispatched == total_blocks - 1 && (thread_count % THREADS_PER_CORE) != 0) begin
                                 core_thread_count[i] <= thread_count % THREADS_PER_CORE;
                             end else begin
                                 core_thread_count[i] <= THREADS_PER_CORE;
                             end
 
-                            $display("[%0t] [DISPATCH] Launching Core %0d -> Block %0d (Driving core_thread_count to %0d)", $time, i, blocks_dispatched, core_thread_count[i]);
                             blocks_dispatched = blocks_dispatched + 1;
                         end
                     end
                     
                     if (core_start[i] && core_done[i]) begin
-                        $display("[%0t] [DISPATCH] Core %0d finished Block %0d", $time, i, core_block_id[i]);
                         core_reset[i] <= 1;
                         core_start[i] <= 0;
                         blocks_done = blocks_done + 1;
                     end
                 end
 
-                if (blocks_done == total_blocks && total_blocks > 0) begin 
-                    done <= 1;
-                    is_running <= 0;
-                    $display("[%0t] [DISPATCH] All blocks finished.", $time);
+                // Start Flush when all compute is done
+                if (blocks_done == total_blocks && total_blocks > 0 && !flushing) begin 
+                    flush_caches <= 1;
+                    flushing <= 1;
                 end
+
+                // Finish completely when flush completes
+                if (flushing && (&cache_flush_done)) begin
+                    flush_caches <= 0;
+                    flushing <= 0;
+                    is_running <= 0;
+                    done <= 1;
+                end
+
             end else begin
                 done <= 0;
             end

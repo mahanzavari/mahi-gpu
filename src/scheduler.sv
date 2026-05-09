@@ -14,6 +14,7 @@ module scheduler #(
     input wire [$clog2(NUM_WARPS)-1:0] mem_warp_id,
     input wire [PROGRAM_MEM_ADDR_BITS-1:0] mem_pc,
     input wire [NUM_WARPS-1:0] warp_mem_ready,
+    input wire [NUM_WARPS-1:0] mem_in_progress,
     input wire frontend_stall,
     output reg [NUM_WARPS-1:0] flush_warp_mask,
     output reg [PROGRAM_MEM_ADDR_BITS-1:0] if_pc,
@@ -257,6 +258,10 @@ module scheduler #(
             for (w = 0; w < NUM_WARPS; w++) begin
                 if (warp_state[w] != DONE_STATE && warp_state[w] != IDLE && warp_state[w] != FAULTED)
                     all_warps_done = 0;
+                    
+                // <--- FIX: Do not allow the core to exit if the LSU is still working!
+                if (mem_in_progress[w])
+                    all_warps_done = 0;
             end
             if (start && all_warps_done && warp_state[0] != IDLE) done <= 1;
             if (!start) begin
@@ -265,7 +270,6 @@ module scheduler #(
             end
         end
     end
-
     // --- 1-Bit PMU Event Pulses ---
     reg [$clog2(NUM_WARPS)-1:0] prev_issued_warp;
     always @(posedge clk) begin
