@@ -4,6 +4,8 @@
 module tb_gpu;
 
     // --- Configuration Parameters ---
+    // Make SURE this path is exactly where your Python script saved out.hex!
+    parameter string HEX_FILE           = "C:\\Users\\ASUS\\Desktop\\tiny-gpu\\assembler\\out.hex"; 
     localparam DATA_MEM_ADDR_BITS       = 32;
     localparam DATA_MEM_DATA_BITS       = 32;
     localparam DATA_MEM_NUM_CHANNELS    = 4;
@@ -75,9 +77,7 @@ module tb_gpu;
         .data_mem_write_ready(dm_write_ready)
     );
 
-    // --- PMU Event Readout Mappers (Fixes VRFC 10-2991 Error) ---
-    // Statically maps the dynamic paths out of the generate blocks so 
-    // the procedural code can just read arrays.
+    // --- PMU Event Readout Mappers ---
     wire [31:0] pmu_cnt_0_w [NUM_CORES];
     wire [31:0] pmu_cnt_1_w [NUM_CORES];
     wire [31:0] pmu_cnt_2_w [NUM_CORES];
@@ -99,9 +99,19 @@ module tb_gpu;
         forever #5 clk = ~clk;
     end
     
+    // --- TIMEOUT WATCHDOG (Prevents Infinite Hangs) ---
+    initial begin
+        #500000; // Stop simulation if it runs past 500,000 ns
+        $display("\n==================================================");
+        $display(" CRITICAL ERROR: SIMULATION TIMEOUT!");
+        $display(" The GPU ran too long. This usually means the PC is stuck in an infinite loop, or out.hex didn't load.");
+        $display("==================================================\n");
+        $finish;
+    end
+    
     // --- Storage Arrays ---
-    reg [31:0] pmem_array [0:255];
-    reg [31:0] dmem_array [0:1023]; 
+    reg [31:0] pmem_array [256];
+    reg [31:0] dmem_array [1024]; 
 
     // --- PMU Software Accumulators ---
     int current_pass = 0;
@@ -124,8 +134,6 @@ module tb_gpu;
     always @(posedge clk) begin
         if (!reset) begin
             for (int i=0; i<NUM_CORES; i=i+1) begin
-                // Snapshot PMU exactly when the block completes (before dispatcher resets it)
-                // dut.dispatch_instance.core_done is a packed array, so indexing it is legal here
                 if (dut.dispatch_instance.core_done[i]) begin
                     if (current_pass == 1) begin
                         total_cycles[i] += pmu_cnt_0_w[i];
@@ -206,8 +214,6 @@ module tb_gpu;
             current_pass = pass_num;
             $display("\n[%0t] Launching Profiling Pass %0d...", $time, pass_num);
 
-            // Program the Memory-Mapped DCR PMU Registers
-            // We unroll these statically to avoid Vivado procedural index constraints
             force dut.core_block[0].core_inst.pmu_cfg_0 = cfg0;
             force dut.core_block[0].core_inst.pmu_cfg_1 = cfg1;
             force dut.core_block[0].core_inst.pmu_cfg_2 = cfg2;
@@ -223,7 +229,8 @@ module tb_gpu;
             reset = 1; start = 0; device_control_write_enable = 0; device_control_data = 0;
             #20; reset = 0;
             
-            #10; device_control_write_enable = 1; device_control_data = 64; 
+            // CONVOLUTION: We need exactly 36 threads (a 6x6 output image)
+            #10; device_control_write_enable = 1; device_control_data = 36; 
             #10; device_control_write_enable = 0;
             
             #10; start = 1; #10; start = 0;
@@ -233,50 +240,74 @@ module tb_gpu;
         end
     endtask
 
-    // --- Kernel and Main Block ---
-    localparam [31:0] KERNEL_CODE [0:31] = '{
-        32'h143D_F000, 32'h0C21_F800, 32'h2480_0008, 32'h1841_2000, 
-        32'h5861_2000, 32'h24A0_0008, 32'h24C0_0000, 32'h24E0_0000, 
-        32'h2500_0000, 32'h2520_0040, 32'h2540_0080, 32'h0806_2800, 
-        32'h0580_0019, 32'h1562_2000, 32'h0D6B_3000, 32'h0D6B_4000, 
-        32'h1586_2000, 32'h0D8C_1800, 32'h0D8C_4800, 32'h1DAB_0000, 
-        32'h1DCC_0000, 32'h6CED_7000, 32'h25E0_0001, 32'h0CC6_7800, 
-        32'h0780_000B, 32'h1602_2000, 32'h0E10_1800, 32'h0E10_5000, 
-        32'h20F0_0000, 32'h3C00_0000, 32'h0000_0000, 32'h0000_0000 
-    };
-
     integer i;
     integer test_errors; 
+    
+    // Test verification arrays
+    reg [31:0] expected_out [36];
 
     initial begin
         $timeformat(-9, 0, " ns", 5);
         $display("==================================================");
-        $display("   TINY-GPU MUXED PMU MULTI-PASS PROFILING");
+        $display("   TINY-GPU 2D CONVOLUTION KERNEL MULTI-PASS");
         $display("==================================================");
         
-        for (i=0; i<256; i=i+1) pmem_array[i] = 0;
-        for (i=0; i<32; i=i+1) pmem_array[i] = KERNEL_CODE[i];
+        // --- 1. Load the Hex File ---
+        for (i=0; i<256; i=i+1) pmem_array[i] = 0; // Clear memory first
+        
+        $display("Loading instructions from: %s", HEX_FILE);
+        $readmemh(HEX_FILE, pmem_array);
+        
+        // SAFETY CHECK: Did the file actually load?
+        if (pmem_array[0] == 32'h00000000) begin
+            $display("\n[!!! FATAL ERROR !!!]");
+            $display("pmem_array[0] is completely empty. The simulation will hang because of infinite NOPs.");
+            $display("Double check your HEX_FILE path. Windows requires double-backslashes (\\\\) in Verilog strings!");
+            $finish;
+        end
+        
+        // --- 2. Initialize Data Memory for Convolution ---
         for (i=0; i<1024; i=i+1) dmem_array[i] = 0;
         
+        // Initialize an 8x8 Image (Address 0 to 63)
+        // Values are all 1 to make it easy to spot calculation errors
+        for (i=0; i<64; i=i+1) begin
+            dmem_array[i] = 1;  
+        end
+        // Initialize a 3x3 Filter (Address 64 to 72)
+        // Values are all 2. Expected output for every 3x3 patch = 1*2 * 9 = 18!
+        for (i=0; i<9; i=i+1) begin
+            dmem_array[64+i] = 2;    
+        end
+        
+        // --- 3. Dynamically Calculate Expected Output ---
+        for (int row=0; row<6; row=row+1) begin
+            for (int col=0; col<6; col=col+1) begin
+                int sum = 0;
+                for (int ky=0; ky<3; ky=ky+1) begin
+                    for (int kx=0; kx<3; kx=kx+1) begin
+                        int img_val = dmem_array[(row + ky)*8 + (col + kx)];
+                        int fil_val = dmem_array[64 + ky*3 + kx];
+                        sum += img_val * fil_val;
+                    end
+                end
+                expected_out[row*6 + col] = sum;
+            end
+        end
+
+        // --- 4. Zero Profilers ---
         for (i=0; i<NUM_CORES; i=i+1) begin
             total_cycles[i]=0; total_active[i]=0; total_issue[i]=0; total_flush[i]=0;
             total_mem[i]=0; total_ic_acc[i]=0; total_ic_hit[i]=0; total_ic_stall[i]=0;
             total_dc_r_acc[i]=0; total_dc_r_hit[i]=0; total_dc_w_acc[i]=0; total_dc_w_hit[i]=0;
         end
-        
-        for (i=0; i<64; i=i+1) begin
-            dmem_array[i]    = (i % 8) + 1;    
-            dmem_array[64+i] = (i / 8) + 1;    
-        end
 
-        // Run 3 Passes to collect all metrics via the 4 Muxed Counters
-        // Mapping: 3=Cycles, 4=Active, 5=Issue, 7=Flush
+        // --- 5. Run Execution Passes ---
         run_profiling_pass(1, 5'd3, 5'd4, 5'd5, 5'd7);
-        // Mapping: 8=MemInsts, 9=IC Acc, 10=IC Hit, 11=IC Stall
         run_profiling_pass(2, 5'd8, 5'd9, 5'd10, 5'd11);
-        // Mapping: 18=DC R Acc, 19=DC R Hit, 21=DC W Acc, 22=DC W Hit
         run_profiling_pass(3, 5'd18, 5'd19, 5'd21, 5'd22);
 
+        // --- 6. Print Profiling Output ---
         $display("\n==================================================");
         $display("   FINAL PERFORMANCE COUNTERS REPORT");
         $display("==================================================");
@@ -294,17 +325,37 @@ module tb_gpu;
         end
         $display("==================================================\n");
 
+        // --- 7. Verify Correctness and Print Output Matrix ---
         test_errors = 0;
-        $display("Verifying Matrix C (Expected Output: 204 for all elements)...");
-        for (int j=0; j<64; j=j+1) begin
-            if (dmem_array[128+j] !== 204) begin
-                $display("ERROR: C[%0d] = %0d (Expected 204)", j, dmem_array[128+j]);
+        $display("Verifying Convolution Output against Expected Results...");
+        
+        for (int j=0; j<36; j=j+1) begin
+            // Matrix Output starts at memory address 73
+            if (dmem_array[73+j] !== expected_out[j]) begin
+                $display("ERROR: Out[%0d] = %0d (Expected %0d)", j, dmem_array[73+j], expected_out[j]);
                 test_errors = test_errors + 1;
             end
         end
         
-        if (test_errors == 0) $display("SUCCESS: All 64 elements computed properly! (NATIVE FLUSH WORKED!)");
-        else $display("FAILED: %0d elements yielded errors.", test_errors);
+        if (test_errors == 0) $display("SUCCESS: All 36 Output Pixels match perfectly!\n");
+        else $display("FAILED: %0d elements yielded errors.\n", test_errors);
+        
+        // Print the matrices beautifully
+        $display("--- Filter Matrix (3x3) ---");
+        for (int r=0; r<3; r++) $display("%4d %4d %4d", dmem_array[64+r*3+0], dmem_array[64+r*3+1], dmem_array[64+r*3+2]);
+        
+        $display("\n--- Convolution Output Matrix (6x6) ---");
+        for (int r=0; r<6; r++) begin
+            $display("%6d %6d %6d %6d %6d %6d",
+                dmem_array[73 + r*6 + 0],
+                dmem_array[73 + r*6 + 1],
+                dmem_array[73 + r*6 + 2],
+                dmem_array[73 + r*6 + 3],
+                dmem_array[73 + r*6 + 4],
+                dmem_array[73 + r*6 + 5]
+            );
+        end
+        $display("\n==================================================");
         
         $finish;
     end

@@ -10,19 +10,16 @@ module icache #(
     input wire clk,
     input wire reset,
 
-    // --- Core (Fetcher) Interface ---
     input wire core_read_valid,
     input wire [ADDR_BITS-1:0] core_read_addr, 
     output logic core_read_ready,
     output logic [DATA_BITS-1:0] core_read_data,
 
-    // --- Memory Controller Interface ---
     output logic mem_read_valid,
     output logic [ADDR_BITS-1:0] mem_read_block_addr,
     input wire mem_read_ready,
     input wire [BLOCK_BITS-1:0] mem_read_block_data,
 
-    // --- PMU Event Pulses ---
     output wire ev_access,
     output wire ev_hit,
     output wire ev_stall
@@ -49,13 +46,14 @@ module icache #(
             state <= IDLE;
             mem_read_valid <= 0;
             core_read_ready <= 0;
-            for (int i = 0; i < CACHE_LINES; i++) valid_array[i] <= 0;
+            for (int i = 0; i < CACHE_LINES; i = i + 1) valid_array[i] <= 0;
         end else begin
             core_read_ready <= 0;
 
             case (state)
                 IDLE: begin
-                    if (core_read_valid) begin
+                    // FIX: Prevent Phantom Requests!
+                    if (core_read_valid && !core_read_ready) begin
                         if (hit) begin
                             core_read_data <= data_array[index][(word_offset * 32) +: 32];
                             core_read_ready <= 1;
@@ -83,7 +81,6 @@ module icache #(
         end
     end
 
-    // --- 1-Bit PMU Event Pulses ---
     assign ev_access = (state == IDLE && core_read_valid);
     assign ev_hit    = (state == IDLE && core_read_valid && hit);
     assign ev_stall  = (core_read_valid && !core_read_ready);
