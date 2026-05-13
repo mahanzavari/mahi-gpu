@@ -7,8 +7,8 @@ A minimal GPU implementation in Verilog optimized for learning about how GPUs wo
 - [Overview](#overview)
 - [Architecture](#architecture)
   - [GPU](#gpu)
-  - [Memory](#memory)
-  - [Core](#core)
+  - [Memory Hierarchy](#memory-hierarchy)
+  - [Core & PMU](#core--pmu)
 - [ISA](#isa)
 - [Execution Pipeline](#execution-pipeline)
   - [Stages](#stages)
@@ -17,7 +17,6 @@ A minimal GPU implementation in Verilog optimized for learning about how GPUs wo
   - [Matrix Multiplication](#matrix-multiplication)
 - [Simulation](#simulation)
 - [Advanced Functionality](#advanced-functionality)
-- [Next Steps](#next-steps)
 
 ## Overview
 
@@ -25,9 +24,7 @@ If you want to learn how a CPU works all the way from architecture to control si
 
 GPUs are not the same.
 
-Because the GPU market is so competitive, low-level technical details for all modern architectures remain proprietary.
-
-While there are lots of resources to learn about GPU programming, there is almost nothing available to learn about how GPUs work at a hardware level.
+Because the GPU market is so competitive, low-level technical details for all modern architectures remain proprietary. While there are lots of resources to learn about GPU programming, there is almost nothing available to learn about how GPUs work at a hardware level.
 
 This is why I built `mahi-gpu`.
 
@@ -35,19 +32,11 @@ Special thanks to [tiny-gpu](https://github.com/adam-maj/tiny-gpu) for providing
 
 ## What is mahi-gpu?
 
-**mahi-gpu** is a minimal GPU implementation optimized for learning about how GPUs work from the ground up.
-Specifically, with the trend toward general-purpose GPUs (GPGPUs) and ML-accelerators like Google's TPU, mahi-gpu focuses on highlighting the general principles of all of these architectures, rather than on the details of graphics-specific hardware.
+**mahi-gpu** is a minimal GPU implementation optimized for learning about how GPUs work from the ground up. Specifically, with the trend toward general-purpose GPUs (GPGPUs) and ML-accelerators like Google's TPU, mahi-gpu focuses on highlighting the general principles of all of these architectures, rather than on the details of graphics-specific hardware.
 
 With this motivation in mind, we can simplify GPUs by cutting out the majority of complexity involved with building a production-grade graphics card, and focus on the core elements that are critical to all of these modern hardware accelerators.
 
-<!-- This project is primarily focused on exploring:
-
-1. **Architecture** - What does the architecture of a GPU look like? What are the most important elements?
-2. **Parallelization** - How is the SIMD programming model implemented in hardware?
-3. **Memory** - How does a GPU work around the constraints of limited memory bandwidth?
-4. **Pipelining** - How are instructions streamed continuously to maximize hardware utilization? -->
-
-After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs.
+After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs (such as hardware atomics, performance monitoring, and multi-level caching).
 
 ## Architecture
 
@@ -59,13 +48,11 @@ After understanding the fundamentals laid out in this project, you can check out
 
 </br><br>
 
-The GPU is built to execute a single kernel at a time.
-
-In order to launch a kernel, we need to do the following:
+The GPU is built to execute a single kernel at a time. In order to launch a kernel, we need to do the following:
 
 1. Load global program memory with the kernel code
 2. Load data memory with the necessary data
-3. Specify the number of threads to launch in the device control register
+3. Specify the number of threads to launch in the device control register (DCR)
 4. Launch the kernel by setting the start signal to high.
 
 The GPU itself consists of the following units:
@@ -75,64 +62,48 @@ The GPU itself consists of the following units:
 3. Variable number of compute cores
 4. Memory controllers for data memory and program memory
 
-### Device Control Register
+### Device Control Register & Dispatcher
 
-The device control register stores metadata specifying how kernels should be executed on the GPU. In this implementation, it stores the `thread_count` - the total number of threads to launch for the active kernel.
+The **Device Control Register (DCR)** stores metadata specifying how kernels should be executed on the GPU. In this implementation, it stores the `thread_count` - the total number of threads to launch for the active kernel.
 
-### Dispatcher
+Once a kernel is launched, the **Dispatcher** manages the distribution of threads to different compute cores. It organizes threads into groups that can be executed in parallel on a single core called **blocks** and sends these blocks off to be processed by available cores.
 
-Once a kernel is launched, the dispatcher manages the distribution of threads to different compute cores. It organizes threads into groups that can be executed in parallel on a single core called **blocks** and sends these blocks off to be processed by available cores.
+### Memory Hierarchy
 
-### Memory
+To reduce latency and external memory bandwidth pressure, the GPU implements a realistic multi-level cache hierarchy:
 
-The GPU is built to interface with an external global memory. Data memory and program memory are separated for simplicity.
+- **Global Memory:** 32-bit addressable, 32-bit data (grouped into 128-bit blocks for caches). Separated into Data Memory and Program Memory.
+- **L1 Caches (Per-Core):**
+  - **Instruction Cache (I-Cache):** Caches 128-bit blocks (4 instructions per block) from program memory.
+  - **Data Cache (D-Cache):** A Write-Through cache that manages 128-bit blocks of data, drastically speeding up local memory accesses.
+- **Unified L2 Cache:** A shared, 4-way set-associative cache utilizing Tree Pseudo-LRU (PLRU) replacement. It sits between the L1 Data Caches and the Global Memory Controller.
+- **Victim Write Buffer (VWB):** Sits behind the L2 cache to absorb evicted dirty lines, preventing writebacks from stalling active memory reads.
+- **Shared Memory:** Each core has a shared memory block for fast communication and data sharing among threads of the same block, mirroring NVIDIA GPU architectures.
 
-#### Global Memory
+### Core & PMU
 
-The data memory has the following specifications:
-- 32-bit addressability
-- 32-bit data (grouped into 128-bit blocks for caches)
-
-The program memory has the following specifications:
-- 32-bit addressability
-- 32-bit data (each instruction is 32 bits as specified by the ISA)
-
-#### Cache Hierarchy (L1)
-
-To reduce latency, each core features dedicated L1 caches:
-- **Instruction Cache (I-Cache):** Caches 128-bit blocks (4 instructions per block) from program memory.
-- **Data Cache (D-Cache):** A Write-Through/Write-Update cache that manages 128-bit blocks of data, drastically speeding up global memory accesses.
-
-#### Shared Memory
-
-Each core has a shared memory block for faster communication and data sharing among threads of the same block, similar to NVIDIA GPU architectures.
-
-#### Memory Controllers
-
-Global memory has fixed read/write bandwidth, but there may be far more incoming requests across all cores. The memory controllers handle arbitration using a round-robin system to manage outgoing requests from the L1 caches, throttling them based on actual external memory bandwidth.
-
-### Core
-
-Each core processes one block at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, and register file. Additionally, the core contains a scheduler that manages warp execution and handles control flow divergence and hardware exceptions.
+Each core processes one block at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, and register file. 
 
 #### Scheduler
-
 The scheduler manages the continuous flow of instructions into the pipeline. Because the core is pipelined and supports multiple warps, the scheduler dynamically monitors execution to handle:
+- **Data and structural hazards**: Freezing the frontend when asynchronous global memory accesses stall the backend.
+- **Branching and divergence**: Using a hardware divergence stack to track divergent paths. Threads that take a branch continue while others are masked out. Control flow is serialized and automatically resynchronized.
+- **Synchronization**: Supporting `SYNC` instructions as a barrier across warps within a block.
+- **Warp scheduling**: Round-robin selection of ready warps to issue instructions, maximizing utilization.
+- **Exception Handling**: Trapping faults (divide-by-zero, out-of-bounds memory) and isolating the offending warp into a `FAULTED` state to prevent memory corruption while letting other warps safely complete.
 
-- **Data and structural hazards**: Freezing the frontend when asynchronous global memory accesses stall the backend (waiting for memory).
-- **Branching and divergence**: Monitoring the Execute stage for branch instructions and flushing the pipeline if a jump is taken. Individual threads can diverge; the scheduler tracks per-thread program counters and active masks to serialize divergent paths.
-- **Synchronization**: Supporting `SYNC` instructions as a barrier across warps within a block. The scheduler counts arriving warps and releases them when all active warps have reached the barrier.
-- **Warp scheduling**: Round-robin selection of ready warps to issue instructions, maximizing utilization even when some warps are stalled on memory or barriers.
-- **Exception Handling**: Trapping faults (like divide-by-zero or out-of-bounds memory access) and isolating the offending warp into a `FAULTED` state to prevent memory corruption while letting other warps safely complete.
+#### Performance Monitoring Unit (PMU)
+The core features an integrated event bus that tracks 32 distinct hardware events (e.g., cache hits/misses, stalls, branch divergence, warp switching). These events are routed via memory-mapped multiplexers to 4 physical 32-bit counters, allowing developers to profile kernel performance exactly like production profilers (e.g., Nsight Compute).
 
 #### Thread Units
-- **Fetcher**: Asynchronously fetches the instruction at the current program counter via the L1 Instruction Cache.
-- **Decoder**: Purely combinational unit that translates 32-bit instructions into pipeline control signals.
-- **Register Files**: Each thread has its own dedicated register file, holding general-purpose registers and read-only special registers (`%blockIdx`, `%blockDim`, `%threadIdx`), enabling the SIMD pattern.
-- **ALUs**: Dedicated arithmetic-logic unit for each thread, supporting standard arithmetic, bitwise logic, and advanced shader math operations (`MIN`, `MAX`, `ABS`, `NEG`).
-- **LSUs**: Dedicated load-store unit for each thread. Handles global data, shared memory, and atomic memory operations (`ATOM_ADD`), providing hardware-level serialization for data consistency.
+- **Fetcher & Decoder**: Asynchronously fetches and decodes 32-bit instructions into pipeline control signals.
+- **Register Files**: Each thread has its own dedicated register file, holding general-purpose registers and read-only special registers (`%blockIdx`, `%blockDim`, `%threadIdx`).
+- **ALUs**: Dedicated arithmetic-logic unit supporting standard arithmetic, bitwise logic, and advanced math (`MIN`, `MAX`, `ABS`, `NEG`, `MAC`).
+- **LSUs**: Dedicated load-store unit for global data, shared memory, and hardware atomic operations.
 
 ## ISA
+
+All instructions are 32 bits wide.
 
 | Mnemonic   | Opcode | Type | Notes |
 |:----------:|:------:|:----:|:-----:|
@@ -158,15 +129,15 @@ The scheduler manages the continuous flow of instructions into the pipeline. Bec
 | `XOR`      | 19     | R    | Bitwise XOR |
 | `SHL`      | 20     | R    | Shift Left |
 | `SHR`      | 21     | R    | Shift Right |
-| `MOD`      | 22     | R    | rd = rs % rt |
+| `MOD`      | 22     | R    | rd = rs % rt (Throws Modulo 0 Exception) |
 | `MIN`      | 23     | R    | rd = min(rs, rt) |
 | `MAX`      | 24     | R    | rd = max(rs, rt) |
 | `ABS`      | 25     | R    | rd = abs(rs) |
 | `NEG`      | 26     | R    | rd = -rs |
+| `MAC`      | 27     | R    | rd = rd + (rs * rt) |
+| `ATOM_CAS` | 28     | R    | Atomic Compare-and-Swap (rd=Expected/Yield, rt=New, rs=Addr) |
 
-## Instruction Format
-
-All instructions are 32 bits.
+### Instruction Format
 
 ```text
 31        26 25    21 20    16 15    11 10              0
@@ -180,26 +151,16 @@ All instructions are 32 bits.
 +------------+--------+--------+------------------------+
 ```
 
-For `LDR` and `STR`, the immediate 16-bit offset is taken and added to the address computed from `rs`.
+### Special Registers
 
-## Registers
+Each thread has 32 registers. Registers R29–R31 are read-only and automatically initialized to support the SIMD programming pattern.
 
-Each thread has 32 registers (32-bit width):
-
-- General-purpose registers (R0–R28) — readable and writable
-- Read-only special registers (R29–R31) — automatically set, not writable by the program
-
-These special registers mirror CUDA-style registers that allow each thread to know:
-1. Which block it belongs to
-2. How many threads exist in the block
-3. Which thread index it is
-
-| Register Index | Name (Conceptual) | Width | Read/Write | Initialization | Purpose |
-|:--------------:|:----------------:|:-----:|:----------:|:--------------:|---------|
-| 0–28           | General Purpose Registers (GPRs) | 32-bit | R/W | Zero | Used for arithmetic, memory ops, constants, etc. |
-| 29             | %blockIdx        | 32-bit | Read-only | Set to block_id | Identifies which block this thread belongs to |
-| 30             | %blockDim        | 32-bit | Read-only | Constant = THREADS_PER_BLOCK * WARPS | Number of threads per block |
-| 31             | %threadIdx       | 32-bit | Read-only | Constant = THREAD_ID | Thread index within the block |
+| Register Index | Name (Conceptual) | Read/Write | Initialization | Purpose |
+|:--------------:|:----------------:|:----------:|:--------------:|---------|
+| 0–28           | GPRs             | R/W        | Zero           | General Purpose computation |
+| 29             | `%blockIdx`      | Read-only  | `block_id`     | Block identifier |
+| 30             | `%blockDim`      | Read-only  | Constant       | Number of threads per block |
+| 31             | `%threadIdx`     | Read-only  | `thread_id`    | Thread index within the block |
 
 ## Execution Pipeline
 
@@ -212,24 +173,16 @@ The core implements a classic 5-stage RISC pipeline with hardware forwarding and
 ### Stages
 
 1. **IF (Instruction Fetch)**: The Fetcher requests the 32-bit instruction at the current PC from the I-Cache.
-2. **ID (Instruction Decode)**: The Decoder translates the instruction into control signals. The register file is read asynchronously, and forwarding paths are applied.
-3. **EX (Execute)**: The ALU performs arithmetic or comparisons. Branch targets and conditions are evaluated here. Hardware faults (memory bounds, DIV0) are detected here, tripping the pipeline into an exception state.
-4. **MEM (Memory Access)**: The LSU performs asynchronous reads/writes to global or shared memory via the D-Cache, as well as complex serialized `ATOM_ADD` actions.
-5. **WB (Write Back)**: The result from the ALU or LSU is written back synchronously to the register file.
-
-### Hardware Data Forwarding
-
-The pipeline includes forwarding logic that bypasses the register file when a later stage (MEM or WB) has a pending write to a register that is being read in the EX stage. This eliminates the need for compiler-inserted NOPs for most arithmetic dependencies.
-
-### Branch Divergence Handling
-
-The scheduler maintains per-thread architectural and speculative program counters along with an active mask. When a branch occurs, threads that take the branch continue along the new path while others are masked out. Divergent control flow is serialized by the scheduler, which resynchronizes threads when they reconverge.
+2. **ID (Instruction Decode)**: The Decoder translates the instruction. Registers are read asynchronously, and hardware forwarding paths bypass the register file for pending data.
+3. **EX (Execute)**: The ALU performs arithmetic or comparisons. Branch targets and control flow divergence are evaluated here. Hardware faults are detected here.
+4. **MEM (Memory Access)**: The LSU performs asynchronous memory coalescing, shared memory access, and serialized atomic read-modify-write operations.
+5. **WB (Write Back)**: The result is written back synchronously to the register file.
 
 ## Kernels
 
 ### Matrix Multiplication
 
-The following kernel performs a 5x5 matrix multiplication \( C = A \times B \).
+The following kernel performs a 5x5 matrix multiplication `C = A * B`.
 
 **Assembly program** (addresses shown as PC):
 
@@ -280,16 +233,15 @@ The following kernel performs a 5x5 matrix multiplication \( C = A \times B \).
 26: ADD   R9, R9, R3            // R9 = B_addr = base_B + k*5 + col
 27: LDR   R8, [R8+0]            // R8 = A_val
 28: LDR   R9, [R9+0]            // R9 = B_val
-29: MUL   R10, R8, R9           // R10 = A_val * B_val
-30: ADD   R5, R5, R10           // accumulator += product
-31: CONST R7, 1
-32: ADD   R6, R6, R7            // k = k + 1
-33: BRnzp 18                    // jump back to LOOP_START
+29: MAC   R5, R8, R9            // R5 = R5 + (A_val * B_val)
+30: CONST R7, 1
+31: ADD   R6, R6, R7            // k = k + 1
+32: BRnzp 18                    // jump back to LOOP_START
 ```
 
 ## Simulation
 
-The GPU is set up to simulate the execution of the above kernel. You can run the kernel simulations within tools like Xilinx Vivado or Altera Quartus.
+The GPU is set up to simulate the execution of the above kernel. You can run the kernel simulations within tools like Xilinx Vivado, Altera Quartus, or Verilator.
 
 Executing the simulations will output a text console trace consisting of scheduler events, exception traps, pipeline stage progress, memory controller handshakes, cache hits/misses, and register writes.
 
@@ -297,11 +249,18 @@ Executing the simulations will output a text console trace consisting of schedul
 
 Features implemented to emulate modern hardware functionality:
 
-### Cache Hierarchy
-The GPU includes L1 Instruction and Data Caches, minimizing external requests over the memory controllers and dramatically improving throughput on repetitive or localized memory access patterns.
+### Advanced Cache Subsystem
+The GPU includes a fully associative L1 cache layer per core backed by a Unified L2 Set-Associative Cache. To avoid blocking the bus, a **Victim Write Buffer (VWB)** captures dirty lines evicted from the L2 cache, trickling them to main memory in the background.
 
-### Memory Fault & Exception Handling
-If an instruction requests a global array operation out-of-bounds or attempts to divide by zero, the EX pipeline stage correctly flags an exception. The scheduler catches this, flushes the offending warp's speculative instruction path, and moves the warp to an isolated `FAULTED` state preventing memory corruption.
+### Hardware Atomic Serialization
+Software mutexes are incredibly slow on GPUs. This architecture includes an **Atomic Serialization Engine** inside the LSU. It temporarily halts warp execution to safely perform read-modify-write operations (`ATOM_ADD`, `ATOM_CAS`) directly against the memory subsystem, ensuring thread safety without deadlocks. 
 
-### Atomic Memory Access
-Hardware atomic functions (`ATOM_ADD`) allow multi-threading patterns like global counter increments without race conditions.
+### Exception Handling & Fault Isolation
+If an instruction requests a global array operation out-of-bounds or attempts to divide by zero, the EX pipeline stage flags an exception. The scheduler catches this, flushes the offending warp's speculative instruction path, and isolates the warp into a `FAULTED` state preventing memory corruption.
+
+### Hardware Profiling (PMU)
+Profiling is critical in GPU development. The included Performance Monitoring Unit allows for the real-time collection of cache stall data, thread divergence occurrences, and hardware utilization, mirroring the counters you would find in NVIDIA's Nsight Compute.
+
+
+Citations
+- https://github.com/adam-maj/tiny-gpu
