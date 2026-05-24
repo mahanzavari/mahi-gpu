@@ -41,14 +41,15 @@ module controller #(
                READ_RELAYING = 3'b100,
                WRITE_RELAYING = 3'b101;
 
+    //  Ensure width is at least 1-bit when NUM_CONSUMERS is 1 to avoid [-1:0]
+    localparam PTR_WIDTH = (NUM_CONSUMERS > 1) ? $clog2(NUM_CONSUMERS) : 1;
+
     logic [2:0] controller_state [NUM_CHANNELS];
-    logic [$clog2(NUM_CONSUMERS)-1:0] current_consumer [NUM_CHANNELS]; 
+    logic [PTR_WIDTH-1:0] current_consumer [NUM_CHANNELS]; 
     logic [NUM_CONSUMERS-1:0] channel_serving_consumer; 
     
-    // --- Round‑robin pointer per channel ---
-    logic [$clog2(NUM_CONSUMERS)-1:0] rr_ptr [NUM_CHANNELS];
+    logic [PTR_WIDTH-1:0] rr_ptr [NUM_CHANNELS];
     
-    // Temporary signals for arbitration
     logic [NUM_CONSUMERS-1:0] next_channel_serving;
     logic consumer_claimed;
 
@@ -68,7 +69,7 @@ module controller #(
                 mem_write_data[i] <= 0;
                 current_consumer[i] <= 0;
                 controller_state[i] <= IDLE;
-                rr_ptr[i] <= 0;   // initialise round-robin pointers
+                rr_ptr[i] <= 0;  
             end
 
             for (i = 0; i < NUM_CONSUMERS; i = i + 1) begin
@@ -82,7 +83,6 @@ module controller #(
                 case (controller_state[i])
                     IDLE: begin
                         consumer_claimed = 1'b0;
-                        // Round‑robin scan: start at rr_ptr[i] and check NUM_CONSUMERS slots
                         for (k = 0; k < NUM_CONSUMERS; k = k + 1) begin
                             j = (rr_ptr[i] + k) % NUM_CONSUMERS;
                             if (!consumer_claimed) begin
@@ -95,8 +95,6 @@ module controller #(
                                     mem_read_address[i] <= consumer_read_address[j];
                                     controller_state[i] <= READ_WAITING;
                                     
-                                    $display("[%0t] CONTROLLER (%m): Ch %0d accepted READ from Consumer %0d, Addr=%0d", $time, i, j, consumer_read_address[j]);
-                                    
                                 end else if (WRITE_ENABLE && consumer_write_valid[j] && !next_channel_serving[j]) begin 
                                     next_channel_serving[j] = 1'b1;
                                     consumer_claimed = 1'b1;
@@ -107,8 +105,6 @@ module controller #(
                                     mem_write_data[i] <= consumer_write_data[j];
                                     mem_write_strobe[i] <= consumer_write_strobe[j];
                                     controller_state[i] <= WRITE_WAITING;
-                                    
-                                    $display("[%0t] CONTROLLER (%m): Ch %0d accepted WRITE from Consumer %0d, Addr=%0d, Data=%0d", $time, i, j, consumer_write_address[j], consumer_write_data[j]);
                                 end
                             end
                         end
@@ -119,8 +115,6 @@ module controller #(
                             consumer_read_data[current_consumer[i]] <= mem_read_data[i];
                             consumer_read_ready[current_consumer[i]] <= 1;
                             controller_state[i] <= READ_RELAYING;
-                            
-                            $display("[%0t] CONTROLLER (%m): Ch %0d READ ready from mem. Relaying Data=%0d to Consumer %0d", $time, i, mem_read_data[i], current_consumer[i]);
                         end
                     end
                     WRITE_WAITING: begin 
@@ -128,34 +122,27 @@ module controller #(
                             mem_write_valid[i] <= 0;
                             consumer_write_ready[current_consumer[i]] <= 1;
                             controller_state[i] <= WRITE_RELAYING;
-                            
-                            $display("[%0t] CONTROLLER (%m): Ch %0d WRITE acknowledged by mem. Notifying Consumer %0d", $time, i, current_consumer[i]);
                         end
                     end
                     READ_RELAYING: begin
                         if (!consumer_read_valid[current_consumer[i]]) begin 
                             next_channel_serving[current_consumer[i]] = 1'b0;
                             consumer_read_ready[current_consumer[i]] <= 0;
-                            // Advance round-robin pointer after service completes
                             rr_ptr[i] <= (current_consumer[i] + 1) % NUM_CONSUMERS;
                             controller_state[i] <= IDLE;
-                            $display("[%0t] CONTROLLER (%m): Ch %0d READ complete for Consumer %0d. Returning to IDLE.", $time, i, current_consumer[i]);
                         end
                     end
                     WRITE_RELAYING: begin 
                         if (!consumer_write_valid[current_consumer[i]]) begin 
                             next_channel_serving[current_consumer[i]] = 1'b0;
                             consumer_write_ready[current_consumer[i]] <= 0;
-                            // Advance round-robin pointer after write completes
                             rr_ptr[i] <= (current_consumer[i] + 1) % NUM_CONSUMERS;
                             controller_state[i] <= IDLE;
-                            $display("[%0t] CONTROLLER (%m): Ch %0d WRITE complete for Consumer %0d. Returning to IDLE.", $time, i, current_consumer[i]);
                         end
                     end
                 endcase
             end
             
-            // Single non-blocking update at the end of the evaluation cycle
             channel_serving_consumer <= next_channel_serving;
         end
     end
