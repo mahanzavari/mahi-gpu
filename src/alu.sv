@@ -1,4 +1,3 @@
-// --- Begin: src/alu.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -6,7 +5,7 @@ module alu #(
     parameter DATA_BITS = 16
 ) (
     input wire enable,
-    input wire [4:0] decoded_alu_arithmetic_mux, // 5-bit to support new ops
+    input wire [4:0] decoded_alu_arithmetic_mux, 
     input wire decoded_alu_output_mux,
 
     input wire [DATA_BITS-1:0] rs,
@@ -14,7 +13,7 @@ module alu #(
     input wire [DATA_BITS-1:0] rd_val,
     
     output reg [DATA_BITS-1:0] alu_out,
-    output reg div_by_zero, // Div0 flag EXCEPTION
+    output reg div_by_zero, 
     
     // --- ALU Flags ---
     output reg flag_c,      // Carry
@@ -82,11 +81,23 @@ module alu #(
                 XOR: alu_out = rs ^ rt;
                 SHL: begin
                     alu_out = rs << rt;
-                    if (rt > 0 && rt <= DATA_BITS) flag_c = rs[DATA_BITS - rt];
+                    if (rt > 0 && rt <= DATA_BITS) begin
+                        integer shl_idx;
+                        shl_idx = DATA_BITS - rt;
+                        flag_c = rs[shl_idx];
+                    end else begin
+                        flag_c = 1'b0;
+                    end
                 end
                 SHR: begin
                     alu_out = rs >> rt;
-                    if (rt > 0 && rt <= DATA_BITS) flag_c = rs[rt - 1];
+                    if (rt > 0 && rt <= DATA_BITS) begin
+                        integer shr_idx;
+                        shr_idx = rt - 1;
+                        flag_c = rs[shr_idx];
+                    end else begin
+                        flag_c = 1'b0;
+                    end
                 end
                 MOD: begin
                     if (rt == 0) begin
@@ -114,18 +125,20 @@ module alu #(
                 end
                 CLZ: begin
                     alu_out = DATA_BITS;
-                    for (int n = 0; n < DATA_BITS; n++) if (rs[n]) alu_out = (DATA_BITS-1) - n;
+                    // Scan MSB to LSB, latch the first 1-bit position we find
+                    for (int n = DATA_BITS-1; n >= 0; n--) begin
+                        if (rs[n] && alu_out == DATA_BITS) alu_out = (DATA_BITS-1) - n;
+                    end
                 end
                 BREV: begin
+                    alu_out = {DATA_BITS{1'b0}}; // Guard against uninitialized propagation
                     for (int b = 0; b < DATA_BITS; b++) alu_out[b] = rs[DATA_BITS-1-b];
                 end
                 default: alu_out = {DATA_BITS{1'b0}};
             endcase
             
-            // Standardise Zero and Negative flags for all ops
             flag_z = (alu_out == {DATA_BITS{1'b0}});
             flag_n = alu_out[DATA_BITS-1];
         end
     end
 endmodule
-// --- End: src/alu.sv ---

@@ -35,9 +35,9 @@ module scheduler #(
     output wire ev_scheduler_idle,
     output wire ev_warp_switch,
     output wire ev_diverge,
-    output wire ev_stall_mem,      // NEW: warp blocked on memory
-    output wire ev_stall_barrier,  // NEW: warp blocked at __syncthreads
-    output wire ev_stall_noready   // NEW: runnable warps exist but none issuable
+    output wire ev_stall_mem,      
+    output wire ev_stall_barrier,  
+    output wire ev_stall_noready   
 );
 
     typedef enum logic [2:0] { IDLE, READY, WAITING_MEM, WAITING_BARRIER, DONE_STATE, FAULTED } warp_state_t;
@@ -173,7 +173,15 @@ module scheduler #(
                             stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1; flush_warp_mask[ex_warp_id] <= 1'b1;
                         end else if (is_branch || ex_sync) begin
                             current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a; flush_warp_mask[ex_warp_id] <= 1'b1;
-                            if (ex_sync) begin warp_state[ex_warp_id] <= WAITING_BARRIER; barrier_count <= barrier_count + 1; end
+                            
+                            // Guard condition implemented here
+                            if (ex_sync) begin 
+                                if (warp_state[ex_warp_id] != WAITING_BARRIER) begin
+                                    warp_state[ex_warp_id] <= WAITING_BARRIER; 
+                                    barrier_count <= barrier_count + 1; 
+                                end
+                            end
+
                         end
                     end
                 end
@@ -211,7 +219,6 @@ module scheduler #(
         end
     end
 
-    // --- PMU Event Logic ---
     reg [$clog2(NUM_WARPS)-1:0] prev_issued_warp;
     always @(posedge clk) begin
         if (reset) prev_issued_warp <= 0;

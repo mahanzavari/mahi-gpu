@@ -46,6 +46,8 @@ module victim_write_buffer #(
     reg [15:0] count;
     reg [15:0] next_count;
 
+    reg [4:0] idle_counter; // Anti-Starvation Counter
+
     assign empty = (count == 0);
     assign full  = (count == DEPTH);
     assign push_ready = !full;
@@ -104,13 +106,18 @@ module victim_write_buffer #(
             state <= IDLE;
             mem_write_valid <= 0; count <= 0;
             active_drain_idx <= 0; active_drain_valid <= 0;
+            idle_counter <= 0;
             for (int k = 0; k < DEPTH; k++) begin
                 valid[k] <= 0; dirty[k] <= 0;
             end
         end else begin
+            
+            // Increment Idle Timeout logic when buffer has zero active push/probes
+            if (push_valid || probe_valid) idle_counter <= 0;
+            else if (idle_counter != 5'h1F) idle_counter <= idle_counter + 1;
+
             if (push_valid && push_ready) begin
                 if (merge_found) begin
-                    // --- SAFE COMBINATIONAL MERGE ---
                     logic [BLOCK_BITS-1:0] merged_data;
                     merged_data = data[merge_idx];
                     for (int s = 0; s < SECTORS; s++) begin
@@ -120,7 +127,6 @@ module victim_write_buffer #(
                     end
                     data[merge_idx] <= merged_data;
                     dirty[merge_idx] <= dirty[merge_idx] | push_sector_dirty;
-                    // --------------------------------
                 end else if (free_found) begin
                     addr[free_idx]  <= push_addr;
                     data[free_idx]  <= push_data;
@@ -130,7 +136,8 @@ module victim_write_buffer #(
 
             case (state)
                 IDLE: begin
-                    if (drain_pending && (flush_en || count > DEPTH/2)) begin
+                    // Trigger drain on flush, half capacity OR idle starvation
+                    if (drain_pending && (flush_en || count >= DEPTH/2 || idle_counter == 5'h1F)) begin
                         if (!(probe_pop && addr[drain_idx] == pop_addr)) begin
                             mem_write_valid  <= 1;
                             mem_write_addr   <= addr[drain_idx];

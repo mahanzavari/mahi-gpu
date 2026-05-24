@@ -1,3 +1,4 @@
+// --- Begin: src/dcache.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -64,24 +65,29 @@ module dcache #(
     wire hit_way = hit_w1; 
     wire victim_way = lru_bit[req_index];
 
-    assign flush_done = flush_en; 
-
     always @(posedge clk) begin
         if (reset) begin
             state <= IDLE;
             mem_read_valid <= 0; mem_write_valid <= 0;
             core_read_ready <= 0; core_write_ready <= 0;
+            flush_done <= 0;
             for (int s = 0; s < SETS; s++) begin
                 lru_bit[s] <= 0;
                 for (int w = 0; w < WAYS; w++) valid_array[s][w] <= 0;
             end
         end else begin
             core_read_ready <= 0; core_write_ready <= 0;
+            flush_done <= 0;
 
             case (state)
                 IDLE: begin
-                    // FIX: Prevent 1-cycle phantom requests by ensuring ready is 0!
-                    if (core_write_valid && !core_write_ready) begin
+                    if (flush_en) begin
+                        for (int s = 0; s < SETS; s++) begin
+                            for (int w = 0; w < WAYS; w++) valid_array[s][w] <= 0;
+                        end
+                        flush_done <= 1; // Real registered handshake flag
+                    end
+                    else if (core_write_valid && !core_write_ready) begin
                         mem_write_valid <= 1;
                         mem_write_block_addr <= core_write_block_addr;
                         mem_write_block_data <= core_write_block_data;
@@ -99,7 +105,6 @@ module dcache #(
                             lru_bit[req_index] <= ~hit_way;
                         end
                     end 
-                    // FIX: Prevent phantom requests for reads too!
                     else if (core_read_valid && !core_read_ready) begin
                         if (hit) begin
                             core_read_block_data <= data_array[req_index][hit_way];
@@ -141,8 +146,8 @@ module dcache #(
     assign ev_read_acc   = (state == IDLE && core_read_valid);
     assign ev_read_hit   = (state == IDLE && core_read_valid && hit);
     assign ev_read_stall = (core_read_valid && !core_read_ready);
-    assign ev_write_acc   = (state == IDLE && core_write_valid);
-    assign ev_write_hit   = (state == IDLE && core_write_valid && hit);
-    assign ev_write_stall = (core_write_valid && !core_write_ready);
+    assign ev_write_acc  = (state == IDLE && core_write_valid);
+    assign ev_write_hit  = (state == IDLE && core_write_valid && hit);
+    assign ev_write_stall= (core_write_valid && !core_write_ready);
 
 endmodule
