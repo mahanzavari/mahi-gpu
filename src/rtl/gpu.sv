@@ -217,6 +217,4 @@ module gpu #(
             );
         end
     endgenerate
-
 endmodule
-// --- End: src/gpu.sv ---

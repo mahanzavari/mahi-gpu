@@ -1,4 +1,3 @@
-// --- TINY-GPU BUG FIX VERIFICATION ---
 // All threads compute the values, proving out the ALU fixes.
 
 // 1. Setup Base Value 0x12345678 in r2

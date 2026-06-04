@@ -1,13 +1,13 @@
 # Mahi GPU
 
-A minimal GPU implementation in Verilog optimized for learning about how GPUs work from the ground up.
+A minimal GPU implementation in SystemVerilog optimized for learning about how GPUs work from the ground up.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Architecture](#architecture)
   - [GPU](#gpu)
-  - [Memory Hierarchy](#memory-hierarchy)
+  - [Memory Hierarchy & AXI Integration](#memory-hierarchy--axi-integration)
   - [Core & PMU](#core--pmu)
 - [ISA](#isa)
 - [Execution Pipeline](#execution-pipeline)
@@ -15,7 +15,7 @@ A minimal GPU implementation in Verilog optimized for learning about how GPUs wo
   - [Thread Data Path](#thread-data-path)
 - [Kernels](#kernels)
   - [Matrix Multiplication](#matrix-multiplication)
-- [Simulation](#simulation)
+- [Simulation & Testing](#simulation--testing)
 - [Advanced Functionality](#advanced-functionality)
 
 ## Overview
@@ -36,7 +36,7 @@ Special thanks to [tiny-gpu](https://github.com/adam-maj/tiny-gpu) for providing
 
 With this motivation in mind, we can simplify GPUs by cutting out the majority of complexity involved with building a production-grade graphics card, and focus on the core elements that are critical to all of these modern hardware accelerators.
 
-After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs (such as hardware atomics, performance monitoring, and multi-level caching).
+After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs (such as hardware atomics, performance monitoring, standard AXI4 buses, and multi-level caching).
 
 ## Architecture
 
@@ -46,7 +46,7 @@ After understanding the fundamentals laid out in this project, you can check out
   <img src="/docs/PNG/GPU_card.png" alt="GPU" width="48%">
 </p>
 
-</br><br>
+<br>
 
 The GPU is built to execute a single kernel at a time. In order to launch a kernel, we need to do the following:
 
@@ -64,21 +64,22 @@ The GPU itself consists of the following units:
 
 ### Device Control Register & Dispatcher
 
-The **Device Control Register (DCR)** stores metadata specifying how kernels should be executed on the GPU. In this implementation, it stores the `thread_count` - the total number of threads to launch for the active kernel.
+The **Device Control Register (DCR)** stores metadata specifying how kernels should be executed on the GPU. In this implementation, it stores the `thread_count` - the total number of threads to launch for the active kernel, alongside PMU configuration registers.
 
 Once a kernel is launched, the **Dispatcher** manages the distribution of threads to different compute cores. It organizes threads into groups that can be executed in parallel on a single core called **blocks** and sends these blocks off to be processed by available cores.
 
-### Memory Hierarchy
+### Memory Hierarchy & AXI Integration
 
-To reduce latency and external memory bandwidth pressure, the GPU implements a realistic multi-level cache hierarchy:
+To reduce latency and external memory bandwidth pressure, the GPU implements a realistic multi-level cache hierarchy seamlessly integrated with standard AXI4 memory buses:
 
-- **Global Memory:** 32-bit addressable, 32-bit data (grouped into 128-bit blocks for caches). Separated into Data Memory and Program Memory.
+- **Global Memory (AXI4-Backed):** 32-bit addressable memory bridged to an industry-standard AXI4 Master interface (`gpu_axi_wrapper.sv`).
+- **Realistic DDR Latency Simulation:** The provided `axi_ram.sv` includes behavioral modeling for DDR memory, replicating page hits, row-to-column delays (`tRCD`), and row precharge (`tRP`) to test the cache subsystem authentically.
 - **L1 Caches (Per-Core):**
   - **Instruction Cache (I-Cache):** Caches 128-bit blocks (4 instructions per block) from program memory.
   - **Data Cache (D-Cache):** A Write-Through cache that manages 128-bit blocks of data, drastically speeding up local memory accesses.
 - **Unified L2 Cache:** A shared, 4-way set-associative cache utilizing Tree Pseudo-LRU (PLRU) replacement. It sits between the L1 Data Caches and the Global Memory Controller.
 - **Victim Write Buffer (VWB):** Sits behind the L2 cache to absorb evicted dirty lines, preventing writebacks from stalling active memory reads.
-- **Shared Memory:** Each core has a shared memory block for fast communication and data sharing among threads of the same block, mirroring NVIDIA GPU architectures.
+- **Shared Memory:** Each core has a shared memory block for fast communication and data sharing among threads of the same block, mirroring NVIDIA GPU architectures. It includes bank conflict detection and read-broadcasting.
 
 ### Core & PMU
 
@@ -98,7 +99,7 @@ The core features an integrated event bus that tracks 32 distinct hardware event
 #### Thread Units
 - **Fetcher & Decoder**: Asynchronously fetches and decodes 32-bit instructions into pipeline control signals.
 - **Register Files**: Each thread has its own dedicated register file, holding general-purpose registers and read-only special registers (`%blockIdx`, `%blockDim`, `%threadIdx`).
-- **ALUs**: Dedicated arithmetic-logic unit supporting standard arithmetic, bitwise logic, and advanced math (`MIN`, `MAX`, `ABS`, `NEG`, `MAC`).
+- **ALUs**: Dedicated arithmetic-logic unit supporting standard arithmetic, bitwise logic, and advanced math (`MIN`, `MAX`, `ABS`, `NEG`, `MAC`, `POPCNT`, `CLZ`, `BREV`). Also outputs ALU flags (carry, overflow, zero, negative, saturation).
 - **LSUs**: Dedicated load-store unit for global data, shared memory, and hardware atomic operations.
 
 ## ISA
@@ -136,6 +137,10 @@ All instructions are 32 bits wide.
 | `NEG`      | 26     | R    | rd = -rs |
 | `MAC`      | 27     | R    | rd = rd + (rs * rt) |
 | `ATOM_CAS` | 28     | R    | Atomic Compare-and-Swap (rd=Expected/Yield, rt=New, rs=Addr) |
+| `LUI`      | 29     | I    | Load Upper Immediate (rd = imm << 12) |
+| `POPCNT`   | 30     | R    | Population Count (count 1s in rs) |
+| `CLZ`      | 31     | R    | Count Leading Zeros |
+| `BREV`     | 32     | R    | Bit Reversal (reverse bits of rs) |
 
 ### Instruction Format
 
@@ -147,7 +152,7 @@ All instructions are 32 bits wide.
 
 31        26 25    21 20    16 15                       0
 +------------+--------+--------+------------------------+
-|  OPCODE    | RD/NZP |   RS   |     IMMEDIATE[15:0]    |  (I-type: BR, CONST, CALL, LDR, STR)
+|  OPCODE    | RD/NZP |   RS   |     IMMEDIATE[15:0]    |  (I-type: BR, CONST, CALL, LDR, STR, LUI)
 +------------+--------+--------+------------------------+
 ```
 
@@ -239,15 +244,18 @@ The following kernel performs a 5x5 matrix multiplication `C = A * B`.
 32: BRnzp 18                    // jump back to LOOP_START
 ```
 
-## Simulation
+## Simulation & Testing
 
-The GPU is set up to simulate the execution of the above kernel. You can run the kernel simulations within tools like Xilinx Vivado, Altera Quartus, or Verilator.
+The GPU is designed to be easily verifiable. Included is an `axi_ram.sv` module which performs **Realistic DDR Behavioral Simulation**. Rather than returning data instantaneously, this module replicates the timing delays of modern DRAM (e.g., `tCAS`, `tRCD`, and `tRP`).
 
-Executing the simulations will output a text console trace consisting of scheduler events, exception traps, pipeline stage progress, memory controller handshakes, cache hits/misses, and register writes.
+Executing simulations using tools like Xilinx Vivado, Intel Quartus, or Verilator will allow you to see exactly how your cache hierarchy behaves under realistic memory latency constraints, outputting a console trace consisting of scheduler events, pipeline progress, and exception traps.
 
 ## Advanced Functionality
 
 Features implemented to emulate modern hardware functionality:
+
+### System IP Integration (AXI4)
+Connecting custom RTL into larger SoC ecosystems (like a Xilinx Zynq FPGA) requires standard buses. The `gpu_axi_wrapper.sv` maps the GPU's internal memory controllers to full AXI4-Master Read/Write channels. 
 
 ### Advanced Cache Subsystem
 The GPU includes a fully associative L1 cache layer per core backed by a Unified L2 Set-Associative Cache. To avoid blocking the bus, a **Victim Write Buffer (VWB)** captures dirty lines evicted from the L2 cache, trickling them to main memory in the background.
@@ -260,7 +268,3 @@ If an instruction requests a global array operation out-of-bounds or attempts to
 
 ### Hardware Profiling (PMU)
 Profiling is critical in GPU development. The included Performance Monitoring Unit allows for the real-time collection of cache stall data, thread divergence occurrences, and hardware utilization, mirroring the counters you would find in NVIDIA's Nsight Compute.
-
-
-Citations
-- https://github.com/adam-maj/tiny-gpu

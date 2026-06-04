@@ -467,4 +467,3 @@ core_pmu pmu_inst (
 );
 
 endmodule
-// --- End: src/core.sv 
