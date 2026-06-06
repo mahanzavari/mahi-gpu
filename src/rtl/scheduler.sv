@@ -10,17 +10,29 @@ module scheduler #(
     input wire reset,
     input wire start,
     input wire [$clog2(NUM_WARPS * THREADS_PER_BLOCK):0] thread_count,
+    
+    // --- Memory Integration ---
     input wire mem_req_valid,
     input wire [$clog2(NUM_WARPS)-1:0] mem_warp_id,
     input wire [PROGRAM_MEM_ADDR_BITS-1:0] mem_pc,
     input wire [NUM_WARPS-1:0] warp_mem_ready,
     input wire [NUM_WARPS-1:0] mem_in_progress,
+    
+    // --- FPU Integration ---
+    input wire fp_req_valid,
+    input wire [$clog2(NUM_WARPS)-1:0] fp_warp_id,
+    input wire [PROGRAM_MEM_ADDR_BITS-1:0] fp_pc,
+    input wire fp_wb_valid,
+    input wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id,
+    
+    // --- Pipeline Controls ---
     input wire frontend_stall,
     output reg [NUM_WARPS-1:0] flush_warp_mask,
     output reg [PROGRAM_MEM_ADDR_BITS-1:0] if_pc,
     output reg [THREADS_PER_BLOCK-1:0] sched_active_mask,
     output reg [$clog2(NUM_WARPS)-1:0] sched_warp_id,
     output reg valid_issue,
+    
     input wire ex_valid,
     input wire [$clog2(NUM_WARPS)-1:0] ex_warp_id,
     input wire [THREADS_PER_BLOCK-1:0] ex_active_mask,
@@ -40,7 +52,8 @@ module scheduler #(
     output wire ev_stall_noready   
 );
 
-    typedef enum logic [2:0] { IDLE, READY, WAITING_MEM, WAITING_BARRIER, DONE_STATE, FAULTED } warp_state_t;
+    // Added WAITING_FP state
+    typedef enum logic [2:0] { IDLE, READY, WAITING_MEM, WAITING_BARRIER, WAITING_FP, DONE_STATE, FAULTED } warp_state_t;
     warp_state_t warp_state [NUM_WARPS];
 
     localparam STACK_DEPTH = 4;
@@ -86,10 +99,17 @@ module scheduler #(
             end
         end
 
-        if (ex_valid && ex_active_mask != 0 && !(mem_req_valid && mem_warp_id == ex_warp_id) && warp_state[ex_warp_id] != WAITING_MEM) begin
+        // Prevent standard branch flushes if we are entering a WAITING state
+        if (ex_valid && ex_active_mask != 0 && 
+            !(mem_req_valid && mem_warp_id == ex_warp_id) && 
+            !(fp_req_valid && fp_warp_id == ex_warp_id) && 
+            warp_state[ex_warp_id] != WAITING_MEM && 
+            warp_state[ex_warp_id] != WAITING_FP) begin
             if (ex_exception_valid || ex_exit || ex_has_divergence || ex_is_branch || ex_sync) warp_flush_inhibit[ex_warp_id] = 1'b1;
         end
+        
         if (mem_req_valid && warp_state[mem_warp_id] != WAITING_MEM) warp_flush_inhibit[mem_warp_id] = 1'b1;
+        if (fp_req_valid && warp_state[fp_warp_id] != WAITING_FP) warp_flush_inhibit[fp_warp_id] = 1'b1;
     end
 
     integer w, t;
@@ -121,17 +141,32 @@ module scheduler #(
                 end
             end
 
+            // --- Wake-up Logic ---
             for (w = 0; w < NUM_WARPS; w++) begin
                 if (warp_state[w] == WAITING_MEM && warp_mem_ready[w]) warp_state[w] <= READY;
+                if (warp_state[w] == WAITING_FP && fp_wb_valid && fp_wb_warp_id == w) warp_state[w] <= READY;
             end
 
+            // --- Sleep / Latency Hiding Logic ---
             if (mem_req_valid && warp_state[mem_warp_id] != WAITING_MEM) begin
                 warp_state[mem_warp_id] <= WAITING_MEM;
                 flush_warp_mask[mem_warp_id] <= 1'b1;
                 current_pc[mem_warp_id] <= mem_pc + 1;
             end
 
-            if (ex_valid && ex_active_mask != 0 && !(mem_req_valid && mem_warp_id == ex_warp_id) && warp_state[ex_warp_id] != WAITING_MEM) begin
+            if (fp_req_valid && warp_state[fp_warp_id] != WAITING_FP) begin
+                warp_state[fp_warp_id] <= WAITING_FP;
+                flush_warp_mask[fp_warp_id] <= 1'b1;
+                current_pc[fp_warp_id] <= fp_pc + 1;
+            end
+
+            // --- Control Flow & Exception Logic ---
+            if (ex_valid && ex_active_mask != 0 && 
+                !(mem_req_valid && mem_warp_id == ex_warp_id) && 
+                !(fp_req_valid && fp_warp_id == ex_warp_id) && 
+                warp_state[ex_warp_id] != WAITING_MEM && 
+                warp_state[ex_warp_id] != WAITING_FP) begin
+                
                 if (ex_exception_valid) begin
                     warp_state[ex_warp_id] <= FAULTED; flush_warp_mask[ex_warp_id] <= 1'b1;
                 end else begin
@@ -174,7 +209,6 @@ module scheduler #(
                         end else if (is_branch || ex_sync) begin
                             current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a; flush_warp_mask[ex_warp_id] <= 1'b1;
                             
-                            // Guard condition implemented here
                             if (ex_sync) begin 
                                 if (warp_state[ex_warp_id] != WAITING_BARRIER) begin
                                     warp_state[ex_warp_id] <= WAITING_BARRIER; 
@@ -187,11 +221,13 @@ module scheduler #(
                 end
             end
 
+            // --- Barrier Resolution ---
             if (barrier_count >= num_active_warps_comb && num_active_warps_comb > 0) begin
                 for (int w_rel = 0; w_rel < NUM_WARPS; w_rel++) if (warp_state[w_rel] == WAITING_BARRIER) warp_state[w_rel] <= READY;
                 barrier_count <= 0;
             end
 
+            // --- Round-Robin Issue ---
             if (start && !done && (!frontend_stall || flush_warp_mask[sched_warp_id])) begin
                 found_var = 1'b0; next_rr_var = rr_ptr;
                 for (int i = 0; i < NUM_WARPS; i++) begin
@@ -209,6 +245,7 @@ module scheduler #(
                 end
             end
 
+            // --- Completion Logic ---
             all_warps_done = 1;
             for (w = 0; w < NUM_WARPS; w++) begin
                 if (warp_state[w] != DONE_STATE && warp_state[w] != IDLE && warp_state[w] != FAULTED) all_warps_done = 0;
@@ -225,24 +262,29 @@ module scheduler #(
         else if (start && !done && valid_issue) prev_issued_warp <= sched_warp_id;
     end
 
-    logic any_waiting_mem, any_waiting_barrier;
+    logic any_waiting_mem, any_waiting_barrier, any_waiting_fp;
     always_comb begin
-        any_waiting_mem = 0; any_waiting_barrier = 0;
+        any_waiting_mem = 0; any_waiting_barrier = 0; any_waiting_fp = 0;
         for (int i=0; i<NUM_WARPS; i++) begin
             if (warp_state[i] == WAITING_MEM) any_waiting_mem = 1;
             if (warp_state[i] == WAITING_BARRIER) any_waiting_barrier = 1;
+            if (warp_state[i] == WAITING_FP) any_waiting_fp = 1;
         end
     end
 
+    // PMU Events
     assign ev_scheduler_idle = (start && !done && !valid_issue && !frontend_stall);
     assign ev_warp_switch    = (start && !done && valid_issue && (sched_warp_id != prev_issued_warp));
     assign ev_diverge        = (start && !done && ex_valid && ex_active_mask != 0 && 
                                !(mem_req_valid && mem_warp_id == ex_warp_id) && 
+                               !(fp_req_valid && fp_warp_id == ex_warp_id) && 
                                warp_state[ex_warp_id] != WAITING_MEM && 
+                               warp_state[ex_warp_id] != WAITING_FP && 
                                !ex_exception_valid && !ex_exit && ex_has_divergence);
                                
     assign ev_stall_mem      = start && !done && any_waiting_mem;
     assign ev_stall_barrier  = start && !done && any_waiting_barrier;
-    assign ev_stall_noready  = start && !done && !valid_issue && !frontend_stall && !(any_waiting_mem || any_waiting_barrier);
+    // Don't count "noready" if we are simply waiting for an FP pipeline to finish
+    assign ev_stall_noready  = start && !done && !valid_issue && !frontend_stall && !(any_waiting_mem || any_waiting_barrier || any_waiting_fp);
 
 endmodule

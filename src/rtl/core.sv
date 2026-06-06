@@ -17,7 +17,7 @@ module core #(
 ) (
     input  wire clk,
     input  wire reset,
-    input  wire global_reset, // NEW: Added global_reset for PMU persistence
+    input  wire global_reset,
     input  wire start,
     output wire done,
     input  wire [7:0]                                   block_id,
@@ -61,7 +61,7 @@ module core #(
     output wire [31:0] pmu_snap_2,
     output wire [31:0] pmu_snap_3,
 
-    // --- External Cache Events (Route these in gpu.sv) ---
+    // --- External Cache Events ---
     input wire ic_ev_access, ic_ev_hit, ic_ev_stall,
     input wire dc_ev_read_acc, dc_ev_read_hit, dc_ev_read_stall,
     input wire dc_ev_write_acc, dc_ev_write_hit, dc_ev_write_stall
@@ -83,8 +83,10 @@ wire [PROGRAM_MEM_ADDR_BITS-1:0] if_pc;
 wire                           valid_issue;
 wire [31:0]                    if_instruction;
 
-wire frontend_stall   = fetch_stall; 
-wire fetcher_stall    = !core_running; 
+// Front-end stall logic will be augmented by FP RAW Scoreboard
+wire fp_raw_stall; 
+wire frontend_stall   = fetch_stall | fp_raw_stall; 
+wire fetcher_stall    = !core_running | fp_raw_stall; 
 
 fetcher #(
     .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
@@ -104,7 +106,7 @@ always @(posedge clk) begin
         id_instruction <= 0; id_pc <= 0; id_active_mask <= 0; id_warp_id <= 0; issued_warp_id <= 0;
     end else if (flush_warp_mask[sched_warp_id]) begin
         id_active_mask <= 0;
-    end else begin
+    end else if (!fp_raw_stall) begin
         if (valid_issue) issued_warp_id <= sched_warp_id;
         id_warp_id <= if_instruction_valid ? issued_warp_id : id_warp_id;
         id_instruction <= if_instruction_valid ? if_instruction : 0;
@@ -122,6 +124,9 @@ wire [15:0] id_mem_addr_offset;
 wire [1:0] id_atomic; 
 reg [1:0] ex_atomic;  
 
+wire id_is_fp;
+wire [1:0] id_fp_op;
+
 decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
     .instruction(id_instruction), .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
     .decoded_nzp(id_nzp), .decoded_immediate(id_imm), .decoded_use_mem_offset(id_use_mem_offset), .decoded_mem_addr_offset(id_mem_addr_offset),
@@ -130,8 +135,17 @@ decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
     .decoded_reg_input_mux(id_reg_mux), .decoded_alu_arithmetic_mux(id_alu_arith_mux), .decoded_alu_output_mux(id_alu_out_mux),
     .decoded_pc_mux(id_pc_mux), .decoded_sync(id_sync), .decoded_shared_read_enable(id_shared_re), .decoded_shared_write_enable(id_shared_we),
     .decoded_ret_fn(id_ret_fn), .decoded_exit(id_exit), .decoded_call(id_call), .decoded_atomic(id_atomic),
-    .decoded_rd_read_enable(id_rd_re), .decoded_flags_write_enable(id_flags_we)
+    .decoded_rd_read_enable(id_rd_re), .decoded_flags_write_enable(id_flags_we),
+    .decoded_is_fp(id_is_fp), .decoded_fp_op(id_fp_op)
 );
+
+// --- FP Scoreboard & RAW Stall ---
+reg [31:0] fp_scoreboard [NUM_WARPS];
+
+assign fp_raw_stall = (|id_active_mask) && (
+                      (id_rs_re && fp_scoreboard[id_warp_id][id_rs]) |
+                      (id_rt_re && fp_scoreboard[id_warp_id][id_rt]) |
+                      (id_rd_re && fp_scoreboard[id_warp_id][id_rd]) );
 
 wire [DATA_BITS-1:0] id_rs_data [THREADS_PER_BLOCK];
 wire [DATA_BITS-1:0] id_rt_data [THREADS_PER_BLOCK];
@@ -154,16 +168,19 @@ reg [DATA_BITS-1:0] ex_rd_data [THREADS_PER_BLOCK];
 reg ex_rd_re;
 reg [PROGRAM_MEM_ADDR_BITS-1:0] ex_pc;
 
+reg ex_is_fp;
+reg [1:0] ex_fp_op;
+
 always @(posedge clk) begin
     if (reset) begin
         ex_active_mask <= 0; ex_warp_id <= 0; ex_reg_we <= 0; ex_mem_re <= 0;
         ex_mem_we <= 0; ex_shared_re <= 0; ex_shared_we <= 0; ex_nzp_we <= 0;
         ex_sync <= 0; ex_pc_mux <= 0; ex_rs_re <= 0; ex_rt_re <= 0;
         ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0; ex_rd_re <= 0;
-        ex_atomic <= 0; ex_flags_we <= 0;
-    end else if (flush_warp_mask[id_warp_id]) begin
+        ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0; ex_fp_op <= 0;
+    end else if (flush_warp_mask[id_warp_id] || fp_raw_stall) begin
         ex_active_mask <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
-        ex_atomic <= 0; ex_flags_we <= 0;
+        ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0; 
     end else begin
         ex_active_mask <= id_active_mask; ex_warp_id <= id_warp_id; ex_pc <= id_pc;
         ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt; ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
@@ -175,6 +192,54 @@ always @(posedge clk) begin
         ex_shared_re <= id_shared_re; ex_shared_we <= id_shared_we; ex_use_mem_offset <= id_use_mem_offset;
         ex_mem_addr_offset <= id_mem_addr_offset; ex_call <= id_call; ex_ret_fn <= id_ret_fn; ex_exit <= id_exit;
         ex_atomic <= id_atomic; 
+        ex_is_fp <= id_is_fp; ex_fp_op <= id_fp_op;
+    end
+end
+
+wire ex_has_div0;
+wire ex_has_mem_fault;
+wire ex_exception_valid = ex_has_div0 | ex_has_mem_fault;
+
+// --- FP Pipeline Tracking ---
+reg [4:0] fp_pipe_valid;
+reg [$clog2(NUM_WARPS)-1:0] fp_pipe_warp [5];
+reg [4:0] fp_pipe_rd [5];
+reg [THREADS_PER_BLOCK-1:0] fp_pipe_mask [5];
+
+wire ex_fp_fire = (|ex_active_mask) && ex_is_fp && !ex_exception_valid;
+
+always @(posedge clk) begin
+    if (reset) begin
+        fp_pipe_valid <= 0;
+    end else begin
+        fp_pipe_valid <= {fp_pipe_valid[3:0], ex_fp_fire};
+        fp_pipe_warp[0] <= ex_warp_id;
+        fp_pipe_rd[0]   <= ex_rd;
+        fp_pipe_mask[0] <= ex_active_mask;
+        for (int p=1; p<5; p++) begin
+            fp_pipe_warp[p] <= fp_pipe_warp[p-1];
+            fp_pipe_rd[p]   <= fp_pipe_rd[p-1];
+            fp_pipe_mask[p] <= fp_pipe_mask[p-1];
+        end
+    end
+end
+
+wire fp_wb_valid_warp = fp_pipe_valid[4];
+wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id = fp_pipe_warp[4];
+wire [4:0] fp_wb_rd_warp = fp_pipe_rd[4];
+wire [THREADS_PER_BLOCK-1:0] fp_wb_mask = fp_pipe_mask[4];
+
+// --- Scoreboard Update Logic ---
+always @(posedge clk) begin
+    if (reset) begin
+        for (int w=0; w<NUM_WARPS; w++) fp_scoreboard[w] <= 0;
+    end else begin
+        // Clear WB first, then Set Issue to correctly handle cycle-accurate overlaps
+        if (fp_wb_valid_warp && fp_wb_rd_warp < 29)
+            fp_scoreboard[fp_wb_warp_id][fp_wb_rd_warp] <= 1'b0;
+            
+        if (ex_fp_fire && ex_rd < 29)
+            fp_scoreboard[ex_warp_id][ex_rd] <= 1'b1;
     end
 end
 
@@ -198,6 +263,14 @@ wire [THREADS_PER_BLOCK-1:0] thread_mem_fault;
 
 wire is_global_mem_op = ex_mem_re | ex_mem_we | (|ex_atomic);
 wire is_shared_mem_op = ex_shared_re | ex_shared_we;
+
+reg [THREADS_PER_BLOCK-1:0]   wb_active_mask;
+reg [$clog2(NUM_WARPS)-1:0]   wb_warp_id;
+reg [4:0]                     wb_rd;
+reg [DATA_BITS-1:0]           wb_imm;
+reg [DATA_BITS-1:0]           wb_alu_out [THREADS_PER_BLOCK];
+reg                           wb_reg_we;
+reg [1:0]                     wb_reg_mux;
 
 genvar i;
 generate
@@ -232,10 +305,36 @@ generate
         wire alu_flag_c, alu_flag_v, alu_flag_z, alu_flag_n, alu_flag_sat;
         
         alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
-            .enable(ex_active_mask[i]), .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
+            .enable(ex_active_mask[i] && !ex_is_fp), 
+            .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
             .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .rd_val(fwd_ex_rd_data[i]), .alu_out(ex_alu_out[i]), 
             .div_by_zero(alu_div_by_zero[i]),
             .flag_c(alu_flag_c), .flag_v(alu_flag_v), .flag_z(alu_flag_z), .flag_n(alu_flag_n), .flag_sat(alu_flag_sat)
+        );
+        
+        // --- Single Precision FPU ---
+        wire fp_wb_valid_t;
+        wire [DATA_BITS-1:0] fp_result_t;
+        // synthesis translate_off
+        always @(posedge clk) begin
+            if (fp_wb_valid_t && fp_wb_rd_warp < 29) begin
+                $display("[%0t] [CORE-FPWB] Writing FP Result %h to r%0d (Warp %0d, Mask %b)", $time, fp_result_t, fp_wb_rd_warp, fp_wb_warp_id, fp_wb_mask);
+            end
+        end
+        // synthesis translate_on
+
+        
+
+        fp32_fma fpu_inst (
+            .clk(clk),
+            .reset(reset),
+            .valid_in(ex_active_mask[i] && ex_is_fp && !ex_exception_valid),
+            .a_in(fwd_ex_rs_data[i]),
+            .b_in(fwd_ex_rt_data[i]),
+            .c_in(fwd_ex_rd_data[i]),
+            .op_in(ex_fp_op),
+            .valid_out(fp_wb_valid_t),
+            .result_out(fp_result_t)
         );
 
         // --- Thread ALU Flags Context ---
@@ -254,7 +353,7 @@ generate
                     thread_flag_n[w]   <= 0;
                     thread_flag_sat[w] <= 0;
                 end
-            end else if (ex_active_mask[i] && ex_flags_we) begin
+            end else if (ex_active_mask[i] && ex_flags_we && !ex_is_fp) begin
                 thread_flag_c[ex_warp_id] <= alu_flag_c;
                 thread_flag_v[ex_warp_id] <= alu_flag_v;
                 thread_flag_z[ex_warp_id] <= alu_flag_z;
@@ -280,14 +379,17 @@ generate
             .rs(id_rs_data[i]), .rt(id_rt_data[i]), .rd_val(id_rd_data[i]), 
             .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), 
             .decoded_reg_input_mux(wb_reg_mux), .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(0),
-            .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i])
+            .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i]),
+            .fp_wb_valid(fp_wb_valid_warp && fp_wb_mask[i]),
+            .fp_wb_warp_id(fp_wb_warp_id),
+            .fp_wb_rd(fp_wb_rd_warp),
+            .fp_wb_data(fp_result_t)
         );
     end
 endgenerate
 
-wire ex_has_div0 = |(ex_active_mask & alu_div_by_zero);
-wire ex_has_mem_fault = |(ex_active_mask & thread_mem_fault);
-wire ex_exception_valid = ex_has_div0 | ex_has_mem_fault;
+assign ex_has_div0 = |(ex_active_mask & alu_div_by_zero);
+assign ex_has_mem_fault = |(ex_active_mask & thread_mem_fault);
 wire [3:0] ex_exception_cause = ex_has_div0 ? 4'd1 : (ex_has_mem_fault ? 4'd2 : 4'd0);
 
 always @(posedge clk) begin
@@ -297,14 +399,6 @@ always @(posedge clk) begin
         exception_pc <= ex_pc; exception_cause <= ex_exception_cause;
     end
 end
-
-reg [THREADS_PER_BLOCK-1:0]   wb_active_mask;
-reg [$clog2(NUM_WARPS)-1:0]   wb_warp_id;
-reg [4:0]                     wb_rd;
-reg [DATA_BITS-1:0]           wb_imm;
-reg [DATA_BITS-1:0]           wb_alu_out [THREADS_PER_BLOCK];
-reg                           wb_reg_we;
-reg [1:0]                     wb_reg_mux;
 
 reg [1:0] mem_atomic; 
 reg [NUM_WARPS-1:0] mem_in_progress;
@@ -413,11 +507,25 @@ wire sched_ev_stall_mem, sched_ev_stall_barrier, sched_ev_stall_noready;
 
 scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) scheduler_instance (
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
+    
+    // Memory
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready),
-    .mem_in_progress(mem_in_progress), .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
+    .mem_in_progress(mem_in_progress), 
+    
+    // FPU Integration
+    .fp_req_valid(ex_fp_fire), 
+    .fp_warp_id(ex_warp_id), 
+    .fp_pc(ex_pc), 
+    .fp_wb_valid(fp_wb_valid_warp), 
+    .fp_wb_warp_id(fp_wb_warp_id),
+    
+    // Core Control
+    .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 
     .ex_exception_valid(ex_exception_valid), .done(done),
+    
+    // PMU
     .ev_scheduler_idle(sched_ev_idle), .ev_warp_switch(sched_ev_warp_switch), .ev_diverge(sched_ev_diverge),
     .ev_stall_mem(sched_ev_stall_mem), .ev_stall_barrier(sched_ev_stall_barrier), .ev_stall_noready(sched_ev_stall_noready)
 );
@@ -429,8 +537,14 @@ wire ev_fetch_stall = core_running && fetch_stall;
 wire ev_flush       = core_running && (|flush_warp_mask);
 wire ev_mem         = core_running && (|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id];
 
+wire fp_wb_collision = (|wb_active_mask) && wb_reg_we && fp_wb_valid_warp && (wb_warp_id == fp_wb_warp_id) && (wb_rd == fp_wb_rd_warp);
+
 wire [31:0] event_bus;
-assign event_bus[31:24] = 8'd0;
+assign event_bus[31:28] = 4'd0;
+assign event_bus[27]    = fp_wb_collision;
+assign event_bus[26]    = fp_raw_stall;
+assign event_bus[25]    = fp_wb_valid_warp;
+assign event_bus[24]    = ex_fp_fire;
 assign event_bus[23]    = dc_ev_write_stall;
 assign event_bus[22]    = dc_ev_write_hit;
 assign event_bus[21]    = dc_ev_write_acc;
@@ -455,7 +569,7 @@ assign event_bus[3]     = ev_cycle;
 assign event_bus[2:0]   = 3'd0;
 
 core_pmu pmu_inst (
-    .clk(clk), .reset(global_reset), // Uses Global Reset so the counters live on across blocks
+    .clk(clk), .reset(global_reset),
     .events(event_bus),
     .cfg_mux_sel_0(pmu_cfg_0), .cfg_mux_sel_1(pmu_cfg_1), 
     .cfg_mux_sel_2(pmu_cfg_2), .cfg_mux_sel_3(pmu_cfg_3),
@@ -465,5 +579,17 @@ core_pmu pmu_inst (
     .snapshot_0(pmu_snap_0), .snapshot_1(pmu_snap_1),
     .snapshot_2(pmu_snap_2), .snapshot_3(pmu_snap_3)
 );
+
+    always @(posedge clk) begin
+        // if (fp_wb_valid_warp && fp_wb_mask[0]) begin
+        //     $display("[%0t] [CORE-WB] Writing FP Result %h to r%0d", $time, fp_result_t, fp_wb_rd_warp);
+        // end
+        if (wb_active_mask[0] && wb_reg_we && wb_rd < 29 && !ex_is_fp) begin
+            $display("[%0t] [CORE-WB] Writing INT Result %h to r%0d", $time, wb_alu_out[0], wb_rd);
+        end
+        if (data_mem_write_valid) begin
+            $display("[%0t] [CORE-LSU] AXI Write to Addr %h: Data %h Strobe %b", $time, data_mem_write_address, data_mem_write_data, data_mem_write_strobe);
+        end
+    end
 
 endmodule
