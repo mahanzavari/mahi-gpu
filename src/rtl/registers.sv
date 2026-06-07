@@ -34,7 +34,13 @@ module registers #(
 
     output wire [DATA_BITS-1:0] rs,
     output wire [DATA_BITS-1:0] rt,
-    output wire [DATA_BITS-1:0] rd_val
+    output wire [DATA_BITS-1:0] rd_val,
+
+    // FP unit
+    input wire fp_wb_valid,
+    input wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id,
+    input wire [4:0] fp_wb_rd,
+    input wire [DATA_BITS-1:0] fp_wb_data
 );
     localparam ARITHMETIC = 2'b00, MEMORY = 2'b01, CONSTANT = 2'b10, SHARED = 2'b11;
 
@@ -77,14 +83,29 @@ module registers #(
                 registers[w][30] <= THREADS_PER_BLOCK * NUM_WARPS;           
                 registers[w][31] <= (w * THREADS_PER_BLOCK) + thread_id;     
             end
+
         end else begin
             for (w = 0; w < NUM_WARPS; w = w + 1) begin
                 registers[w][29] <= {{(DATA_BITS-8){1'b0}}, block_id};       
             end
-            if (lsu_we && (lsu_rd < 29))
+            
+            // Priority 1: FP Writeback (Unconditional)
+            if (fp_wb_valid && fp_wb_rd < 29) begin
+                registers[fp_wb_warp_id][fp_wb_rd] <= fp_wb_data;
+            end
+
+            // Priority 2: Memory Writeback (Guarded against FP collision)
+            if (lsu_we && (lsu_rd < 29) && 
+                !(fp_wb_valid && fp_wb_warp_id == lsu_warp_id && fp_wb_rd == lsu_rd)) begin
                 registers[lsu_warp_id][lsu_rd] <= lsu_data;
-            if (is_writing)
+            end 
+
+            // Priority 3: Integer ALU (Guarded against both FP and LSU collision)
+            if (is_writing && 
+                !(fp_wb_valid && fp_wb_warp_id == warp_id && fp_wb_rd == decoded_rd_address) &&
+                !(lsu_we && lsu_warp_id == warp_id && lsu_rd == decoded_rd_address)) begin
                 registers[warp_id][decoded_rd_address] <= write_data;
+            end
         end
     end
 endmodule
