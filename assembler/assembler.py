@@ -99,11 +99,25 @@ def assemble(input_file, output_file):
         
         machine_code.append(f"{inst_32:08X}")
 
+    # --- NEW: Pack 32-bit instructions into 128-bit lines for AXI RAM ---
+    packed_code = []
+    for i in range(0, len(machine_code), 4):
+        chunk = machine_code[i:i+4]
+        
+        # Pad with NOPs (0x00000000) if we reach the end and don't have 4 instructions
+        while len(chunk) < 4:
+            chunk.append("00000000")
+        
+        # Verilog vectors are Big-Endian string parsed, but Little-Endian memory indexed.
+        # Word 3 goes at the front of the string, Word 0 at the end.
+        packed_hex = chunk[3] + chunk[2] + chunk[1] + chunk[0]
+        packed_code.append(packed_hex)
+
     with open(output_file, 'w') as f:
-        for hex_str in machine_code:
+        for hex_str in packed_code:
             f.write(hex_str + '\n')
             
-    print(f"Successfully assembled {len(machine_code)} instructions to {output_file}")
+    print(f"Successfully assembled {len(machine_code)} instructions to {output_file} (128-bit format)")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
