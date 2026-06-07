@@ -1,4 +1,3 @@
-// --- Begin: src/dcache.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -65,6 +64,11 @@ module dcache #(
     wire hit_way = hit_w1; 
     wire victim_way = lru_bit[req_index];
 
+    // Latches to prevent corruption
+    reg [INDEX_BITS-1:0] latched_index;
+    reg [TAG_BITS-1:0]   latched_tag;
+    reg                  latched_victim_way;
+
     always @(posedge clk) begin
         if (reset) begin
             state <= IDLE;
@@ -85,7 +89,7 @@ module dcache #(
                         for (int s = 0; s < SETS; s++) begin
                             for (int w = 0; w < WAYS; w++) valid_array[s][w] <= 0;
                         end
-                        flush_done <= 1; // Real registered handshake flag
+                        flush_done <= 1;
                     end
                     else if (core_write_valid && !core_write_ready) begin
                         mem_write_valid <= 1;
@@ -111,6 +115,9 @@ module dcache #(
                             lru_bit[req_index] <= ~hit_way;
                             core_read_ready <= 1;
                         end else begin
+                            latched_index <= req_index;
+                            latched_tag <= req_tag;
+                            latched_victim_way <= victim_way;
                             mem_read_valid <= 1;
                             mem_read_block_addr <= core_read_block_addr;
                             state <= FETCHING_READ;
@@ -129,13 +136,16 @@ module dcache #(
                 FETCHING_READ: begin
                     if (mem_read_ready) begin
                         mem_read_valid <= 0;
-                        valid_array[req_index][victim_way] <= 1;
-                        tag_array[req_index][victim_way] <= req_tag;
-                        data_array[req_index][victim_way] <= mem_read_block_data;
-                        lru_bit[req_index] <= ~victim_way;
+                        valid_array[latched_index][latched_victim_way] <= 1;
+                        tag_array[latched_index][latched_victim_way] <= latched_tag;
+                        data_array[latched_index][latched_victim_way] <= mem_read_block_data;
+                        lru_bit[latched_index] <= ~latched_victim_way;
 
-                        core_read_block_data <= mem_read_block_data;
-                        core_read_ready <= 1;
+                        // Verify request is still valid before responding to core
+                        if (core_read_valid && req_index == latched_index && req_tag == latched_tag) begin
+                            core_read_block_data <= mem_read_block_data;
+                            core_read_ready <= 1;
+                        end
                         state <= IDLE;
                     end
                 end
