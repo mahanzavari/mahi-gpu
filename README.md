@@ -15,7 +15,8 @@ A minimal GPU implementation in SystemVerilog optimized for learning about how G
   - [Thread Data Path](#thread-data-path)
 - [Kernels](#kernels)
   - [Matrix Multiplication](#matrix-multiplication)
-- [Simulation & Testing](#simulation--testing)
+  - [Parallel Tree Reduction](#parallel-tree-reduction)
+- [Simulation & Tooling](#simulation--tooling)
 - [Advanced Functionality](#advanced-functionality)
 
 ## Overview
@@ -36,14 +37,14 @@ Special thanks to [tiny-gpu](https://github.com/adam-maj/tiny-gpu) for providing
 
 With this motivation in mind, we can simplify GPUs by cutting out the majority of complexity involved with building a production-grade graphics card, and focus on the core elements that are critical to all of these modern hardware accelerators.
 
-After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs (such as hardware atomics, performance monitoring, standard AXI4 buses, and multi-level caching).
+After understanding the fundamentals laid out in this project, you can check out the [advanced functionality section](#advanced-functionality) to understand some of the most important optimizations made in production-grade GPUs (such as hardware atomics, performance monitoring, IEEE-754 FPU, standard AXI4 buses, and multi-level caching).
 
 ## Architecture
 
 ### GPU Card
 
 <p align="center">
-  <img src="/docs/PNG/GPU_card.png" alt="GPU" width="48%">
+  <img src="docs/PNG/GPU_card.png" alt="GPU" width="48%">
 </p>
 
 <br>
@@ -57,7 +58,7 @@ The GPU is built to execute a single kernel at a time. In order to launch a kern
 
 The GPU itself consists of the following units:
 
-1. Device control register
+1. Device control register (DCR)
 2. Dispatcher
 3. Variable number of compute cores
 4. Memory controllers for data memory and program memory
@@ -72,7 +73,7 @@ Once a kernel is launched, the **Dispatcher** manages the distribution of thread
 
 To reduce latency and external memory bandwidth pressure, the GPU implements a realistic multi-level cache hierarchy seamlessly integrated with standard AXI4 memory buses:
 
-- **Global Memory (AXI4-Backed):** 32-bit addressable memory bridged to an industry-standard AXI4 Master interface (`gpu_axi_wrapper.sv`).
+- **Global Memory (AXI4-Backed):** 32-bit addressable memory bridged to an industry-standard 128-bit AXI4 Master interface (`gpu_axi_wrapper.sv`).
 - **Realistic DDR Latency Simulation:** The provided `axi_ram.sv` includes behavioral modeling for DDR memory, replicating page hits, row-to-column delays (`tRCD`), and row precharge (`tRP`) to test the cache subsystem authentically.
 - **L1 Caches (Per-Core):**
   - **Instruction Cache (I-Cache):** Caches 128-bit blocks (4 instructions per block) from program memory.
@@ -83,14 +84,14 @@ To reduce latency and external memory bandwidth pressure, the GPU implements a r
 
 ### Core & PMU
 
-Each core processes one block at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, and register file. 
+Each core processes one block at a time. For each thread in a block, the core has a dedicated ALU, LSU, PC, FPU, and register file. 
 
 #### Scheduler
 The scheduler manages the continuous flow of instructions into the pipeline. Because the core is pipelined and supports multiple warps, the scheduler dynamically monitors execution to handle:
-- **Data and structural hazards**: Freezing the frontend when asynchronous global memory accesses stall the backend.
+- **Data and structural hazards**: Freezing the frontend when asynchronous global memory accesses stall the backend, or when FP RAW (Read-After-Write) hazards occur.
 - **Branching and divergence**: Using a hardware divergence stack to track divergent paths. Threads that take a branch continue while others are masked out. Control flow is serialized and automatically resynchronized.
 - **Synchronization**: Supporting `SYNC` instructions as a barrier across warps within a block.
-- **Warp scheduling**: Round-robin selection of ready warps to issue instructions, maximizing utilization.
+- **Warp scheduling**: Round-robin selection of ready warps to issue instructions, maximizing pipeline utilization.
 - **Exception Handling**: Trapping faults (divide-by-zero, out-of-bounds memory) and isolating the offending warp into a `FAULTED` state to prevent memory corruption while letting other warps safely complete.
 
 #### Performance Monitoring Unit (PMU)
@@ -99,7 +100,7 @@ The core features an integrated event bus that tracks 32 distinct hardware event
 #### Thread Units
 - **Fetcher & Decoder**: Asynchronously fetches and decodes 32-bit instructions into pipeline control signals.
 - **Register Files**: Each thread has its own dedicated register file, holding general-purpose registers and read-only special registers (`%blockIdx`, `%blockDim`, `%threadIdx`).
-- **ALUs**: Dedicated arithmetic-logic unit supporting standard arithmetic, bitwise logic, and advanced math (`MIN`, `MAX`, `ABS`, `NEG`, `MAC`, `POPCNT`, `CLZ`, `BREV`). Also outputs ALU flags (carry, overflow, zero, negative, saturation).
+- **ALUs & FPUs**: Dedicated integer arithmetic-logic units supporting advanced math (`MIN`, `MAX`, `ABS`, `NEG`, `MAC`, `POPCNT`, `CLZ`, `BREV`) alongside a fully pipelined IEEE-754 Single-Precision FPU for floats (`FADD`, `FSUB`, `FMUL`, `FMA`).
 - **LSUs**: Dedicated load-store unit for global data, shared memory, and hardware atomic operations.
 
 ## ISA
@@ -141,6 +142,10 @@ All instructions are 32 bits wide.
 | `POPCNT`   | 30     | R    | Population Count (count 1s in rs) |
 | `CLZ`      | 31     | R    | Count Leading Zeros |
 | `BREV`     | 32     | R    | Bit Reversal (reverse bits of rs) |
+| `FADD`     | 33     | R    | Floating Point Addition |
+| `FSUB`     | 34     | R    | Floating Point Subtraction |
+| `FMUL`     | 35     | R    | Floating Point Multiplication |
+| `FMA`      | 36     | R    | Fused Multiply-Add (rd = rd + rs * rt) |
 
 ### Instruction Format
 
@@ -172,14 +177,14 @@ Each thread has 32 registers. Registers R29–R31 are read-only and automaticall
 The core implements a classic 5-stage RISC pipeline with hardware forwarding and warp-level scheduling, allowing multiple instructions to be processed simultaneously across different stages.
 
 <p align="center">
-  <img src="/docs/PNG/core_blockvsdx.png" alt="Core" width="60%">
+  <img src="docs/PNG/core_blockvsdx.png" alt="Core" width="60%">
 </p>
 
 ### Stages
 
 1. **IF (Instruction Fetch)**: The Fetcher requests the 32-bit instruction at the current PC from the I-Cache.
 2. **ID (Instruction Decode)**: The Decoder translates the instruction. Registers are read asynchronously, and hardware forwarding paths bypass the register file for pending data.
-3. **EX (Execute)**: The ALU performs arithmetic or comparisons. Branch targets and control flow divergence are evaluated here. Hardware faults are detected here.
+3. **EX (Execute)**: The ALU/FPU performs arithmetic or comparisons. Branch targets and control flow divergence are evaluated here. Hardware faults are detected here.
 4. **MEM (Memory Access)**: The LSU performs asynchronous memory coalescing, shared memory access, and serialized atomic read-modify-write operations.
 5. **WB (Write Back)**: The result is written back synchronously to the register file.
 
@@ -244,11 +249,61 @@ The following kernel performs a 5x5 matrix multiplication `C = A * B`.
 32: BRnzp 18                    // jump back to LOOP_START
 ```
 
-## Simulation & Testing
+### Parallel Tree Reduction
+
+This kernel highlights intra-warp divergence handling, shared memory communication (`LDSH`, `STSH`), and thread synchronization (`SYNC`). It efficiently computes the sum of numbers 1 through 16 via a parallel tree structure.
+
+```asm
+// Parallel Tree Reduction (Sum 1 to 16)
+CONST r0, 0        // Zero constant
+CONST r1, 1        // One constant
+CONST r10, 8       // Initial stride length (16 threads / 2)
+
+// --- 1. Initialization ---
+ADD r2, r31, r1    // Every thread calculates: value = Thread_ID + 1
+STSH r2, r31, 0    // SH[Thread_ID] = value
+SYNC               // Barrier: wait for all writes
+
+// --- 2. Reduction Loop ---
+REDUCE_LOOP:
+CMP r10, r0
+BR 2, WRITE_OUT    // if (stride == 0) goto WRITE_OUT
+
+CMP r31, r10
+BR 3, DONT_ADD     // if (Thread_ID >= stride) skip addition
+
+// Active Thread Logic
+ADD r3, r31, r10   // neighbor_addr = Thread_ID + stride
+LDSH r4, r3, 0     // Read neighbor value
+LDSH r5, r31, 0    // Read my value
+ADD r5, r5, r4     // Add them
+STSH r5, r31, 0    // Store the sum back
+
+DONT_ADD:
+SYNC               // Barrier: inactive threads wait here
+
+SHR r10, r10, r1   // stride = stride / 2
+BR 7, REDUCE_LOOP  // Loop back unconditionally
+
+// --- 3. Write Result to Global Memory ---
+WRITE_OUT:
+CMP r31, r0
+BR 5, DONE         // Only Thread 0 writes the final result
+
+LDSH r5, r0, 0     // Read final sum
+STR r5, r0, 0      // Write to Global Memory Address 0
+
+DONE:
+EXIT
+```
+
+## Simulation & Tooling
 
 The GPU is designed to be easily verifiable. Included is an `axi_ram.sv` module which performs **Realistic DDR Behavioral Simulation**. Rather than returning data instantaneously, this module replicates the timing delays of modern DRAM (e.g., `tCAS`, `tRCD`, and `tRP`).
 
 Executing simulations using tools like Xilinx Vivado, Intel Quartus, or Verilator will allow you to see exactly how your cache hierarchy behaves under realistic memory latency constraints, outputting a console trace consisting of scheduler events, pipeline progress, and exception traps.
+
+To support the AXI interface naturally, the included Python Assembler (`assembler.py`) automatically maps your pseudo-assembly `.asm` files into 128-bit aligned `.hex` arrays (packing 4 instructions per memory line), exactly as modern instruction caches expect it.
 
 ## Advanced Functionality
 
@@ -260,6 +315,9 @@ Connecting custom RTL into larger SoC ecosystems (like a Xilinx Zynq FPGA) requi
 ### Advanced Cache Subsystem
 The GPU includes a fully associative L1 cache layer per core backed by a Unified L2 Set-Associative Cache. To avoid blocking the bus, a **Victim Write Buffer (VWB)** captures dirty lines evicted from the L2 cache, trickling them to main memory in the background.
 
+### IEEE-754 Single Precision FPU
+The execution unit features a custom 3-stage pipelined FPU handling Standard Float operations alongside a hardware Multiply-Accumulate (MAC/FMA) step, complete with asynchronous stall propagation to handle Read-After-Write (RAW) data hazards cleanly.
+
 ### Hardware Atomic Serialization
 Software mutexes are incredibly slow on GPUs. This architecture includes an **Atomic Serialization Engine** inside the LSU. It temporarily halts warp execution to safely perform read-modify-write operations (`ATOM_ADD`, `ATOM_CAS`) directly against the memory subsystem, ensuring thread safety without deadlocks. 
 
@@ -268,3 +326,13 @@ If an instruction requests a global array operation out-of-bounds or attempts to
 
 ### Hardware Profiling (PMU)
 Profiling is critical in GPU development. The included Performance Monitoring Unit allows for the real-time collection of cache stall data, thread divergence occurrences, and hardware utilization, mirroring the counters you would find in NVIDIA's Nsight Compute.
+
+## Citations & References
+
+- **tiny-gpu**: Architectural inspiration and reference design for the baseline general-purpose GPU pipeline.
+  - Author: Adam Majmudar
+  - Repository: [github.com/adam-maj/tiny-gpu](https://github.com/adam-maj/tiny-gpu)
+
+- **Verilog-AXI (`axi_ram.sv`)**: Open-source parameterized AXI4 RAM behavioral simulation model (modified to support DDR page-latency constraints and execution telemetry).
+  - Author: Alex Forencich
+  - Repository: [github.com/alexforencich/verilog-axi](https://github.com/alexforencich/verilog-axi)
