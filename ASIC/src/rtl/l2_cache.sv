@@ -40,12 +40,12 @@ module l2_cache #(
     input wire  flush_en,
     output wire flush_done,
 
-    output reg  ev_read_acc,
-    output reg  ev_read_hit,
-    output reg  ev_read_miss,
-    output reg  ev_write_acc,
-    output reg  ev_write_hit,
-    output reg  ev_write_miss,
+    output wire ev_read_acc,
+    output wire ev_read_hit,
+    output wire ev_read_miss,
+    output wire ev_write_acc,
+    output wire ev_write_hit,
+    output wire ev_write_miss,
     output wire ev_stall,
     output wire ev_evict
 );
@@ -305,4 +305,14 @@ module l2_cache #(
             endcase
         end
     end
+
+    assign ev_read_acc   = 1'b0;
+    assign ev_read_hit   = 1'b0;
+    assign ev_read_miss  = 1'b0;
+    assign ev_write_acc  = 1'b0;
+    assign ev_write_hit  = 1'b0;
+    assign ev_write_miss = 1'b0;
+    assign ev_stall      = 1'b0;
+    assign ev_evict      = 1'b0;
+
 endmodule

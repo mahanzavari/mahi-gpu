@@ -14,3 +14,4 @@ work/
 logs/
 *.log
 *.xlsx
+ASIC/flow/runs

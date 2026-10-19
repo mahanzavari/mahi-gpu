@@ -100,9 +100,7 @@ module alu #(
                 SHL: begin
                     alu_out = rs << rt;
                     if (rt > 0 && rt <= DATA_BITS) begin
-                        integer shl_idx;
-                        shl_idx = DATA_BITS - rt;
-                        flag_c = rs[shl_idx];
+                        flag_c = rs[DATA_BITS - rt];
                     end else begin
                         flag_c = 1'b0;
                     end
@@ -110,9 +108,7 @@ module alu #(
                 SHR: begin
                     alu_out = rs >> rt;
                     if (rt > 0 && rt <= DATA_BITS) begin
-                        integer shr_idx;
-                        shr_idx = rt - 1;
-                        flag_c = rs[shr_idx];
+                        flag_c = rs[rt - 1];
                     end else begin
                         flag_c = 1'b0;
                     end

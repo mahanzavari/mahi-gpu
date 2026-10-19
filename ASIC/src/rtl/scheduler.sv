@@ -115,16 +115,19 @@ module scheduler #(
 
     // --- NEW: Combinational Next-Warp & Issue Logic ---
     logic [$clog2(NUM_WARPS)-1:0] next_rr_var_comb;
+    logic [$clog2(NUM_WARPS)-1:0] check_w_var;
+    logic will_flush;
 
     always_comb begin
         found_var_comb = 1'b0;
         next_rr_var_comb = rr_ptr;
+        check_w_var = '0;   // <-- Defaults prevent latch inference
+        will_flush = 1'b0;  // <-- Defaults prevent latch inference
+
         if (start && !done) begin
-                    for (int i = 0; i < NUM_WARPS; i++) begin
-                        logic [$clog2(NUM_WARPS)-1:0] check_w_var;
-                        logic will_flush;
-                        check_w_var = (rr_ptr + i) % NUM_WARPS;
-                        will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
+            for (int i = 0; i < NUM_WARPS; i++) begin
+                check_w_var = (rr_ptr + i) % NUM_WARPS;
+                will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
                 if (!found_var_comb && warp_state[check_w_var] == READY && current_mask[check_w_var] != 0 && !warp_flush_inhibit[check_w_var] && !will_flush && !flush_warp_mask[check_w_var]) begin
                     found_var_comb = 1'b1;
                     next_rr_var_comb = check_w_var;
