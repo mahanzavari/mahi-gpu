@@ -1,25 +1,7 @@
 /*
 
 Copyright (c) 2018 Alex Forencich
-(Modified for Realistic DDR Latency Behavioral Modeling)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+(Modified for Realistic DDR Latency Behavioral Modeling & Enhanced Logging)
 
 */
 
@@ -313,9 +295,21 @@ always @(posedge clk) begin
     s_axi_bid_reg <= s_axi_bid_next;
     s_axi_bvalid_reg <= s_axi_bvalid_next;
 
-    // Track the open write row
+    // --- WRITE LOGGING: HIT/MISS ---
     if (s_axi_awready && s_axi_awvalid) begin
         open_row_write[w_bank] <= w_row;
+        if (open_row_write[w_bank] == w_row) begin
+            $display("[%0t] [DDR-RAM] WRITE PAGE HIT  | Addr: %0h | Bank: %0d, Row: %0h | Burst: %0d | Delay: %0d cycles", 
+                     $time, s_axi_awaddr, w_bank, w_row, s_axi_awlen + 1, DDR_tCAS);
+        end else begin
+            $display("[%0t] [DDR-RAM] WRITE PAGE MISS | Addr: %0h | Bank: %0d, Row: %0h | Burst: %0d | Delay: %0d cycles", 
+                     $time, s_axi_awaddr, w_bank, w_row, s_axi_awlen + 1, DDR_tCAS + DDR_tRCD + DDR_tRP);
+        end
+    end
+
+    // --- WRITE LOGGING: BURST COMPLETION ---
+    if (write_state_reg == WRITE_STATE_BURST && (write_state_next == WRITE_STATE_RESP || write_state_next == WRITE_STATE_IDLE)) begin
+        $display("[%0t] [DDR-RAM] WRITE BURST DONE  | ID: %0h", $time, write_id_reg);
     end
 
     for (i = 0; i < WORD_WIDTH; i = i + 1) begin
@@ -421,9 +415,21 @@ always @(posedge clk) begin
     s_axi_rlast_reg <= s_axi_rlast_next;
     s_axi_rvalid_reg <= s_axi_rvalid_next;
 
-    // Track the open read row
+    // --- READ LOGGING: HIT/MISS ---
     if (s_axi_arready && s_axi_arvalid) begin
         open_row_read[r_bank] <= r_row;
+        if (open_row_read[r_bank] == r_row) begin
+            $display("[%0t] [DDR-RAM] READ PAGE HIT   | Addr: %0h | Bank: %0d, Row: %0h | Burst: %0d | Delay: %0d cycles", 
+                     $time, s_axi_araddr, r_bank, r_row, s_axi_arlen + 1, DDR_tCAS);
+        end else begin
+            $display("[%0t] [DDR-RAM] READ PAGE MISS  | Addr: %0h | Bank: %0d, Row: %0h | Burst: %0d | Delay: %0d cycles", 
+                     $time, s_axi_araddr, r_bank, r_row, s_axi_arlen + 1, DDR_tCAS + DDR_tRCD + DDR_tRP);
+        end
+    end
+
+    // --- READ LOGGING: BURST COMPLETION ---
+    if (read_state_reg == READ_STATE_BURST && read_state_next == READ_STATE_IDLE) begin
+        $display("[%0t] [DDR-RAM] READ BURST DONE   | ID: %0h", $time, read_id_reg);
     end
 
     if (mem_rd_en) begin

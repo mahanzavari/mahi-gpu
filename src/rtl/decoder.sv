@@ -1,4 +1,3 @@
-// --- Begin: src/decoder.sv ---
 `default_nettype none
 `timescale 1ns/1ns
 
@@ -25,7 +24,7 @@ module decoder #(
     output logic decoded_mem_write_enable,           
     output logic decoded_nzp_write_enable,           
     output logic [1:0] decoded_reg_input_mux,        
-    output logic [4:0] decoded_alu_arithmetic_mux, // 5-bit
+    output logic [4:0] decoded_alu_arithmetic_mux, 
     output logic decoded_alu_output_mux,             
     output logic decoded_pc_mux,                     
 
@@ -36,7 +35,11 @@ module decoder #(
     output logic decoded_shared_read_enable,
     output logic decoded_shared_write_enable,
     output logic [1:0] decoded_atomic,     
-    output logic decoded_flags_write_enable        // NEW: Flag Write Enable
+    output logic decoded_flags_write_enable,
+    
+    // FP Control
+    output logic decoded_is_fp,
+    output logic [1:0] decoded_fp_op
 );
 
     localparam NOP      = 6'd0,  BRnzp    = 6'd1,  CMP      = 6'd2,
@@ -50,7 +53,9 @@ module decoder #(
                MAX      = 6'd24, ABS      = 6'd25, NEG      = 6'd26,
                MAC      = 6'd27, ATOM_CAS = 6'd28, 
                LUI      = 6'd29, POPCNT   = 6'd30, CLZ      = 6'd31,
-               BREV     = 6'd32; 
+               BREV     = 6'd32,
+               FADD     = 6'd33, FSUB     = 6'd34, FMUL     = 6'd35,
+               FMA      = 6'd36;
 
     always_comb begin
         decoded_rd_address = instruction[25:21];
@@ -77,6 +82,7 @@ module decoder #(
         decoded_shared_read_enable = 0; decoded_shared_write_enable= 0;
         decoded_use_mem_offset     = 0; decoded_atomic             = 2'b00; 
         decoded_rd_read_enable     = 0; decoded_flags_write_enable = 0;
+        decoded_is_fp              = 0; decoded_fp_op              = 2'b00;
 
         case (instruction[31:26])
             BRnzp: decoded_pc_mux = 1;
@@ -210,8 +216,23 @@ module decoder #(
                 decoded_reg_input_mux = 2'b01; decoded_atomic = 2'b10; 
                 decoded_use_mem_offset = 0;
             end
-            default: ; // NOP
+            FADD: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1; decoded_reg_write_enable = 1;
+                decoded_is_fp = 1; decoded_fp_op = 2'b01; 
+            end
+            FSUB: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1; decoded_reg_write_enable = 1;
+                decoded_is_fp = 1; decoded_fp_op = 2'b11; 
+            end
+            FMUL: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1; decoded_reg_write_enable = 1;
+                decoded_is_fp = 1; decoded_fp_op = 2'b10; 
+            end
+            FMA: begin 
+                decoded_rs_read_enable = 1; decoded_rt_read_enable = 1; decoded_rd_read_enable = 1; decoded_reg_write_enable = 1;
+                decoded_is_fp = 1; decoded_fp_op = 2'b00; 
+            end
+            default: ;
         endcase
     end
 endmodule
-// --- End: src/decoder.sv ---

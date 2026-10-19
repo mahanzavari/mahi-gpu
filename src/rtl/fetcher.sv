@@ -1,9 +1,6 @@
 `default_nettype none
 `timescale 1ns/1ns
 
-// INSTRUCTION FETCHER (Pipeline Ready)
-// > Independent state machine controlled by pipeline stall/flush signals
-// > Feeds the Instruction Fetch (IF) stage
 module fetcher #(
     parameter PROGRAM_MEM_ADDR_BITS = 8,
     parameter PROGRAM_MEM_DATA_BITS = 16
@@ -12,7 +9,8 @@ module fetcher #(
     input wire reset,
     
     // Pipeline Controls
-    input wire stall, 
+    input wire valid_request, 
+    input wire consume,       
     input wire flush,
     
     input wire [PROGRAM_MEM_ADDR_BITS-1:0] current_pc,
@@ -30,7 +28,8 @@ module fetcher #(
     typedef enum logic [1:0] { IDLE, FETCHING, DONE } state_t;
     state_t state;
 
-    assign mem_read_address = current_pc;
+    reg [PROGRAM_MEM_ADDR_BITS-1:0] fetch_pc;
+    assign mem_read_address = fetch_pc;
 
     always @(posedge clk) begin
         if (reset || flush) begin
@@ -38,13 +37,15 @@ module fetcher #(
             mem_read_valid <= 0;
             instruction_valid <= 0;
             instruction <= {PROGRAM_MEM_DATA_BITS{1'b0}};
+            fetch_pc <= 0;
         end else begin
             case (state)
                 IDLE: begin
                     instruction_valid <= 0;
-                    if (!stall) begin
+                    if (valid_request) begin
                         state <= FETCHING;
                         mem_read_valid <= 1;
+                        fetch_pc <= current_pc;
                     end
                 end
                 FETCHING: begin
@@ -56,13 +57,12 @@ module fetcher #(
                     end
                 end
                 DONE: begin
-                    // If the pipeline takes the instruction (!stall), grab the next one
-                    if (!stall) begin
-                        state <= FETCHING;
-                        mem_read_valid <= 1;
+                    if (consume) begin
+                        // Transition to IDLE for 1 cycle so the Scheduler 
+                        // can update current_pc to the next address!
+                        state <= IDLE;
                         instruction_valid <= 0;
                     end else begin
-                        // Maintain signal valid for the IF stage to hold
                         instruction_valid <= 1;
                     end
                 end

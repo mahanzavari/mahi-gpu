@@ -41,6 +41,9 @@ module icache #(
     typedef enum logic { IDLE, FETCHING_MEM } state_t;
     state_t state;
 
+    reg [INDEX_BITS-1:0] latched_index;
+    reg [TAG_BITS-1:0]   latched_tag;
+
     always @(posedge clk) begin
         if (reset) begin
             state <= IDLE;
@@ -52,12 +55,13 @@ module icache #(
 
             case (state)
                 IDLE: begin
-                    // FIX: Prevent Phantom Requests!
                     if (core_read_valid && !core_read_ready) begin
                         if (hit) begin
                             core_read_data <= data_array[index][(word_offset * 32) +: 32];
                             core_read_ready <= 1;
                         end else begin
+                            latched_index <= index;
+                            latched_tag <= tag;
                             mem_read_valid <= 1;
                             mem_read_block_addr <= core_read_addr >> 2; 
                             state <= FETCHING_MEM;
@@ -68,12 +72,18 @@ module icache #(
                 FETCHING_MEM: begin
                     if (mem_read_ready) begin
                         mem_read_valid <= 0;
-                        valid_array[index] <= 1;
-                        tag_array[index] <= tag;
-                        data_array[index] <= mem_read_block_data;
                         
-                        core_read_data <= mem_read_block_data[(word_offset * 32) +: 32];
-                        core_read_ready <= 1;
+                        // Always save to the latched (original) location
+                        valid_array[latched_index] <= 1;
+                        tag_array[latched_index] <= latched_tag;
+                        data_array[latched_index] <= mem_read_block_data;
+                        
+                        // Protect against core changing the block mid-flight, 
+                        // but allow word_offset to evaluate cleanly.
+                        if (core_read_valid && index == latched_index && tag == latched_tag) begin
+                            core_read_data <= mem_read_block_data[(word_offset * 32) +: 32];
+                            core_read_ready <= 1;
+                        end
                         state <= IDLE;
                     end
                 end
