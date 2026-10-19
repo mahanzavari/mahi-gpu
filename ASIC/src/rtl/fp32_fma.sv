@@ -57,9 +57,11 @@ module fp32_fma (
         stg1_exp_c    <= exp_c;
         stg1_sign_c   <= sign_c;
         
+`ifndef SYNTHESIS
         if (valid_in) begin
             $display("[%0t] [FPU-IN] OP %0d | A: %h | B: %h | C: %h", $time, op_in, a_in, b_in, c_in);
         end
+`endif
     end
 
     // --- Stage 2a ---
@@ -155,7 +157,9 @@ module fp32_fma (
                 end else begin
                     result_out <= {stg3_sign, stg3_norm_exp[7:0], stg3_norm_fract[22:0]};
                 end
+`ifndef SYNTHESIS
                 $display("[%0t] [FPU-OUT] Result: %h", $time, result_out);
+`endif
             end
         end
     end

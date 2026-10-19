@@ -53,20 +53,17 @@ module pc #(
                 nzp[i] <= 3'b0; stack_ptr[i] <= 0;
             end
         end else if (enable) begin
+`ifndef SYNTHESIS
             if (decoded_nzp_write_enable) begin
-                nzp[warp_id] <= alu_out[2:0];
                 if (DEBUG) $display("[%0t] [PC] Warp %0d NZP <- %b", $time, warp_id, alu_out[2:0]);
             end
 
             if (decoded_call) begin
-                return_stack[warp_id][stack_ptr[warp_id]] <= current_pc + 1;
-                stack_ptr[warp_id] <= stack_ptr[warp_id] + 1;
                 if (DEBUG) $display("[%0t] [PC] Warp %0d CALL: storing ret addr %0d (sp=%0d -> %0d)",
                          $time, warp_id, current_pc+1, stack_ptr[warp_id], stack_ptr[warp_id]+1);
             end
 
             if (decoded_ret_fn) begin
-                stack_ptr[warp_id] <= stack_ptr[warp_id] - 1;
                 if (DEBUG) $display("[%0t] [PC] Warp %0d RET: popping, sp %0d -> %0d, ret to %0d",
                          $time, warp_id, stack_ptr[warp_id], stack_ptr[warp_id]-1,
                          return_stack[warp_id][stack_ptr[warp_id]-1]);
@@ -77,6 +74,7 @@ module pc #(
                          $time, warp_id, nzp[warp_id], decoded_nzp,
                          ((nzp[warp_id] & decoded_nzp) != 3'b0) ? "TAKEN" : "FALLTHROUGH");
             end
+`endif
         end
     end
 

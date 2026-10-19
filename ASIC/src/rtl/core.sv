@@ -370,6 +370,7 @@ generate
             .fp_wb_data(fp_result_t)
         );
 
+`ifndef SYNTHESIS
         always @(posedge clk) begin
             if (fp_wb_valid_warp && fp_wb_mask[i] && fp_wb_rd_warp < 29) begin
                 $display("[%0t] [CORE-FPWB] Warp %0d Thread %0d Written: %h to r%0d", $time, fp_wb_warp_id, i, fp_result_t, fp_wb_rd_warp);
@@ -380,6 +381,7 @@ generate
                 $display("[%0t] [CORE-INTWB] Warp %0d Thread %0d Written: %h to r%0d", $time, wb_warp_id, i, actual_wb_data, wb_rd);
             end
         end
+`endif
     end
 endgenerate
 
@@ -557,6 +559,7 @@ core_pmu pmu_inst (
     .snapshot_0(pmu_snap_0), .snapshot_1(pmu_snap_1), .snapshot_2(pmu_snap_2), .snapshot_3(pmu_snap_3)
 );
 
+`ifndef SYNTHESIS
 always @(posedge clk) begin
     if (valid_issue) begin
         $display("[%0t] [SCHED-ISSUE] Warp %0d | PC %0h | Mask %b | Inst %h | Opcode: %0d", 
@@ -580,5 +583,6 @@ always @(posedge clk) begin
         end
     end
 end
+`endif
 
 endmodule

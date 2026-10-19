@@ -74,7 +74,25 @@ module alu #(
                 DIV: begin
                     if (rt == 0) begin
                         alu_out = {DATA_BITS{1'b0}}; div_by_zero = 1'b1;
-                    end else alu_out = rs / rt;
+                    end else begin
+                        `ifdef USE_COMB_DIV
+                            alu_out = rs / rt;
+                        `else
+                            // For ASIC area/timing: division stubbed or delegated to software
+                            alu_out = {DATA_BITS{1'b0}};
+                        `endif
+                    end
+                end
+                MOD: begin
+                    if (rt == 0) begin
+                        alu_out = {DATA_BITS{1'b0}}; div_by_zero = 1'b1;
+                    end else begin
+                        `ifdef USE_COMB_DIV
+                            alu_out = rs % rt;
+                        `else
+                            alu_out = {DATA_BITS{1'b0}};
+                        `endif
+                    end
                 end
                 AND: alu_out = rs & rt;
                 OR:  alu_out = rs | rt;
@@ -98,11 +116,6 @@ module alu #(
                     end else begin
                         flag_c = 1'b0;
                     end
-                end
-                MOD: begin
-                    if (rt == 0) begin
-                        alu_out = {DATA_BITS{1'b0}}; div_by_zero = 1'b1;
-                    end else alu_out = rs % rt;
                 end
                 MIN: alu_out = ($signed(rs) < $signed(rt)) ? rs : rt;
                 MAX: alu_out = ($signed(rs) > $signed(rt)) ? rs : rt;

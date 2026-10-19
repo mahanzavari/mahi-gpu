@@ -66,11 +66,20 @@ module lsu #(
     reg [DATA_BITS-1:0] req_exp_val [NUM_WARPS][THREADS_PER_BLOCK]; // <--- Storage for Expected Value
     reg [4:0] req_rd [NUM_WARPS]; 
 
+    wire [ADDR_BITS-1:0] ext_addr_offset;
+    generate
+        if (ADDR_BITS > 16) begin : gen_ext_offset
+            assign ext_addr_offset = {{(ADDR_BITS-16){addr_offset[15]}}, addr_offset};
+        end else begin : gen_trunc_offset
+            assign ext_addr_offset = addr_offset[ADDR_BITS-1:0];
+        end
+    endgenerate
+
     wire [ADDR_BITS-1:0] incoming_effective_addr [THREADS_PER_BLOCK];
     genvar i;
     generate
         for (i = 0; i < THREADS_PER_BLOCK; i++) begin
-            assign incoming_effective_addr[i] = use_offset ? (rs[i] + {{ (ADDR_BITS-16){addr_offset[15]} }, addr_offset}) : rs[i];
+            assign incoming_effective_addr[i] = use_offset ? (rs[i][ADDR_BITS-1:0] + ext_addr_offset) : rs[i][ADDR_BITS-1:0];
         end
     endgenerate
 

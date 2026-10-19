@@ -1,0 +1,18 @@
+DESIGN_NAME: "gpu_asic_top"
+VERILOG_FILES: 
+  - "dir::../../build/test/gpu_asic_converted.v"
+
+# Clock constraint: 25 MHz (40.0 ns) to start safe
+CLOCK_PORT: "clk"
+CLOCK_PERIOD: 40.0
+
+# Die Sizing: 2.5 mm x 2.5 mm (fits standard 275k cell count comfortably)
+FP_SIZING: "absolute"
+DIE_AREA: [0, 0, 2500, 2500]
+CORE_AREA: [50, 50, 2450, 2450]
+
+# Density and Placement Target (keep conservative at 40% to prevent routing congestion)
+PL_TARGET_DENSITY_PCT: 40
+
+# Target PDK
+PDK: "sky130A"

@@ -200,7 +200,9 @@ module scheduler #(
                 warp_state[ex_warp_id] != WAITING_FP) begin
                 
                 if (ex_exception_valid) begin
+`ifndef SYNTHESIS
                     $display("[%0t] [SCHED-FAULT] Warp %0d Faulted!", $time, ex_warp_id);
+`endif
                     warp_state[ex_warp_id] <= FAULTED; flush_warp_mask[ex_warp_id] <= 1'b1;
                 end else begin
                     logic [PROGRAM_MEM_ADDR_BITS-1:0] target_a, target_b;
