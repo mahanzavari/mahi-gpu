@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module pc #(
-    parameter DATA_MEM_DATA_BITS = 16,
-    parameter PROGRAM_MEM_ADDR_BITS = 32,
-    parameter NUM_WARPS = 4,
-    parameter DEBUG = 0  // Added cleanly globally
+    parameter DATA_MEM_DATA_BITS = gpu_pkg::CFG_DMEM_DATA_BITS,
+    parameter PROGRAM_MEM_ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter NUM_WARPS = gpu_pkg::CFG_NUM_WARPS,
+    parameter DEBUG = gpu_pkg::CFG_DEBUG  // Added cleanly globally
 ) (
     input wire clk,
     input wire reset,
@@ -27,6 +27,8 @@ module pc #(
 
     reg [2:0] nzp [NUM_WARPS];
     localparam STACK_DEPTH = 8;
+    // Guard: NUM_WARPS==1 (future profile) would make $clog2 -> [-1:0].
+    localparam WARP_PTR_WIDTH = (NUM_WARPS > 1) ? $clog2(NUM_WARPS) : 1;
     reg [PROGRAM_MEM_ADDR_BITS-1:0] return_stack [NUM_WARPS][STACK_DEPTH];
     reg [$clog2(STACK_DEPTH)-1:0]   stack_ptr    [NUM_WARPS];
 

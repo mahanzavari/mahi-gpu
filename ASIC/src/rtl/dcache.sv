@@ -2,9 +2,9 @@
 `timescale 1ns/1ns
 
 module dcache #(
-    parameter ADDR_BITS = 32,
-    parameter BLOCK_BITS = 128,
-    parameter CACHE_LINES = 64
+    parameter ADDR_BITS = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter BLOCK_BITS = gpu_pkg::AXI_DATA_WIDTH,
+    parameter CACHE_LINES = gpu_pkg::CFG_L1_CACHE_LINES
 ) (
     input wire clk,
     input wire reset,

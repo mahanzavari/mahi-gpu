@@ -2,16 +2,16 @@
 `timescale 1ns/1ns
 
 module gpu #(
-    parameter DATA_MEM_ADDR_BITS = 32,
-    parameter DATA_MEM_DATA_BITS = 32,
-    parameter DATA_MEM_NUM_CHANNELS = 4,
-    parameter PROGRAM_MEM_ADDR_BITS = 32,
-    parameter PROGRAM_MEM_DATA_BITS = 32,
-    parameter PROGRAM_MEM_NUM_CHANNELS = 1,
-    parameter NUM_CORES = 2,
-    parameter THREADS_PER_BLOCK = 4,
-    parameter NUM_WARPS = 4,
-    parameter DEBUG = 0
+    parameter DATA_MEM_ADDR_BITS = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter DATA_MEM_DATA_BITS = gpu_pkg::CFG_DMEM_DATA_BITS,
+    parameter DATA_MEM_NUM_CHANNELS = gpu_pkg::CFG_DATA_MEM_NUM_CHANNELS,
+    parameter PROGRAM_MEM_ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter PROGRAM_MEM_DATA_BITS = gpu_pkg::CFG_PMEM_DATA_BITS,
+    parameter PROGRAM_MEM_NUM_CHANNELS = gpu_pkg::CFG_PROGRAM_MEM_NUM_CHANNELS,
+    parameter NUM_CORES = gpu_pkg::CFG_NUM_CORES,
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS = gpu_pkg::CFG_NUM_WARPS,
+    parameter DEBUG = gpu_pkg::CFG_DEBUG
 ) (
     input wire clk,
     input wire reset,
@@ -56,7 +56,7 @@ module gpu #(
 
     wire [NUM_CORES-1:0] core_start, core_reset, core_done;
     wire [7:0] core_block_id [NUM_CORES];
-    wire [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES];
+    wire [$clog2(gpu_pkg::THREADS_PER_CORE):0] core_thread_count [NUM_CORES];
 
     localparam NUM_FETCHERS = NUM_CORES;
     wire [NUM_FETCHERS-1:0]                 core_pmem_read_valid;
@@ -120,7 +120,9 @@ module gpu #(
     );
 
     l2_cache #(
-        .ADDR_BITS(DATA_MEM_ADDR_BITS), .BLOCK_BITS(DATA_MEM_DATA_BITS * 4), .CACHE_LINES(256), .WAYS(4), .SECTORS(4), .NUM_PORTS(NUM_CORES), .VWB_DEPTH(8)     
+        .ADDR_BITS(DATA_MEM_ADDR_BITS),
+        .BLOCK_BITS(DATA_MEM_DATA_BITS * 4),
+        .NUM_PORTS(NUM_CORES)
     ) unified_cache (
         .clk(clk), .reset(reset), .up_read_valid(dcache_mem_read_valid), .up_read_addr(dcache_mem_read_addr), .up_read_ready(dcache_mem_read_ready),
         .up_read_data(dcache_mem_read_data), .up_write_valid(dcache_mem_write_valid), .up_write_addr(dcache_mem_write_addr),
@@ -153,7 +155,9 @@ module gpu #(
     );
 
     dispatch #(
-        .NUM_CORES(NUM_CORES), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS)
+        .NUM_CORES(NUM_CORES),
+        .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+        .NUM_WARPS(NUM_WARPS)
     ) dispatch_instance (
         .clk(clk), .reset(reset), .start(start), .thread_count(thread_count), .core_done(core_done), .core_start(core_start), 
         .core_reset(core_reset), .core_block_id(core_block_id), .core_thread_count(core_thread_count), 
@@ -168,9 +172,16 @@ module gpu #(
 
             assign core_cache_flush_done[i] = l1_dcache_flush_done[i] & l2_flush_done;
 
+            // Forward gpu-level params so TB overrides (e.g. 8TPB matmul)
+            // still propagate; defaults come from gpu_pkg either way.
             core #(
-                .DATA_MEM_ADDR_BITS(DATA_MEM_ADDR_BITS), .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
-                .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DEBUG(DEBUG)
+                .DATA_MEM_ADDR_BITS(DATA_MEM_ADDR_BITS),
+                .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
+                .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+                .PROGRAM_MEM_DATA_BITS(PROGRAM_MEM_DATA_BITS),
+                .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+                .NUM_WARPS(NUM_WARPS),
+                .DEBUG(DEBUG)
             ) core_inst (
                 .clk(clk), .reset(core_reset[i]), .global_reset(reset), .start(core_start[i]), .done(core_done[i]), // <-- Routed global_reset 
                 .block_id(core_block_id[i]), .thread_count(core_thread_count[i]),
@@ -195,7 +206,10 @@ module gpu #(
                 .dc_ev_write_acc(dc_ev_w_acc), .dc_ev_write_hit(dc_ev_w_hit), .dc_ev_write_stall(dc_ev_w_stall)
             );
 
-            icache #( .ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .DATA_BITS(PROGRAM_MEM_DATA_BITS), .BLOCK_BITS(PROGRAM_MEM_DATA_BITS * 4), .CACHE_LINES(16)
+            icache #(
+                .ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+                .DATA_BITS(PROGRAM_MEM_DATA_BITS),
+                .BLOCK_BITS(PROGRAM_MEM_DATA_BITS * 4)
             ) icache_inst (
                 .clk(clk), .reset(reset), .core_read_valid(core_pmem_read_valid[i]), .core_read_addr(core_pmem_read_addr[i]),
                 .core_read_ready(core_pmem_read_ready[i]), .core_read_data(core_pmem_read_data[i]), .mem_read_valid(icache_mem_read_valid[i]),
@@ -203,7 +217,9 @@ module gpu #(
                 .ev_access(ic_ev_acc), .ev_hit(ic_ev_hit), .ev_stall(ic_ev_stall)
             );
 
-            dcache #( .ADDR_BITS(DATA_MEM_ADDR_BITS), .BLOCK_BITS(DATA_MEM_DATA_BITS * 4), .CACHE_LINES(16)
+            dcache #(
+                .ADDR_BITS(DATA_MEM_ADDR_BITS),
+                .BLOCK_BITS(DATA_MEM_DATA_BITS * 4)
             ) dcache_inst (
                 .clk(clk), .reset(reset), .core_read_valid(core_dmem_read_valid[i]), .core_read_block_addr(core_dmem_read_addr[i]),
                 .core_read_ready(core_dmem_read_ready[i]), .core_read_block_data(core_dmem_read_data[i]), .core_write_valid(core_dmem_write_valid[i]),

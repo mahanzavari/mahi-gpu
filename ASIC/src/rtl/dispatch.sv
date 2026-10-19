@@ -2,9 +2,9 @@
 `timescale 1ns/1ns
 
 module dispatch #(
-    parameter NUM_CORES = 2,
-    parameter THREADS_PER_BLOCK = 4,
-    parameter NUM_WARPS = 4
+    parameter NUM_CORES = gpu_pkg::CFG_NUM_CORES,
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS = gpu_pkg::CFG_NUM_WARPS
 ) (
     input wire clk,
     input wire reset,
@@ -16,7 +16,7 @@ module dispatch #(
     output reg [NUM_CORES-1:0] core_start,
     output reg [NUM_CORES-1:0] core_reset,
     output reg [7:0] core_block_id [NUM_CORES],
-    output reg [$clog2(THREADS_PER_BLOCK * NUM_WARPS):0] core_thread_count [NUM_CORES],
+    output reg [$clog2(gpu_pkg::THREADS_PER_CORE):0] core_thread_count [NUM_CORES],
 
     // --- Flush Control ---
     output reg flush_caches,

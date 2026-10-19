@@ -2,7 +2,7 @@
 `timescale 1ns/1ns
 
 module alu #(
-    parameter DATA_BITS = 16
+    parameter DATA_BITS = gpu_pkg::DATA_BITS
 ) (
     input wire enable,
     input wire [4:0] decoded_alu_arithmetic_mux, 

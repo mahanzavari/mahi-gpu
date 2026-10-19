@@ -2,12 +2,12 @@
 `timescale 1ns/1ns
 
 module lsu #(
-    parameter DATA_BITS = 32,
-    parameter NUM_WARPS = 4,
-    parameter THREADS_PER_BLOCK = 4,
-    parameter WORDS_PER_BLOCK = 4,
-    parameter ADDR_BITS = 32,
-    parameter DEBUG = 1
+    parameter DATA_BITS = gpu_pkg::DATA_BITS,
+    parameter NUM_WARPS = gpu_pkg::CFG_NUM_WARPS,
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter WORDS_PER_BLOCK = gpu_pkg::WORDS_PER_BLOCK,
+    parameter ADDR_BITS = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter DEBUG = gpu_pkg::CFG_DEBUG
 ) (
     input wire clk,
     input wire reset,
@@ -81,7 +81,9 @@ module lsu #(
     
     state_t state;
 
-    reg [$clog2(NUM_WARPS)-1:0] active_warp;
+    // Guard: NUM_WARPS==1 (future profile) would make $clog2 -> [-1:0].
+    localparam WARP_PTR_WIDTH = (NUM_WARPS > 1) ? $clog2(NUM_WARPS) : 1;
+    reg [WARP_PTR_WIDTH-1:0] active_warp;
     reg [THREADS_PER_BLOCK-1:0] pending_threads;
     reg [ADDR_BITS-1:0] current_block_addr;
     reg [2:0] active_t; 

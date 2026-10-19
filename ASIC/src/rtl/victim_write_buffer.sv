@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module victim_write_buffer #(
-    parameter ADDR_BITS  = 32,
-    parameter BLOCK_BITS = 128,
-    parameter SECTORS    = 4,
-    parameter DEPTH      = 4
+    parameter ADDR_BITS  = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter BLOCK_BITS = gpu_pkg::AXI_DATA_WIDTH,
+    parameter SECTORS    = gpu_pkg::CFG_L2_SECTORS,
+    parameter DEPTH      = gpu_pkg::CFG_VWB_DEPTH
 ) (
     input wire clk,
     input wire reset,
@@ -37,6 +37,8 @@ module victim_write_buffer #(
 );
 
     localparam SECTOR_BITS = BLOCK_BITS / SECTORS;
+    // Guard: DEPTH==1 (future profile) would make $clog2 -> [-1:0].
+    localparam DEPTH_PTR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
 
     reg                  valid   [DEPTH];
     reg [ADDR_BITS-1:0]  addr    [DEPTH];
@@ -53,9 +55,9 @@ module victim_write_buffer #(
     assign push_ready = !full;
 
     logic merge_found;
-    logic [$clog2(DEPTH)-1:0] merge_idx;
+    logic [DEPTH_PTR_WIDTH-1:0] merge_idx;
     logic free_found;
-    logic [$clog2(DEPTH)-1:0] free_idx;
+    logic [DEPTH_PTR_WIDTH-1:0] free_idx;
     logic v_next;
 
     always_comb begin
@@ -63,10 +65,10 @@ module victim_write_buffer #(
         free_found  = 1'b0; free_idx  = '0;
         for (int i = 0; i < DEPTH; i++) begin
             if (valid[i] && addr[i] == push_addr && !merge_found) begin
-                merge_found = 1'b1; merge_idx = i[$clog2(DEPTH)-1:0];
+                merge_found = 1'b1; merge_idx = i[DEPTH_PTR_WIDTH-1:0];
             end
             if (!valid[i] && !free_found) begin
-                free_found = 1'b1; free_idx = i[$clog2(DEPTH)-1:0];
+                free_found = 1'b1; free_idx = i[DEPTH_PTR_WIDTH-1:0];
             end
         end
     end
@@ -85,12 +87,12 @@ module victim_write_buffer #(
     end
 
     logic drain_pending;
-    logic [$clog2(DEPTH)-1:0] drain_idx;
+    logic [DEPTH_PTR_WIDTH-1:0] drain_idx;
     always_comb begin
         drain_pending = 1'b0; drain_idx = '0;
         for (int i = 0; i < DEPTH; i++) begin
             if (valid[i] && !drain_pending) begin
-                drain_pending = 1'b1; drain_idx = i[$clog2(DEPTH)-1:0];
+                drain_pending = 1'b1; drain_idx = i[DEPTH_PTR_WIDTH-1:0];
             end
         end
     end
@@ -98,7 +100,7 @@ module victim_write_buffer #(
     typedef enum logic [1:0] { IDLE, DRAINING } state_t;
     state_t state;
 
-    reg [$clog2(DEPTH)-1:0] active_drain_idx;
+    reg [DEPTH_PTR_WIDTH-1:0] active_drain_idx;
     reg                     active_drain_valid;
 
     always @(posedge clk) begin

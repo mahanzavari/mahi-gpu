@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module shared_mem #(
-    parameter DATA_BITS         = 32,
-    parameter ADDR_BITS         = 32,
-    parameter SIZE              = 256,
-    parameter THREADS_PER_BLOCK = 4,
+    parameter DATA_BITS         = gpu_pkg::DATA_BITS,
+    parameter ADDR_BITS         = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter SIZE              = gpu_pkg::CFG_SHARED_MEM_SIZE,
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
     parameter N_BANKS           = 4
 ) (
     input  wire clk,

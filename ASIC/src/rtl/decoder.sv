@@ -2,7 +2,7 @@
 `timescale 1ns/1ns
 
 module decoder #(
-    parameter DATA_BITS = 32
+    parameter DATA_BITS = gpu_pkg::DATA_BITS
 ) (
     input wire [31:0] instruction,
     

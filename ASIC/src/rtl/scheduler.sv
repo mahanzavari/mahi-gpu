@@ -2,14 +2,14 @@
 `timescale 1ns/1ns
 
 module scheduler #(
-    parameter THREADS_PER_BLOCK = 4,
-    parameter NUM_WARPS = 4,
-    parameter PROGRAM_MEM_ADDR_BITS = 32
+    parameter THREADS_PER_BLOCK     = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS             = gpu_pkg::CFG_NUM_WARPS,
+    parameter PROGRAM_MEM_ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS
 ) (
     input wire clk,
     input wire reset,
     input wire start,
-    input wire [$clog2(NUM_WARPS * THREADS_PER_BLOCK):0] thread_count,
+    input wire [$clog2(gpu_pkg::THREADS_PER_CORE):0] thread_count,
     
     input wire mem_req_valid,
     input wire [$clog2(NUM_WARPS)-1:0] mem_warp_id,
@@ -55,6 +55,8 @@ module scheduler #(
     warp_state_t warp_state [NUM_WARPS];
 
     localparam STACK_DEPTH = 4;
+    // Guard: NUM_WARPS==1 (future profile) would make $clog2 -> [-1:0].
+    localparam WARP_PTR_WIDTH = (NUM_WARPS > 1) ? $clog2(NUM_WARPS) : 1;
     reg [PROGRAM_MEM_ADDR_BITS-1:0] current_pc [NUM_WARPS];
     reg [THREADS_PER_BLOCK-1:0] current_mask [NUM_WARPS];
     
@@ -62,7 +64,7 @@ module scheduler #(
     reg [THREADS_PER_BLOCK-1:0] stack_mask [NUM_WARPS][STACK_DEPTH];
     reg [$clog2(STACK_DEPTH+1)-1:0] stack_ptr [NUM_WARPS];
 
-    reg [$clog2(NUM_WARPS)-1:0] rr_ptr;
+    reg [WARP_PTR_WIDTH-1:0] rr_ptr;
     reg [$clog2(NUM_WARPS+1):0] barrier_count;
     logic [$clog2(NUM_WARPS+1):0] num_active_warps_comb;
     logic all_warps_done;

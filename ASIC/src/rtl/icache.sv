@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module icache #(
-    parameter ADDR_BITS = 32,
-    parameter DATA_BITS = 32,
-    parameter BLOCK_BITS = 128,
-    parameter CACHE_LINES = 16 
+    parameter ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter DATA_BITS = gpu_pkg::DATA_BITS,
+    parameter BLOCK_BITS = gpu_pkg::AXI_DATA_WIDTH,
+    parameter CACHE_LINES = gpu_pkg::CFG_L1_CACHE_LINES
 ) (
     input wire clk,
     input wire reset,
@@ -26,7 +26,10 @@ module icache #(
 );
 
     localparam INDEX_BITS = $clog2(CACHE_LINES);
-    localparam TAG_BITS = ADDR_BITS - 2 - INDEX_BITS; 
+    localparam TAG_BITS = ADDR_BITS - 2 - INDEX_BITS;
+    // ASIC shrink guard: CACHE_LINES is never 1 in any profile, but keep the
+    // index path safe if a future profile sets it to 1 ($clog2(1)==0).
+    localparam INDEX_PTR_WIDTH = (CACHE_LINES > 1) ? $clog2(CACHE_LINES) : 1;
 
     reg valid_array [CACHE_LINES];
     reg [TAG_BITS-1:0] tag_array [CACHE_LINES];

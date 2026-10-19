@@ -2,9 +2,9 @@
 `timescale 1ns/1ns
 
 module registers #(
-    parameter THREADS_PER_BLOCK = 4,
-    parameter NUM_WARPS = 4,
-    parameter DATA_BITS = 32
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS         = gpu_pkg::CFG_NUM_WARPS,
+    parameter DATA_BITS         = gpu_pkg::DATA_BITS
 ) (
     input wire clk,
     input wire reset,

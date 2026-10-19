@@ -2,13 +2,15 @@
 `timescale 1ns/1ns
 
 module l2_cache #(
-    parameter ADDR_BITS   = 32,
-    parameter BLOCK_BITS  = 128,
-    parameter CACHE_LINES = 256,
-    parameter WAYS        = 4,
-    parameter SECTORS     = 4,
-    parameter NUM_PORTS   = 2,
-    parameter VWB_DEPTH   = 8
+    parameter ADDR_BITS   = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter BLOCK_BITS  = gpu_pkg::AXI_DATA_WIDTH,
+    parameter CACHE_LINES = gpu_pkg::CFG_L2_CACHE_LINES,
+    parameter WAYS        = gpu_pkg::CFG_L2_WAYS,
+    parameter SECTORS     = gpu_pkg::CFG_L2_SECTORS,
+    // Trap 4 fix: L2 upstream ports MUST equal core count (1 dcache per core).
+    // Bind directly to CFG_NUM_CORES so the two can never diverge.
+    parameter NUM_PORTS   = gpu_pkg::CFG_NUM_CORES,
+    parameter VWB_DEPTH   = gpu_pkg::CFG_VWB_DEPTH
 ) (
     input wire clk,
     input wire reset,
@@ -52,6 +54,10 @@ module l2_cache #(
     localparam INDEX_BITS = $clog2(SETS);
     localparam TAG_BITS = ADDR_BITS - INDEX_BITS;
     localparam SECTOR_BITS = BLOCK_BITS / SECTORS;
+    // Bug 1 fix: $clog2(1)==0 produces illegal [-1:0]. Guard all 1-deep cases.
+    // (mirrors the safe PTR_WIDTH pattern already used in controller.sv)
+    localparam PORT_PTR_WIDTH = (NUM_PORTS > 1) ? $clog2(NUM_PORTS) : 1;
+    localparam WAY_PTR_WIDTH  = (WAYS > 1) ? $clog2(WAYS) : 1;
 
     reg                  valid_array   [SETS][WAYS];
     reg [SECTORS-1:0]    sector_dirty  [SETS][WAYS];
@@ -59,7 +65,8 @@ module l2_cache #(
     reg [BLOCK_BITS-1:0] data_array    [SETS][WAYS];
     reg [WAYS-2:0]       plru_bits     [SETS];
 
-    reg [$clog2(NUM_PORTS)-1:0] active_port;
+    // Bug 1 fix: $clog2(1)==0 -> illegal [-1:0] when NUM_PORTS==1 (ASIC).
+    reg [PORT_PTR_WIDTH-1:0] active_port;
     reg                  req_is_write;
     reg [ADDR_BITS-1:0]  req_addr;
     reg [BLOCK_BITS-1:0] req_data;
@@ -69,14 +76,14 @@ module l2_cache #(
     wire [TAG_BITS-1:0]   req_tag   = req_addr[ADDR_BITS-1:INDEX_BITS];
 
     logic hit;
-    logic [$clog2(WAYS)-1:0] hit_way;
-    logic [$clog2(WAYS)-1:0] victim_way;
+    logic [WAY_PTR_WIDTH-1:0] hit_way;
+    logic [WAY_PTR_WIDTH-1:0] victim_way;
 
     always_comb begin
         hit = 0; hit_way = 0;
         for (int w = 0; w < WAYS; w++) begin
             if (valid_array[req_index][w] && tag_array[req_index][w] == req_tag) begin
-                hit = 1; hit_way = w[$clog2(WAYS)-1:0];
+                hit = 1; hit_way = w[WAY_PTR_WIDTH-1:0];
             end
         end
         if (!plru_bits[req_index][0]) victim_way = !plru_bits[req_index][1] ? 2'd0 : 2'd1;
@@ -115,7 +122,7 @@ module l2_cache #(
     typedef enum logic [2:0] { IDLE, SERVING, FETCHING, FLUSH_SCAN, FLUSH_WAIT } state_t;
     state_t state;
     
-    reg [$clog2(NUM_PORTS)-1:0] arb_ptr;
+    reg [PORT_PTR_WIDTH-1:0] arb_ptr;
     reg [INDEX_BITS-1:0] flush_set;
     reg [$clog2(WAYS)-1:0] flush_way_iter;
     

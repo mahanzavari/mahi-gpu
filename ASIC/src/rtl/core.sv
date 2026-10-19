@@ -2,17 +2,17 @@
 `timescale 1ns/1ns
 
 module core #(
-    parameter DATA_MEM_ADDR_BITS        = 32,
-    parameter DATA_MEM_DATA_BITS        = 32,
-    parameter PROGRAM_MEM_ADDR_BITS     = 32,
-    parameter PROGRAM_MEM_DATA_BITS     = 32,
-    parameter THREADS_PER_BLOCK         = 4,
-    parameter NUM_WARPS                 = 4,
-    parameter SHARED_MEM_ADDR_BITS      = 8,
-    parameter SHARED_MEM_SIZE           = 256,
+    parameter DATA_MEM_ADDR_BITS        = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter DATA_MEM_DATA_BITS        = gpu_pkg::CFG_DMEM_DATA_BITS,
+    parameter PROGRAM_MEM_ADDR_BITS     = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter PROGRAM_MEM_DATA_BITS     = gpu_pkg::CFG_PMEM_DATA_BITS,
+    parameter THREADS_PER_BLOCK         = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS                 = gpu_pkg::CFG_NUM_WARPS,
+    parameter SHARED_MEM_ADDR_BITS      = gpu_pkg::CFG_SHARED_MEM_ADDR_BITS,
+    parameter SHARED_MEM_SIZE           = gpu_pkg::CFG_SHARED_MEM_SIZE,
     parameter MAX_MEM_ADDR              = 32'h0000_FFFF, 
-    parameter DATA_BITS                 = 32,
-    parameter DEBUG                     = 0  
+    parameter DATA_BITS                 = gpu_pkg::DATA_BITS,
+    parameter DEBUG                     = gpu_pkg::CFG_DEBUG  
 ) (
     input  wire clk,
     input  wire reset,
@@ -20,10 +20,10 @@ module core #(
     input  wire start,
     output wire done,
     input  wire [7:0]                                   block_id,
-    input  wire [$clog2(THREADS_PER_BLOCK*NUM_WARPS):0] thread_count,
+    input  wire [$clog2(gpu_pkg::THREADS_PER_CORE):0] thread_count,
     
     output reg exception_raised,
-    output reg [$clog2(NUM_WARPS)-1:0] exception_warp_id,
+    output reg [gpu_pkg::WARP_ID_BITS-1:0] exception_warp_id,
     output reg [PROGRAM_MEM_ADDR_BITS-1:0] exception_pc,
     output reg [3:0] exception_cause,
 
@@ -129,7 +129,9 @@ reg [1:0] ex_atomic;
 wire id_is_fp;
 wire [1:0] id_fp_op;
 
-decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
+decoder #(
+    .DATA_BITS(DATA_BITS)
+) decoder_inst (
     .instruction(id_instruction), .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
     .decoded_nzp(id_nzp), .decoded_immediate(id_imm), .decoded_use_mem_offset(id_use_mem_offset), .decoded_mem_addr_offset(id_mem_addr_offset),
     .decoded_rs_read_enable(id_rs_re), .decoded_rt_read_enable(id_rt_re), .decoded_reg_write_enable(id_reg_we),
@@ -291,7 +293,9 @@ generate
 
         wire alu_flag_c, alu_flag_v, alu_flag_z, alu_flag_n, alu_flag_sat;
         
-        alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
+        alu #(
+            .DATA_BITS(DATA_BITS)
+        ) alu_inst (
             .enable(ex_active_mask[i] && !ex_is_fp), 
             .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
             .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .rd_val(fwd_ex_rd_data[i]), .alu_out(ex_alu_out[i]), 
@@ -336,14 +340,23 @@ generate
         wire [31:0] eff_addr = ex_use_mem_offset ? (fwd_ex_rs_data[i] + {{16{ex_mem_addr_offset[15]}}, ex_mem_addr_offset}) : fwd_ex_rs_data[i];
         assign thread_mem_fault[i] = ex_active_mask[i] && ((is_global_mem_op && eff_addr > MAX_MEM_ADDR) || (is_shared_mem_op && eff_addr >= SHARED_MEM_SIZE));
 
-        pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .NUM_WARPS(NUM_WARPS), .DEBUG(DEBUG) ) pc_inst (
+        pc #(
+            .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
+            .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+            .NUM_WARPS(NUM_WARPS),
+            .DEBUG(DEBUG)
+        ) pc_inst (
             .clk(clk), .reset(reset), .enable(ex_active_mask[i]), .warp_id(ex_warp_id), .decoded_nzp(ex_nzp),
             .decoded_immediate(ex_imm), .decoded_nzp_write_enable(ex_nzp_we), .decoded_pc_mux(ex_pc_mux),
             .decoded_call(ex_call), .decoded_ret_fn(ex_ret_fn), .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
         );
 
         wire [7:0] physical_thread_id = i;
-        registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
+        registers #(
+            .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+            .NUM_WARPS(NUM_WARPS),
+            .DATA_BITS(DATA_BITS)
+        ) reg_inst (
             .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .read_warp_id(id_warp_id),
             .block_id(block_id), .thread_id(physical_thread_id), 
             .read_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
@@ -419,7 +432,12 @@ wire [THREADS_PER_BLOCK-1:0]     sh_read_valid,  sh_read_ready, sh_write_valid, 
 wire [DATA_MEM_ADDR_BITS-1:0]    sh_read_address  [THREADS_PER_BLOCK], sh_write_address [THREADS_PER_BLOCK];
 wire [DATA_MEM_DATA_BITS-1:0]    sh_read_data     [THREADS_PER_BLOCK], sh_write_data    [THREADS_PER_BLOCK];
 
-shared_mem #( .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(DATA_MEM_ADDR_BITS), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK) ) shared_mem_instance (
+shared_mem #(
+    .DATA_BITS(DATA_MEM_DATA_BITS),
+    .ADDR_BITS(DATA_MEM_ADDR_BITS),
+    .SIZE(SHARED_MEM_SIZE),
+    .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
+) shared_mem_instance (
     .clk(clk), .reset(reset), .read_valid(sh_read_valid), .read_address(sh_read_address), .read_ready(sh_read_ready), .read_data(sh_read_data), 
     .write_valid(sh_write_valid), .write_address(sh_write_address), .write_data(sh_write_data), .write_ready(sh_write_ready)
 );
@@ -470,7 +488,13 @@ always @(posedge clk) begin
     end
 end
 
-lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4), .ADDR_BITS(DATA_MEM_ADDR_BITS) ) lsu_inst (
+lsu #(
+    .DATA_BITS(DATA_BITS),
+    .NUM_WARPS(NUM_WARPS),
+    .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+    .WORDS_PER_BLOCK(gpu_pkg::WORDS_PER_BLOCK),
+    .ADDR_BITS(DATA_MEM_ADDR_BITS)
+) lsu_inst (
     .clk(clk), .reset(reset), .enable_mask(mem_active_mask), .warp_id(mem_warp_id),
     .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
     .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
@@ -490,7 +514,11 @@ lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_
 
 wire sched_ev_idle, sched_ev_warp_switch, sched_ev_diverge, sched_ev_stall_mem, sched_ev_stall_barrier, sched_ev_stall_noready;
 
-scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) scheduler_instance (
+scheduler #(
+    .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+    .NUM_WARPS(NUM_WARPS),
+    .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS)
+) scheduler_instance (
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready), .mem_in_progress(mem_in_progress), 
     .fp_req_valid(ex_fp_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(fp_wb_valid_warp), .fp_wb_warp_id(fp_wb_warp_id),
