@@ -99,18 +99,20 @@ fetcher #(
 );
 
 reg [31:0] id_instruction; reg [PROGRAM_MEM_ADDR_BITS-1:0] id_pc; reg [THREADS_PER_BLOCK-1:0] id_active_mask;
-reg [$clog2(NUM_WARPS)-1:0] id_warp_id; reg [$clog2(NUM_WARPS)-1:0] issued_warp_id;
+reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
 
+// =========================================================================
+// FIX 1: Latch sched_warp_id directly. This eliminates the 1-warp skew.
+// =========================================================================
 always @(posedge clk) begin
     if (reset) begin
-        id_instruction <= 0; id_pc <= 0; id_active_mask <= 0; id_warp_id <= 0; issued_warp_id <= 0;
-    end else if (flush_warp_mask[sched_warp_id]) begin
+        id_instruction <= 0; id_pc <= 0; id_active_mask <= 0; id_warp_id <= 0;
+    end else if (flush_warp_mask[id_warp_id] || (valid_issue && flush_warp_mask[sched_warp_id])) begin
         id_active_mask <= 0;
     end else if (!fp_raw_stall) begin
-        if (valid_issue) issued_warp_id <= sched_warp_id;
-        id_warp_id <= if_instruction_valid ? issued_warp_id : id_warp_id;
+        id_warp_id     <= if_instruction_valid ? sched_warp_id : id_warp_id;
         id_instruction <= if_instruction_valid ? if_instruction : 0;
-        id_pc <= if_pc;
+        id_pc          <= if_pc;
         id_active_mask <= if_instruction_valid ? sched_active_mask : 0;
     end
 end
@@ -210,7 +212,7 @@ always @(posedge clk) begin
     if (reset) begin
         fp_pipe_valid <= 0;
     end else begin
-        fp_pipe_valid <= {fp_pipe_valid[3:0], ex_fp_fire};
+        fp_pipe_valid   <= {fp_pipe_valid[3:0], ex_fp_fire};
         fp_pipe_warp[0] <= ex_warp_id;
         fp_pipe_rd[0]   <= ex_rd;
         fp_pipe_mask[0] <= ex_active_mask;
@@ -355,12 +357,11 @@ generate
             .fp_wb_data(fp_result_t)
         );
 
-        // --- ENHANCED INDIVIDUAL THREAD WB LOGGING ---
         always @(posedge clk) begin
             if (fp_wb_valid_warp && fp_wb_mask[i] && fp_wb_rd_warp < 29) begin
                 $display("[%0t] [CORE-FPWB] Warp %0d Thread %0d Written: %h to r%0d", $time, fp_wb_warp_id, i, fp_result_t, fp_wb_rd_warp);
             end
-            if (wb_active_mask[i] && wb_reg_we && wb_rd < 29 && !ex_is_fp) begin
+            if (wb_active_mask[i] && wb_reg_we && wb_rd < 29) begin
                 logic [DATA_BITS-1:0] actual_wb_data;
                 actual_wb_data = (wb_reg_mux == 2'b10) ? wb_imm : ((wb_reg_mux == 2'b01) ? lsu_data_array[i] : wb_alu_out[i]);
                 $display("[%0t] [CORE-INTWB] Warp %0d Thread %0d Written: %h to r%0d", $time, wb_warp_id, i, actual_wb_data, wb_rd);
@@ -403,7 +404,11 @@ always @(posedge clk) begin
             mem_rt_data[j] <= fwd_ex_rt_data[j];
             mem_rd_data[j] <= fwd_ex_rd_data[j]; 
         end
-        mem_reg_we <= ex_reg_we; mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
+        // =====================================================================
+        // FIX 2: Clear mem_reg_we when ex_is_fp is set to prevent integer ALU 0-writeback
+        // =====================================================================
+        mem_reg_we <= ex_reg_we && !ex_is_fp; 
+        mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
         mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we; mem_reg_mux <= ex_reg_mux;
         mem_use_mem_offset <= ex_use_mem_offset; mem_mem_addr_offset <= ex_mem_addr_offset;
         mem_atomic <= ex_atomic;
