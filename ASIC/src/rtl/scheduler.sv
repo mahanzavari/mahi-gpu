@@ -75,6 +75,8 @@ module scheduler #(
     always_comb begin
         logic [PROGRAM_MEM_ADDR_BITS-1:0] comb_target_a;
         logic comb_target_a_valid;
+
+        comb_target_a = '0; 
         
         ex_is_branch = 1'b0; ex_has_divergence = 1'b0; comb_target_a_valid = 1'b0; warp_flush_inhibit = '0; num_active_warps_comb = 0;
         
@@ -118,9 +120,11 @@ module scheduler #(
         found_var_comb = 1'b0;
         next_rr_var_comb = rr_ptr;
         if (start && !done) begin
-            for (int i = 0; i < NUM_WARPS; i++) begin
-                logic [$clog2(NUM_WARPS)-1:0] check_w_var = (rr_ptr + i) % NUM_WARPS;
-                logic will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
+                    for (int i = 0; i < NUM_WARPS; i++) begin
+                        logic [$clog2(NUM_WARPS)-1:0] check_w_var;
+                        logic will_flush;
+                        check_w_var = (rr_ptr + i) % NUM_WARPS;
+                        will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
                 if (!found_var_comb && warp_state[check_w_var] == READY && current_mask[check_w_var] != 0 && !warp_flush_inhibit[check_w_var] && !will_flush && !flush_warp_mask[check_w_var]) begin
                     found_var_comb = 1'b1;
                     next_rr_var_comb = check_w_var;
