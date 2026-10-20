@@ -13,21 +13,29 @@
 //      stack sends RET to a garbage PC instead of unwinding correctly.
 // Must be compiled with -DTARGET_ASIC=1 (see ASIC/Makefile `make verify-asic`).
 // -----------------------------------------------------------------------------
-// KNOWN OPEN FAILURE (not the bug this test was written for):
-//   Thread 4 currently reports 0 instead of 211. Root cause is a second,
-//   separate data-loss bug in the dcache/L2/victim-write-buffer write path:
-//   when two different partial-mask stores (divergent reconvergence groups
-//   from the SAME warp) target the same cache block at different times, the
-//   first partial write's word is lost by the time the block is evicted to
-//   memory. Reproduced with MEM_TRACE defined (`-DMEM_TRACE=1`): the final
-//   eviction of the shared block shows strobe=1111 but the first thread's
-//   word reads back as 0 instead of its written value. LSU coalescing,
-//   dcache write-no-allocate-on-miss, and L2's hit-merge logic all look
-//   individually correct by inspection; exact root cause not yet isolated.
-//   This is present verbatim in src/rtl too (dcache.sv/l2_cache.sv/
-//   victim_write_buffer.sv are byte-identical to the ASIC port here) — it is
-//   NOT an ASIC-port regression. Left failing intentionally rather than
-//   masked, since it is a real bug the test correctly caught.
+// SECOND BUG this test caught (not the one it was originally written for):
+//   Thread 4 used to report 0 instead of 211. It looked like a dcache/L2/
+//   victim-write-buffer data-loss bug (the shared cache block's first
+//   partial write appeared lost by eviction time, strobe=1111 but word0
+//   read back as 0) -- but LSU coalescing, dcache write-no-allocate-on-miss,
+//   and L2's hit-merge logic all check out individually. The real root
+//   cause is upstream, in core.sv's ID-stage latch (~line 110):
+//     flush_warp_mask[id_warp_id] squashes whatever is sitting in the ID
+//     latch when that warp's own in-flight branch/CALL/RET resolves. But
+//     `id_warp_id` is last cycle's occupant, not necessarily the warp being
+//     freshly issued (sched_warp_id) this cycle. When warp A resolves its
+//     own branch (pulsing flush_warp_mask[A]) on the exact cycle warp B's
+//     freshly-fetched instruction is ready to load into ID, the old `else
+//     if` ordering let the stale-occupant squash win over the fresh load --
+//     discarding a perfectly valid instruction for a different warp. The
+//     fetcher had already marked it consumed (`consume` == valid_issue), so
+//     it was gone for good: thread 4's ADD R7,R6,R4 vanished, R7 stayed 0,
+//     and that zero rode all the way down through the store. Fixed by only
+//     letting the stale-occupant clause fire when no fresh instruction is
+//     loading this same cycle. Present verbatim in src/rtl too (this latch
+//     is unchanged between the two trees) -- NOT an ASIC-port regression,
+//     and timing-dependent rather than deterministic, so it could easily
+//     pass by luck on a different instruction mix.
 // =============================================================================
 module tb_asic_call_ret_branch;
 
@@ -102,11 +110,13 @@ module tb_asic_call_ret_branch;
     localparam OP_CMP = 6'd2, OP_ADD = 6'd3, OP_CONST = 6'd9, OP_STR = 6'd8,
                OP_RET_FN = 6'd14, OP_EXIT = 6'd15;
 
+    integer word_base, rd_blk, wr_blk;
+
     always @(posedge clk) begin
         for (int i = 0; i < PROGRAM_MEM_NUM_CHANNELS; i++) begin
             program_mem_read_ready[i] <= program_mem_read_valid[i];
             if (program_mem_read_valid[i]) begin
-                automatic int word_base = program_mem_read_address[i] * 4;
+                word_base = program_mem_read_address[i] * 4;
 `ifdef MEM_TRACE
                 $display("[%0t] [MEM-MOCK] chan=%0d program_mem_read_address=%0d word_base=%0d",
                          $time, i, program_mem_read_address[i], word_base);
@@ -121,21 +131,21 @@ module tb_asic_call_ret_branch;
         for (int i = 0; i < DATA_MEM_NUM_CHANNELS; i++) begin
             data_mem_read_ready[i] <= data_mem_read_valid[i];
             if (data_mem_read_valid[i]) begin
-                automatic int b = data_mem_read_address[i];
-                data_mem_read_data[i] <= {d_mem[b*4+3], d_mem[b*4+2], d_mem[b*4+1], d_mem[b*4+0]};
+                rd_blk = data_mem_read_address[i];
+                data_mem_read_data[i] <= {d_mem[rd_blk*4+3], d_mem[rd_blk*4+2], d_mem[rd_blk*4+1], d_mem[rd_blk*4+0]};
             end
 
             data_mem_write_ready[i] <= data_mem_write_valid[i];
             if (data_mem_write_valid[i]) begin
-                automatic int b = data_mem_write_address[i];
+                wr_blk = data_mem_write_address[i];
 `ifdef MEM_TRACE
                 $display("[%0t] [DMEM-WRITE] chan=%0d block=%0d strobe=%b data=%h",
-                         $time, i, b, data_mem_write_strobe[i], data_mem_write_data[i]);
+                         $time, i, wr_blk, data_mem_write_strobe[i], data_mem_write_data[i]);
 `endif
-                if (data_mem_write_strobe[i][0]) d_mem[b*4+0] <= data_mem_write_data[i][31:0];
-                if (data_mem_write_strobe[i][1]) d_mem[b*4+1] <= data_mem_write_data[i][63:32];
-                if (data_mem_write_strobe[i][2]) d_mem[b*4+2] <= data_mem_write_data[i][95:64];
-                if (data_mem_write_strobe[i][3]) d_mem[b*4+3] <= data_mem_write_data[i][127:96];
+                if (data_mem_write_strobe[i][0]) d_mem[wr_blk*4+0] <= data_mem_write_data[i][31:0];
+                if (data_mem_write_strobe[i][1]) d_mem[wr_blk*4+1] <= data_mem_write_data[i][63:32];
+                if (data_mem_write_strobe[i][2]) d_mem[wr_blk*4+2] <= data_mem_write_data[i][95:64];
+                if (data_mem_write_strobe[i][3]) d_mem[wr_blk*4+3] <= data_mem_write_data[i][127:96];
             end
         end
     end
@@ -242,9 +252,10 @@ module tb_asic_call_ret_branch;
 
         begin
             int errors = 0;
+            int expected_tag, expected_val;
             for (int tid = 0; tid < TOTAL_THREADS; tid++) begin
-                automatic int expected_tag = (tid < 4) ? 1 : (tid == 4) ? 2 : 3;
-                automatic int expected_val = expected_tag * 100 + 11;
+                expected_tag = (tid < 4) ? 1 : (tid == 4) ? 2 : 3;
+                expected_val = expected_tag * 100 + 11;
                 if (d_mem[tid] == expected_val) begin
                     $display("Thread %0d -> %0d [PASS]", tid, d_mem[tid]);
                 end else begin

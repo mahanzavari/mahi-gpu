@@ -107,7 +107,17 @@ reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
 always @(posedge clk) begin
     if (reset) begin
         id_instruction <= 0; id_pc <= 0; id_active_mask <= 0; id_warp_id <= 0;
-    end else if (flush_warp_mask[id_warp_id] || (valid_issue && flush_warp_mask[sched_warp_id])) begin
+    end else if ((flush_warp_mask[id_warp_id] && !(valid_issue && if_instruction_valid)) ||
+                 (valid_issue && flush_warp_mask[sched_warp_id])) begin
+        // A stale ID-stage occupant (id_warp_id, left over from last cycle)
+        // whose warp just got flushed must be squashed -- UNLESS a fresh,
+        // valid instruction for a *different* warp is loading this same
+        // cycle (valid_issue && if_instruction_valid): that fresh load must
+        // win, since id_warp_id hasn't been updated to sched_warp_id yet
+        // and flush_warp_mask[id_warp_id] firing for the OLD occupant's
+        // warp must not discard the NEW one. The fresh load is still
+        // subject to its own flush check (flush_warp_mask[sched_warp_id],
+        // second clause) in case IT was fetched pre-redirect.
         id_active_mask <= 0;
     end else if (!fp_raw_stall) begin
         id_warp_id     <= if_instruction_valid ? sched_warp_id : id_warp_id;
@@ -183,7 +193,13 @@ always @(posedge clk) begin
         ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0; ex_fp_op <= 0;
     end else if (flush_warp_mask[id_warp_id] || fp_raw_stall) begin
         ex_active_mask <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
-        ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0; 
+        ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0;
+`ifndef SYNTHESIS
+`ifdef MEM_TRACE
+        $display("[%0t] [CORE-SQUASH] id_warp_id=%0d id_pc=%0h id_active_mask=%b flush_warp_mask=%b fp_raw_stall=%0d",
+                 $time, id_warp_id, id_pc, id_active_mask, flush_warp_mask, fp_raw_stall);
+`endif
+`endif
     end else begin
         ex_active_mask <= id_active_mask; ex_warp_id <= id_warp_id; ex_pc <= id_pc;
         ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt; ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;

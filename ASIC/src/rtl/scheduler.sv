@@ -239,13 +239,25 @@ module scheduler #(
                         stack_pc[ex_warp_id][stack_ptr[ex_warp_id]] <= target_b; stack_mask[ex_warp_id][stack_ptr[ex_warp_id]] <= mask_b;
                         stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] + 1;
                         current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a; flush_warp_mask[ex_warp_id] <= 1'b1;
+`ifdef MEM_TRACE
+                        $display("[%0t] [SCHED-DIVERGE] warp=%0d ex_pc=%0h target_a=%0h mask_a=%b target_b=%0h mask_b=%b stack_ptr->%0d",
+                                 $time, ex_warp_id, ex_pc, target_a, mask_a, target_b, mask_b, stack_ptr[ex_warp_id]+1);
+`endif
                     end else begin
                         is_reconverge = (stack_ptr[ex_warp_id] > 0 && target_a_valid && target_a == stack_pc[ex_warp_id][stack_ptr[ex_warp_id]-1]);
                         if (is_reconverge) begin
                             current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a | stack_mask[ex_warp_id][stack_ptr[ex_warp_id]-1];
                             stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1; flush_warp_mask[ex_warp_id] <= 1'b1;
+`ifdef MEM_TRACE
+                            $display("[%0t] [SCHED-RECONVERGE] warp=%0d ex_pc=%0h target_a=%0h merged_mask=%b stack_ptr->%0d",
+                                     $time, ex_warp_id, ex_pc, target_a, mask_a | stack_mask[ex_warp_id][stack_ptr[ex_warp_id]-1], stack_ptr[ex_warp_id]-1);
+`endif
                         end else if (is_branch || ex_sync) begin
                             current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a; flush_warp_mask[ex_warp_id] <= 1'b1;
+`ifdef MEM_TRACE
+                            $display("[%0t] [SCHED-BRANCH] warp=%0d ex_pc=%0h -> target_a=%0h mask_a=%b is_branch=%0d ex_sync=%0d",
+                                     $time, ex_warp_id, ex_pc, target_a, mask_a, is_branch, ex_sync);
+`endif
                             if (ex_sync) begin 
                                 if (warp_state[ex_warp_id] != WAITING_BARRIER) begin
                                     warp_state[ex_warp_id] <= WAITING_BARRIER; 

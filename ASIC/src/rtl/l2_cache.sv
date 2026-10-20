@@ -162,6 +162,10 @@ module l2_cache #(
                                     req_addr <= up_write_addr[check_p]; req_data <= up_write_data[check_p];
                                     req_strobe <= up_write_strobe[check_p];
                                     found = 1; state <= SERVING; arb_ptr <= (check_p + 1) % NUM_PORTS;
+`ifdef MEM_TRACE
+                                    $display("[%0t] [L2-ACCEPT-WRITE] port=%0d addr=%0d strobe=%b data=%h",
+                                             $time, check_p, up_write_addr[check_p], up_write_strobe[check_p], up_write_data[check_p]);
+`endif
                                 end
                             end
                         end
@@ -169,12 +173,20 @@ module l2_cache #(
                 end
 
                 SERVING: begin
+`ifdef MEM_TRACE
+                    $display("[%0t] [L2-SERVING] is_write=%0d req_addr=%0d index=%0d tag=%0d hit=%0d hit_way=%0d victim_way=%0d vwb_probe_hit=%0d",
+                             $time, req_is_write, req_addr, req_index, req_tag, hit, hit_way, victim_way, vwb_probe_hit);
+`endif
                     if (hit) begin
                         if (req_is_write) begin
                             logic [BLOCK_BITS-1:0] next_data;
                             logic [SECTORS-1:0] next_dirty;
                             next_data = data_array[req_index][hit_way];
                             next_dirty = sector_dirty[req_index][hit_way];
+`ifdef MEM_TRACE
+                            $display("[%0t] [L2-HIT-WRITE] pre_data=%h pre_dirty=%b req_strobe=%b req_data=%h",
+                                     $time, next_data, next_dirty, req_strobe, req_data);
+`endif
                             for (int sec = 0; sec < SECTORS; sec++) begin
                                 if (req_strobe[sec]) begin
                                     next_data[(sec*SECTOR_BITS) +: SECTOR_BITS] = req_data[(sec*SECTOR_BITS) +: SECTOR_BITS];
@@ -183,7 +195,10 @@ module l2_cache #(
                             end
                             data_array[req_index][hit_way] <= next_data;
                             sector_dirty[req_index][hit_way] <= next_dirty;
-                            
+`ifdef MEM_TRACE
+                            $display("[%0t] [L2-HIT-WRITE] post_data=%h post_dirty=%b", $time, next_data, next_dirty);
+`endif
+
                             up_write_ready[active_port] <= 1;
                         end else begin
                             up_read_data[active_port] <= data_array[req_index][hit_way];
@@ -252,12 +267,16 @@ module l2_cache #(
                     if (mem_read_ready) begin
                         mem_read_valid <= 0;
                         valid_array[req_index][victim_way] <= 1; tag_array[req_index][victim_way] <= req_tag;
-                        
+
                         if (req_is_write) begin
                             logic [BLOCK_BITS-1:0] merged; merged = mem_read_data;
                             for (int sec=0; sec<SECTORS; sec++) if(req_strobe[sec]) merged[(sec*SECTOR_BITS)+:SECTOR_BITS] = req_data[(sec*SECTOR_BITS)+:SECTOR_BITS];
                             data_array[req_index][victim_way] <= merged;
                             sector_dirty[req_index][victim_way] <= req_strobe;
+`ifdef MEM_TRACE
+                            $display("[%0t] [L2-MISS-WRITE] index=%0d victim_way=%0d tag=%0d mem_read_data=%h merged=%h strobe=%b",
+                                     $time, req_index, victim_way, req_tag, mem_read_data, merged, req_strobe);
+`endif
                             up_write_ready[active_port] <= 1;
                         end else begin
                             data_array[req_index][victim_way] <= mem_read_data;
