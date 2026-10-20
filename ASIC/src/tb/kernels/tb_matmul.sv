@@ -104,6 +104,9 @@ module tb_matmul;
             data_mem_write_ready[i] <= data_mem_write_valid[i];
             if (data_mem_write_valid[i]) begin
                 wr_blk = data_mem_write_address[i];
+`ifdef MEM_TRACE
+                $display("[%0t] [DMEM-WRITE] chan=%0d block=%0d strobe=%b data=%h", $time, i, wr_blk, data_mem_write_strobe[i], data_mem_write_data[i]);
+`endif
                 if (data_mem_write_strobe[i][0]) d_mem[wr_blk*4+0] <= data_mem_write_data[i][31:0];
                 if (data_mem_write_strobe[i][1]) d_mem[wr_blk*4+1] <= data_mem_write_data[i][63:32];
                 if (data_mem_write_strobe[i][2]) d_mem[wr_blk*4+2] <= data_mem_write_data[i][95:64];
@@ -214,8 +217,9 @@ module tb_matmul;
         
         begin
             int errors = 0;
+            int expected_val;
             for (int i = 0; i < 25; i++) begin
-                int expected_val = i;
+                expected_val = i;
                 if (d_mem[50 + i] == expected_val) $display("Matrix C Element %02d (Computed by Thread %02d): %02d [PASS]", i, i, d_mem[50+i]);
                 else begin
                     $display("Matrix C Element %02d (Computed by Thread %02d): %02d ... EXPECTED %02d [FAIL]", i, i, d_mem[50+i], expected_val);

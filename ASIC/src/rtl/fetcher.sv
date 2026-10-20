@@ -23,13 +23,27 @@ module fetcher #(
 
     // Fetcher Output to IF/ID Pipeline Register
     output reg instruction_valid,
-    output reg [PROGRAM_MEM_DATA_BITS-1:0] instruction
+    output reg [PROGRAM_MEM_DATA_BITS-1:0] instruction,
+    // PC the held instruction was fetched for. The scheduler's warp selection
+    // is combinational and can move to a different warp/PC while a fetch is in
+    // flight; consumers must only accept `instruction` when this equals the PC
+    // of the warp they are issuing.
+    output wire [PROGRAM_MEM_ADDR_BITS-1:0] fetched_pc
 );
     typedef enum logic [1:0] { IDLE, FETCHING, DONE } state_t;
     state_t state;
 
     reg [PROGRAM_MEM_ADDR_BITS-1:0] fetch_pc;
     assign mem_read_address = fetch_pc;
+    assign fetched_pc = fetch_pc;
+
+`ifdef MEM_TRACE
+    always @(posedge clk) begin
+        if (!reset && (flush || state != IDLE || valid_request))
+            $display("[%0t] [FETCH] %m st=%0d req=%0d consume=%0d flush=%0d cur_pc=%0h fetch_pc=%0h mrv=%0d mrr=%0d ivalid=%0d",
+                     $time, state, valid_request, consume, flush, current_pc, fetch_pc, mem_read_valid, mem_read_ready, instruction_valid);
+    end
+`endif
 
     always @(posedge clk) begin
         if (reset || flush) begin
@@ -57,7 +71,12 @@ module fetcher #(
                     end
                 end
                 DONE: begin
-                    if (consume) begin
+                    if (!consume && valid_request && current_pc != fetch_pc) begin
+                        // Selected warp/PC changed after this fetch completed:
+                        // drop the stale instruction and refetch for the new PC.
+                        state <= IDLE;
+                        instruction_valid <= 0;
+                    end else if (consume) begin
                         // Transition to IDLE for 1 cycle so the Scheduler 
                         // can update current_pc to the next address!
                         state <= IDLE;

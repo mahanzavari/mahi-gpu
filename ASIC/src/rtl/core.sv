@@ -69,6 +69,8 @@ wire [4:0]                             lsu_rd_array;
 wire [DATA_BITS-1:0]                   lsu_data_array [THREADS_PER_BLOCK];
 
 wire if_instruction_valid;
+wire if_instruction_valid_raw;
+wire [PROGRAM_MEM_ADDR_BITS-1:0] if_fetched_pc;
 wire core_running    = start && !done;
 wire fetch_stall     = !if_instruction_valid;
 
@@ -95,8 +97,14 @@ fetcher #(
     .flush(|flush_warp_mask),
     .current_pc(if_pc), .mem_read_valid(program_mem_read_valid), .mem_read_address(program_mem_read_address),
     .mem_read_ready(program_mem_read_ready), .mem_read_data(program_mem_read_data),
-    .instruction_valid(if_instruction_valid), .instruction(if_instruction)
+    .instruction_valid(if_instruction_valid_raw), .instruction(if_instruction),
+    .fetched_pc(if_fetched_pc)
 );
+
+// Only accept the fetched instruction if it was fetched for the PC of the warp
+// the scheduler is selecting *now* (selection is combinational and can change
+// while a fetch is in flight, which used to issue warp A's instruction as B's).
+assign if_instruction_valid = if_instruction_valid_raw && (if_fetched_pc == if_pc);
 
 reg [31:0] id_instruction; reg [PROGRAM_MEM_ADDR_BITS-1:0] id_pc; reg [THREADS_PER_BLOCK-1:0] id_active_mask;
 reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
@@ -394,7 +402,7 @@ generate
             if (wb_active_mask[i] && wb_reg_we && wb_rd < 29) begin
                 logic [DATA_BITS-1:0] actual_wb_data;
                 actual_wb_data = (wb_reg_mux == 2'b10) ? wb_imm : ((wb_reg_mux == 2'b01) ? lsu_data_array[i] : wb_alu_out[i]);
-                $display("[%0t] [CORE-INTWB] Warp %0d Thread %0d Written: %h to r%0d", $time, wb_warp_id, i, actual_wb_data, wb_rd);
+                $display("[%0t] [CORE-INTWB] %m Warp %0d Thread %0d Written: %h to r%0d", $time, wb_warp_id, i, actual_wb_data, wb_rd);
             end
         end
 `endif
@@ -578,7 +586,7 @@ core_pmu pmu_inst (
 `ifndef SYNTHESIS
 always @(posedge clk) begin
     if (valid_issue) begin
-        $display("[%0t] [SCHED-ISSUE] Warp %0d | PC %0h | Mask %b | Inst %h | Opcode: %0d", 
+        $display("[%0t] [SCHED-ISSUE] %m Warp %0d | PC %0h | Mask %b | Inst %h | Opcode: %0d", 
                  $time, sched_warp_id, if_pc, sched_active_mask, if_instruction, if_instruction[31:26]);
     end
     
@@ -586,7 +594,7 @@ always @(posedge clk) begin
         $display("[%0t] [CORE-STALL] Warp %0d | PC %0h | FP RAW Hazard Detected (waiting on FPU)", $time, id_warp_id, id_pc);
     end
     if (|ex_active_mask) begin
-        $display("[%0t] [CORE-EX] Warp %0d | PC %0h | Mask %b | %s Op | RD:r%0d RS:r%0d RT:r%0d | Imm: %0h | ALU_Op: %0d", 
+        $display("[%0t] [CORE-EX] %m Warp %0d | PC %0h | Mask %b | %s Op | RD:r%0d RS:r%0d RT:r%0d | Imm: %0h | ALU_Op: %0d", 
                  $time, ex_warp_id, ex_pc, ex_active_mask, 
                  (ex_mem_re || ex_mem_we) ? "MEM" : (ex_is_fp ? "FP " : "INT"), 
                  ex_rd, ex_rs, ex_rt, ex_imm, ex_alu_arith_mux);
