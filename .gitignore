@@ -15,3 +15,4 @@ logs/
 *.log
 *.xlsx
 ASIC/flow/runs
+Errorflow.md

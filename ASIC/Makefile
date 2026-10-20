@@ -19,7 +19,14 @@ RTL_PKG   := src/rtl/include/gpu_pkg.sv
 RTL_F     := rtl.f
 TB_MATMUL := src/tb/kernels/tb_matmul.sv
 
-.PHONY: sim sim-filelist convert-asic convert-asic-filelist lint-asic unit-alu
+RTL_SOURCES := $(RTL_PKG) \
+  src/rtl/dispatch.sv src/rtl/fetcher.sv src/rtl/decoder.sv src/rtl/registers.sv \
+  src/rtl/alu.sv src/rtl/pc.sv src/rtl/lsu.sv src/rtl/scheduler.sv src/rtl/shared_mem.sv \
+  src/rtl/dcache.sv src/rtl/icache.sv src/rtl/l2_cache.sv src/rtl/victim_write_buffer.sv \
+  src/rtl/controller.sv src/rtl/dcr.sv src/rtl/core_pmu.sv src/rtl/fp32_fma.sv \
+  src/rtl/core.sv src/rtl/gpu.sv
+
+.PHONY: sim sim-filelist convert-asic convert-asic-filelist lint-asic unit-alu verify-asic verify-asic-trace
 
 # 1. RTL Simulation (gpu_pkg.sv FIRST so types/constants elaborate)
 sim:
@@ -52,6 +59,27 @@ sim-filelist:
 	mkdir -p build
 	iverilog $(C_FLAGS) -g2012 -c $(RTL_F) $(TB_MATMUL) -o build/sim.out
 	vvp build/sim.out
+
+# 5. Behavioral verification (Verilator, ASIC profile): NZP branch + nested
+#    CALL/RET regression. This is the test that caught the pc.sv dead-logic
+#    bug introduced during the ASIC port.
+VERIF_TB := src/tb/ISA/tb_asic_call_ret_branch.sv
+verify-asic:
+	mkdir -p build/verilator
+	verilator --binary --timing -DTARGET_ASIC=1 \
+	  -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING \
+	  --top-module tb_asic_call_ret_branch -Mdir build/verilator \
+	  $(RTL_SOURCES) $(VERIF_TB) -o verify_asic
+	./build/verilator/verify_asic
+
+# Same test with MEM_TRACE (icache miss/fill + dmem write logging) for debugging.
+verify-asic-trace:
+	mkdir -p build/verilator
+	verilator --binary --timing -DTARGET_ASIC=1 -DMEM_TRACE=1 \
+	  -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING \
+	  --top-module tb_asic_call_ret_branch -Mdir build/verilator \
+	  $(RTL_SOURCES) $(VERIF_TB) -o verify_asic_trace
+	./build/verilator/verify_asic_trace
 
 # 3. Quick syntax lint of the package under each profile
 lint-asic:
