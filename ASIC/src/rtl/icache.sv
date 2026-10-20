@@ -66,8 +66,12 @@ module icache #(
                             latched_index <= index;
                             latched_tag <= tag;
                             mem_read_valid <= 1;
-                            mem_read_block_addr <= core_read_addr >> 2; 
+                            mem_read_block_addr <= core_read_addr >> 2;
                             state <= FETCHING_MEM;
+`ifdef MEM_TRACE
+                            $display("[%0t] [ICACHE-MISS] core_read_addr=%0d index=%0d tag=%0d block_addr=%0d",
+                                     $time, core_read_addr, index, tag, core_read_addr >> 2);
+`endif
                         end
                     end
                 end
@@ -86,6 +90,10 @@ module icache #(
                         if (core_read_valid && index == latched_index && tag == latched_tag) begin
                             core_read_data <= mem_read_block_data[(word_offset * 32) +: 32];
                             core_read_ready <= 1;
+`ifdef MEM_TRACE
+                            $display("[%0t] [ICACHE-FILL] latched_index=%0d word_offset=%0d block_data=%h -> word=%h",
+                                     $time, latched_index, word_offset, mem_read_block_data, mem_read_block_data[(word_offset*32)+:32]);
+`endif
                         end
                         state <= IDLE;
                     end

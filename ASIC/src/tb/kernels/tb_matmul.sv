@@ -80,7 +80,7 @@ module tb_matmul;
             program_mem_read_ready[i] <= program_mem_read_valid[i];
             if (program_mem_read_valid[i]) begin
                 // Block address ? word base address
-                int word_base = program_mem_read_address[i] * 4;
+                automatic int word_base = program_mem_read_address[i] * 4;
                 program_mem_read_data[i] <= {
                     p_mem[word_base + 3],
                     p_mem[word_base + 2],
@@ -94,14 +94,14 @@ module tb_matmul;
             // FIX: PACK 128-BIT BLOCK (4 x 32-bit words)
             data_mem_read_ready[i] <= data_mem_read_valid[i];
             if (data_mem_read_valid[i]) begin
-                int b = data_mem_read_address[i];
+                automatic int b = data_mem_read_address[i];
                 data_mem_read_data[i] <= {d_mem[b*4+3], d_mem[b*4+2], d_mem[b*4+1], d_mem[b*4+0]};
             end
             
             // FIX: UNPACK AND STROBE 128-BIT WRITE
             data_mem_write_ready[i] <= data_mem_write_valid[i];
             if (data_mem_write_valid[i]) begin
-                int b = data_mem_write_address[i];
+                automatic int b = data_mem_write_address[i];
                 if (data_mem_write_strobe[i][0]) d_mem[b*4+0] <= data_mem_write_data[i][31:0];
                 if (data_mem_write_strobe[i][1]) d_mem[b*4+1] <= data_mem_write_data[i][63:32];
                 if (data_mem_write_strobe[i][2]) d_mem[b*4+2] <= data_mem_write_data[i][95:64];
