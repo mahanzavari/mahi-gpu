@@ -73,6 +73,8 @@ UNIT_DEF_alu := -DUSE_COMB_DIV=1
 UNIT_SRC_registers := src/rtl/registers.sv
 UNIT_SRC_fp32_fma := src/rtl/fp32_fma.sv
 UNIT_SRC_decoder := src/rtl/decoder.sv
+UNIT_SRC_l2_cache := src/rtl/victim_write_buffer.sv src/rtl/l2_cache.sv
+UNIT_SRC_dcache := src/rtl/dcache.sv
 
 unit: $(addprefix unit-,$(UNIT_TESTS)) unit-alu-stub
 
@@ -83,7 +85,7 @@ unit-alu-stub:
 	  $(RTL_PKG) src/rtl/alu.sv src/tb/unit/tb_alu.sv -o tb_alu >/dev/null
 	./build/unit_alu_stub/tb_alu
 
-unit-%:
+$(addprefix unit-,$(UNIT_TESTS)): unit-%:
 	@mkdir -p build/unit_$*
 	verilator $(VL_SIM) -DTARGET_ASIC=1 $(UNIT_DEF_$*) --top-module tb_$* -Mdir build/unit_$* \
 	  $(RTL_PKG) $(or $(UNIT_SRC_$*),src/rtl/$*.sv) src/tb/unit/tb_$*.sv -o tb_$* >/dev/null

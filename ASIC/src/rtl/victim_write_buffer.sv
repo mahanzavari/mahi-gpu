@@ -97,6 +97,15 @@ module victim_write_buffer #(
         end
     end
 
+`ifndef SYNTHESIS
+    // A push while full is dropped by the logic below -> lost dirty data.
+    // Producers must check push_ready in the cycle they *issue* the push.
+    always @(posedge clk) begin
+        if (!reset && push_valid && !push_ready)
+            $error("[%0t] VWB: push of addr %0h dropped while buffer full (lost writeback)", $time, push_addr);
+    end
+`endif
+
     typedef enum logic [1:0] { IDLE, DRAINING } state_t;
     state_t state;
 
@@ -118,6 +127,14 @@ module victim_write_buffer #(
             if (push_valid || probe_valid) idle_counter <= 0;
             else if (idle_counter != 5'h1F) idle_counter <= idle_counter + 1;
 
+`ifdef MEM_TRACE
+            if (push_valid) $display("[%0t] [VWB-PUSH] addr=%0d ready=%0d merge=%0d(idx %0d) free=%0d(idx %0d) dirty=%b data=%h state=%0d drain_idx=%0d active=%0d",
+                $time, push_addr, push_ready, merge_found, merge_idx, free_found, free_idx, push_sector_dirty, push_data, state, active_drain_idx, active_drain_valid);
+            if (probe_pop) $display("[%0t] [VWB-POP] addr=%0d", $time, pop_addr);
+            if (state == IDLE && mem_write_valid == 0 && drain_pending && (flush_en || count >= DEPTH/2 || idle_counter == 5'h1F))
+                $display("[%0t] [VWB-DRAIN-START] idx=%0d addr=%0d strobe=%b", $time, drain_idx, addr[drain_idx], dirty[drain_idx]);
+            if (state == DRAINING && mem_write_ready) $display("[%0t] [VWB-DRAIN-DONE] idx=%0d addr=%0d active_valid=%0d", $time, active_drain_idx, addr[active_drain_idx], active_drain_valid);
+`endif
             if (push_valid && push_ready) begin
                 if (merge_found) begin
                     logic [BLOCK_BITS-1:0] merged_data;

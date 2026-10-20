@@ -95,6 +95,11 @@ module l2_cache #(
     reg [BLOCK_BITS-1:0] vwb_push_data;
     reg [SECTORS-1:0]    vwb_push_sector_dirty;
     wire                 vwb_push_ready;
+    // push_ready reflects entries *already counted*; a push issued last cycle
+    // (vwb_push_valid still high) has not been counted yet. Deciding to push
+    // based on push_ready alone let back-to-back pushes overflow the buffer,
+    // where the VWB silently drops the line (lost dirty data).
+    wire                 vwb_can_push = vwb_push_ready && !vwb_push_valid;
     wire                 vwb_empty;
 
     wire                 vwb_probe_hit;
@@ -212,7 +217,7 @@ module l2_cache #(
                         endcase
                         state <= IDLE;
                     end else if (vwb_probe_hit) begin
-                        if (valid_array[req_index][victim_way] && |sector_dirty[req_index][victim_way] && !vwb_push_ready) begin
+                        if (valid_array[req_index][victim_way] && |sector_dirty[req_index][victim_way] && !vwb_can_push) begin
                             // Stall
                         end else begin
                             if (valid_array[req_index][victim_way] && |sector_dirty[req_index][victim_way]) begin
@@ -248,7 +253,7 @@ module l2_cache #(
                             state <= IDLE;
                         end
                     end else begin
-                        if (valid_array[req_index][victim_way] && |sector_dirty[req_index][victim_way] && !vwb_push_ready) begin
+                        if (valid_array[req_index][victim_way] && |sector_dirty[req_index][victim_way] && !vwb_can_push) begin
                             // Stall
                         end else begin
                             if (valid_array[req_index][victim_way] && |sector_dirty[req_index][victim_way]) begin
@@ -298,7 +303,7 @@ module l2_cache #(
                 FLUSH_SCAN: begin
                     if (!flush_en) state <= IDLE;
                     else if (valid_array[flush_set][flush_way_iter] && |sector_dirty[flush_set][flush_way_iter]) begin
-                        if (vwb_push_ready) begin
+                        if (vwb_can_push) begin
                             vwb_push_valid <= 1;
                             vwb_push_addr <= {tag_array[flush_set][flush_way_iter], flush_set};
                             vwb_push_data <= data_array[flush_set][flush_way_iter];
