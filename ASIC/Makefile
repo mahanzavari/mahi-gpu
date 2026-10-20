@@ -42,7 +42,14 @@ RTL_SOURCES := $(RTL_PKG) \
 
 # Verilator flags shared by all simulations. Width/pin warnings in the RTL are
 # baselined (see LINT_WAIVE); simulation builds just don't fail on them.
-VL_SIM  := --binary --timing -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING
+VL_SIM  := --binary --timing --assert -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING
+
+# SVA checkers (bound, no RTL edits). Checkers + per-module bind files.
+SVA_DIR   := src/rtl/sva
+SVA_CHK   := $(SVA_DIR)/core_sva.sv $(SVA_DIR)/misc_sva.sv
+SVA_BINDS := $(addprefix $(SVA_DIR)/,bind_core.sv bind_pc.sv bind_scheduler.sv bind_lsu.sv \
+             bind_fetcher.sv bind_victim_write_buffer.sv)
+SVA_ALL   := $(SVA_CHK) $(SVA_BINDS)
 
 # Lint gate: -Wall, with the 10 warning categories present in the baseline
 # waived. Any NEW category (LATCH, UNDRIVEN, MULTIDRIVEN, COMBDLY, ...) fails.
@@ -75,6 +82,8 @@ UNIT_SRC_fp32_fma := src/rtl/fp32_fma.sv
 UNIT_SRC_decoder := src/rtl/decoder.sv
 UNIT_SRC_l2_cache := src/rtl/victim_write_buffer.sv src/rtl/l2_cache.sv
 UNIT_SRC_dcache := src/rtl/dcache.sv
+UNIT_SVA_pc := $(SVA_DIR)/bind_pc.sv
+UNIT_SVA_l2_cache := $(SVA_DIR)/bind_victim_write_buffer.sv
 
 unit: $(addprefix unit-,$(UNIT_TESTS)) unit-alu-stub
 
@@ -88,7 +97,7 @@ unit-alu-stub:
 $(addprefix unit-,$(UNIT_TESTS)): unit-%:
 	@mkdir -p build/unit_$*
 	verilator $(VL_SIM) -DTARGET_ASIC=1 $(UNIT_DEF_$*) --top-module tb_$* -Mdir build/unit_$* \
-	  $(RTL_PKG) $(or $(UNIT_SRC_$*),src/rtl/$*.sv) src/tb/unit/tb_$*.sv -o tb_$* >/dev/null
+	  $(RTL_PKG) $(or $(UNIT_SRC_$*),src/rtl/$*.sv) $(SVA_CHK) $(UNIT_SVA_$*) src/tb/unit/tb_$*.sv -o tb_$* >/dev/null
 	./build/unit_$*/tb_$*
 
 # --- System tests -----------------------------------------------------------
@@ -97,7 +106,7 @@ verify-asic:
 	mkdir -p build/verilator
 	verilator $(VL_SIM) -DTARGET_ASIC=1 \
 	  --top-module tb_asic_call_ret_branch -Mdir build/verilator \
-	  $(RTL_SOURCES) $(VERIF_TB) -o verify_asic >/dev/null
+	  $(RTL_SOURCES) $(SVA_ALL) $(VERIF_TB) -o verify_asic >/dev/null
 	./build/verilator/verify_asic
 
 # 2-core / 32-thread 5x5 matmul (CALL/RET, divergence, LDR/STR, DIV). Needs
@@ -106,7 +115,7 @@ verify-asic:
 verify-matmul:
 	mkdir -p build/matmul
 	verilator $(VL_SIM) -DUSE_COMB_DIV=1 --top-module tb_matmul -Mdir build/matmul \
-	  $(RTL_SOURCES) $(TB_MATMUL) -o matmul >/dev/null
+	  $(RTL_SOURCES) $(SVA_ALL) $(TB_MATMUL) -o matmul >/dev/null
 	./build/matmul/matmul | tee build/matmul/run.log | grep -E "FAIL|PASSED|ERROR"
 	@grep -q "TESTS PASSED" build/matmul/run.log
 
@@ -115,7 +124,7 @@ verify-asic-trace:
 	mkdir -p build/verilator_trace
 	verilator $(VL_SIM) -DTARGET_ASIC=1 -DMEM_TRACE=1 \
 	  --top-module tb_asic_call_ret_branch -Mdir build/verilator_trace \
-	  $(RTL_SOURCES) $(VERIF_TB) -o verify_asic_trace >/dev/null
+	  $(RTL_SOURCES) $(SVA_ALL) $(VERIF_TB) -o verify_asic_trace >/dev/null
 	./build/verilator_trace/verify_asic_trace
 
 # --- iverilog run of tb_matmul (legacy; times out under iverilog even though it
