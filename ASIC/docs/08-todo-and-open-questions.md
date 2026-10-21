@@ -9,7 +9,7 @@
 | P1 | Grow memory beyond 512+512 words (4 KB / 16 KB macros need OpenRAM to generate them) and re-validate programs > 512 words | [L15](04-limitations.md#l15) |
 | P1 | Multi-corner SRAM liberty (SS/FF) before timing sign-off | [L17](04-limitations.md#l17) |
 | P0 | Re-run synthesis/PnR on current RTL + memory; complete the flow (DRC, LVS, final metrics) | [07](07-physical-flow.md); done when `final/metrics.json` exists and LVS is clean |
-| P1 | **Phase 3: gate-level simulation** of post-synthesis and post-route netlist (+SDF) running the random programs; RTL↔netlist equivalence (yosys `equiv`); STA gates | catches synthesis-only divergence; reuse `tb_random.sv` + `scripts/rand_regress.py` |
+| P1 | **Phase 3 remainder.** Done: zero-delay GLS of the post-synthesis netlist (`make gls`, 200/200). Open: post-route netlist (+SDF) GLS, 4-state/X simulation (iverilog is too slow at 175k cells — consider a smaller kernel or Verilator `--x-initial` seeds), RTL↔netlist equivalence (yosys `equiv`), STA gates | catches synthesis-only divergence; reuse `tb_random.sv` + `scripts/rand_regress.py` |
 | P1 | Decide on reconvergence ([L1](04-limitations.md#l1)): implement join-point reconvergence **or** document `SYNC` as warp-uniform-only in the programmer's guide | flip `limits.py` case L1 when fixed |
 | P1 | Expose faults ([L12](04-limitations.md#l12)): connect `exception_*` through `gpu` to a status register at `0x08` | silent data loss today |
 | P1 | Port fixes B2–B4 to `src/rtl` and add the SVA/tests there, or retire `src/rtl` ([L10](04-limitations.md#l10)) | |

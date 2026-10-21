@@ -14,6 +14,7 @@
 | 7 | `make rand-quick` | `test_model: PASSED`, `40 seeds (lat<= 6): PASS=40` | 06 |
 | 7b | `make top-quick` | `24 seeds (wb gap 0): PASS=24`, `16 seeds (wb gap 3): PASS=16` | 06 |
 | 7c | `make top-macro` | `16 seeds (wb gap 0): PASS=16` (needs the pre-built OpenRAM macro) | 06 |
+| 7d | `make gls` | `24 seeds (wb gap 0): PASS=24` (needs a synthesized netlist under `flow/runs/`; slow build, not part of `make verify`) | 06 |
 | 8 | `make rand N=300 LAT=10` | `300 seeds (lat<= 10): PASS=300` | 06 |
 | 9 | `make limits` | 6 cases (L1, L5, L6, L8, L12, L14), all `PASS (limitation present)` — a FAIL means a limitation changed | 04 |
 | 13 | `make datasheet` | builds `docs/datasheet/mahi-gpu-datasheet.pdf` (21 pages) with no LaTeX errors | datasheet |

@@ -53,7 +53,7 @@
 **`DIV`/`MOD` return 0 unless built with `USE_COMB_DIV`** (`alu.sv:78-95`; comment: "division stubbed or delegated to
 software" for area/timing). `rt==0` still raises the fault flag. Kernels needing integer division (e.g. `matmul`) must be
 simulated with `-DUSE_COMB_DIV=1` (`make verify-matmul` does). Not part of the synthesized default.
-Check: `make unit-alu` (with) and `make unit-alu-stub` (without) assert both behaviours.
+Check: `make unit-alu` (with) and `make unit-alu-stub` (without) assert both behaviours. Gate-level confirmation: the synthesized netlist returns 0 for DIV/MOD (`make gls` needs `MAHI_NO_DIV=1` in the golden model; without it 28 of the first 40 seeds mismatch).
 
 ## L3
 **RESOLVED — `gpu_asic_top` now has memory.** It used to tie off every memory port (no program could be loaded; synthesis kept

@@ -70,7 +70,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-macro convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -167,6 +167,29 @@ top-macro:
 	  --top-module tb_asic_top -Mdir build/top_macro $(TOP_SOURCES) $(SVA_ALL) $(TOP_SVA) build/top_macro/openram_quiet.v \
 	  src/tb/top/tb_asic_top.sv -o top_macro_tb >/dev/null
 	python3 scripts/top_regress.py --bin build/top_macro/top_macro_tb --seeds 0 16 --gap 0 --work build/top_macro/work
+
+# --- Gate-level simulation (zero delay) of the synthesized netlist -----------------
+#   make gls [GLS_NETLIST=path/to/gpu_asic_top.nl.v]    (~15 min Verilator build, ~3 GB RAM)
+# Cell models are generated from the liberty file (scripts/gen_cell_models.py; Verilator cannot read
+# the PDK's UDP models and the generator is truth-table-checked against them). The SRAM is the real
+# OpenRAM model. The golden model runs with MAHI_NO_DIV=1: the synthesized ALU stubs DIV/MOD to 0 (L2).
+# Flops start random (+verilator+rand+reset+2) so an unreset flop shows up as a mismatch.
+GLS_RUN     ?= $(lastword $(sort $(wildcard flow/runs/RUN_*/06-yosys-synthesis/gpu_asic_top.nl.v)))
+GLS_NETLIST ?= $(GLS_RUN)
+GLS_LIB     ?= $(firstword $(wildcard $(HOME)/.ciel/ciel/sky130/versions/*/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib))
+gls-build:
+	@test -f "$(GLS_NETLIST)" || { echo "no synthesized netlist (set GLS_NETLIST)"; exit 1; }
+	mkdir -p build/gls build/top_macro
+	sed 's/parameter VERBOSE = 1/parameter VERBOSE = 0/; 1i `timescale 1ns/1ps' $(SRAM_V) > build/top_macro/openram_quiet.v
+	python3 scripts/gen_cell_models.py $(GLS_LIB) $(GLS_NETLIST) build/gls/cells_func.v
+	cp $(GLS_NETLIST) build/gls/netlist.v
+	verilator --binary --timing -Wno-fatal -Wno-lint -Wno-STMTDLY -Wno-INITIALDLY -Wno-COMBDLY -Wno-BLKSEQ \
+	  --x-initial unique --x-assign unique --top-module tb_asic_top -Mdir build/gls/obj \
+	  build/gls/cells_func.v build/gls/netlist.v build/top_macro/openram_quiet.v src/tb/top/tb_asic_top.sv -o gls_tb >/dev/null
+
+gls: gls-build
+	MAHI_NO_DIV=1 python3 scripts/top_regress.py --bin build/gls/obj/gls_tb --seeds 0 24 --gap 0 --work build/gls/work \
+	  --plus +verilator+rand+reset+2 +verilator+seed+1{seed}
 
 # --- Documented-limitation characterization + docs consistency -------------------
 # `limits` passes while each limitation in docs/04-limitations.md still exists; a FAIL means the design changed

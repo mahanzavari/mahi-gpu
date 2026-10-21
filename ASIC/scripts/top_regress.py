@@ -32,7 +32,7 @@ def run_seed(a, seed):
     except Fault as e:
         return seed, 'GENFAULT', str(e)
     cmd = [a.bin, '+verilator+quiet', f'+prog={d}/p1.hex', f'+dmem={d}/d1.hex', f'+out={d}/o1.hex',
-           f'+prog2={d}/p2.hex', f'+dmem2={d}/d2.hex', f'+out2={d}/o2.hex', f'+gap={a.gap}', '+maxcyc=60000']
+           f'+prog2={d}/p2.hex', f'+dmem2={d}/d2.hex', f'+out2={d}/o2.hex', f'+gap={a.gap}', '+maxcyc=60000'] + [x.replace('{seed}', str(seed)) for x in a.plus]
     try:
         rc, log = bounded_run(cmd, a.timeout)
     except subprocess.TimeoutExpired:
@@ -54,6 +54,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bin', required=True); ap.add_argument('--seeds', type=int, nargs=2, default=[0, 20])
     ap.add_argument('--gap', type=int, default=0); ap.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
+    ap.add_argument('--plus', nargs='*', default=[], help='extra simulator plusargs; {seed} is replaced per seed')
     ap.add_argument('--work', default='build/top/work'); ap.add_argument('--timeout', type=int, default=300)
     a = ap.parse_args()
     shutil.rmtree(a.work, ignore_errors=True); os.makedirs(a.work)
