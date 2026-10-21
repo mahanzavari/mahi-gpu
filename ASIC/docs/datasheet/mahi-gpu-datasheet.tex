@@ -1,9 +1,8 @@
 % =============================================================================
 % mahi-gpu (ASIC) -- Datasheet and Architecture Reference Manual
 % Every number in this document is taken from the RTL / reports of repository
-% commit dadec7f (see Appendix B for provenance).  Build:  make datasheet
-% NOTE: the 'bytefield' package is not installed on the build machine, so the
-% instruction bit-field diagrams use a small TikZ macro (\bitfield) instead.
+% commit dadec7f (see Appendix B for provenance). Build: make datasheet
+% Uses the standard 'bytefield' package for instruction layouts.
 % =============================================================================
 \documentclass[10pt,a4paper]{report}
 \usepackage[T1]{fontenc}
@@ -20,6 +19,7 @@
 \usepackage{fancyhdr}
 \usepackage{titlesec}
 \usepackage[skins]{tcolorbox}
+\usepackage{bytefield}
 \usepackage[colorlinks=true,linkcolor=navy,urlcolor=navy,citecolor=navy]{hyperref}
 
 % ---------------------------------------------------------------- colours
@@ -63,20 +63,11 @@
   ATOM_ADD,ATOM_CAS,CMP,BRnzp,BRn,BRz,BRp,BRnz,BRnp,BRzp,CALL,RET_FN,SYNC,EXIT,FADD,FSUB,FMUL,FMA,NOP}}
 \lstdefinestyle{rtl}{basicstyle=\ttfamily\footnotesize,frame=single,framerule=0.3pt,rulecolor=\color{steel},backgroundcolor=\color{rowgray},columns=fullflexible}
 
-% Bit-field diagram: \bitfield{ width/hi/lo/label/fillcolour , ... }  (MSB first, 32 bits total)
-\newcommand{\bitfield}[1]{%
- \par\smallskip\noindent\begin{tikzpicture}[x=0.455cm,y=0.78cm]
-  \def\bfx{0}
-  \foreach \bw/\bhi/\blo/\blab/\bcol in {#1} {
-     \pgfmathparse{\bfx+\bw}\xdef\bfxn{\pgfmathresult}
-     \draw[fill=\bcol!22,draw=navy,line width=0.5pt] (\bfx,0) rectangle (\bfxn,1);
-     \node[font=\tiny\sffamily,text=navy,anchor=south west,inner sep=1pt] at (\bfx,1) {\bhi};
-     \ifnum\bw>1\node[font=\tiny\sffamily,text=navy,anchor=south east,inner sep=1pt] at (\bfxn,1) {\blo};\fi
-     \node[font=\scriptsize\sffamily,align=center] at ({(\bfx+\bfxn)/2},0.5) {\blab};
-     \xdef\bfx{\bfxn}
-  }
- \end{tikzpicture}\par\smallskip}
-
+% Custom colored bitbox helper for bytefield: \colorbitbox[color]{width}{text}
+% Native bytefield background color fill (no \rule, zero bleeding)
+\newcommand{\colorbitbox}[3][white]{%
+  \bitbox{#2}[bgcolor=#1!22]{\sffamily\scriptsize #3}%
+}
 \begin{document}
 \pagenumbering{roman}
 % =============================================================================
@@ -441,16 +432,55 @@ L2 hit/miss events read zero (L4), and the PMU registers are not reachable from 
 % =============================================================================
 \section{Instruction formats}
 All instructions are 32 bits. The opcode occupies bits [31:26].
+
 \subsection*{R-type (register--register)}
-\bitfield{6/31/26/opcode/steel, 5/25/21/rd/navy, 5/20/16/rs/navy, 5/15/11/rt/navy, 11/10/0/unused (0)/gray}
+\par\smallskip\noindent
+\begin{bytefield}[bitwidth=0.031\linewidth,bitheight=2.2em,endianness=big]{32}
+  \bitheader{31,26,25,21,20,16,15,11,10,0} \\
+  \colorbitbox[steel]{6}{opcode [31:26]} &
+  \colorbitbox[navy]{5}{rd [25:21]} &
+  \colorbitbox[navy]{5}{rs [20:16]} &
+  \colorbitbox[navy]{5}{rt [15:11]} &
+  \colorbitbox[gray]{11}{unused (0) [10:0]}
+\end{bytefield}
+\par\medskip
+
 \subsection*{I-type (immediate, memory)}
-\bitfield{6/31/26/opcode/steel, 5/25/21/rd/navy, 5/20/16/rs/navy, 16/15/0/imm16 (sign-extended)/orange}
+\par\smallskip\noindent
+\begin{bytefield}[bitwidth=0.031\linewidth,bitheight=2.2em,endianness=big]{32}
+  \bitheader{31,26,25,21,20,16,15,0} \\
+  \colorbitbox[steel]{6}{opcode [31:26]} &
+  \colorbitbox[navy]{5}{rd [25:21]} &
+  \colorbitbox[navy]{5}{rs [20:16]} &
+  \colorbitbox[amber]{16}{imm16 (sign-extended) [15:0]}
+\end{bytefield}
+\par\medskip
+
 \subsection*{Branch type (\ins{BRnzp}, \ins{CALL})}
-\bitfield{6/31/26/opcode (1)/steel, 3/25/23/nzp/purple, 7/22/16/unused/gray, 16/15/0/absolute target PC/orange}
+\par\smallskip\noindent
+\begin{bytefield}[bitwidth=0.031\linewidth,bitheight=2.2em,endianness=big]{32}
+  \bitheader{31,26,25,23,22,16,15,0} \\
+  \colorbitbox[steel]{6}{opcode (1) [31:26]} &
+  \colorbitbox[steel]{3}{nzp [25:23]} &
+  \colorbitbox[gray]{7}{unused [22:16]} &
+  \colorbitbox[amber]{16}{absolute target PC [15:0]}
+\end{bytefield}
+\par\smallskip
 \ins{CALL} uses opcode 13 with bits [25:16] unused. \ins{RET_FN}, \ins{EXIT}, \ins{SYNC} and \ins{NOP} carry only the opcode.
+\par\medskip
+
 \subsection*{Load-upper-immediate (\ins{LUI})}
-\bitfield{6/31/26/opcode (29)/steel, 5/25/21/rd/navy, 20/20/1/imm20/orange, 1/0/0/--/gray}
+\par\smallskip\noindent
+\begin{bytefield}[bitwidth=0.031\linewidth,bitheight=2.2em,endianness=big]{32}
+  \bitheader{31,26,25,21,20,1,0} \\
+  \colorbitbox[steel]{6}{opcode (29) [31:26]} &
+  \colorbitbox[navy]{5}{rd [25:21]} &
+  \colorbitbox[amber]{20}{imm20 [20:1]} &
+  \colorbitbox[gray]{1}{-- [0]}
+\end{bytefield}
+\par\smallskip
 \texttt{rd = imm20 << 12}.
+\par\medskip
 
 \begin{notebox}{Operand-slot conventions}
 For \ins{STR} and \ins{STSH} the register holding the \emph{value to store} is encoded in the \texttt{rd} field and the address register in \texttt{rs}
@@ -554,7 +584,7 @@ Opcodes 37--63 are reserved and decode as inert instructions.
 The following program is the instruction sequence of a branch/call test; the encodings were generated by the project's assembler functions
 (\sig{scripts/isa.py}) and executed on the RTL.
 \begin{lstlisting}[style=asm]
- 0:  24200007  CONST R1, 7
+ 0:  24200007  CONST R1, 7 
  1:  145f0800  MUL   R2, R31, R1      ; R2 = threadIdx * 7
  2:  08020800  CMP   R2, R1           ; N/Z/P = R2 <,==,> R1 (unsigned)
  3:  04800005  BRp   5                ; skip the call when R2 > R1
