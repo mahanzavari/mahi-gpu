@@ -7,6 +7,11 @@
 #   make unit-pc            -> a single unit test (unit-<name> for tb_<name>.sv)
 #   make verify-asic        -> ASIC-profile system test (NZP branch + CALL/RET)
 #   make verify-matmul      -> 2-core 5x5 matmul system test
+#   make limits             -> characterization tests for docs/04-limitations.md
+#   make datasheet          -> docs/datasheet/mahi-gpu-datasheet.pdf (LaTeX)
+#   make docs-check         -> docs consistency (tables, citations, links, static facts)
+#   make rand N=200 LAT=6   -> constrained-random programs vs. Python golden model
+#                              (scripts/{isa,gen,rand_regress}.py; failures kept in build/rand/fail)
 #   make verify-asic-trace  -> same, with MEM_TRACE logging
 #   make sim [PROFILE=asic|fpga]  -> iverilog run of tb_matmul
 #   make convert-asic       -> sv2v Verilog for LibreLane / Yosys
@@ -62,7 +67,7 @@ UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
         verify-matmul unit-alu-stub convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
-verify: lint unit verify-asic verify-matmul
+verify: lint unit verify-asic verify-matmul rand-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
 
 # --- Lint -------------------------------------------------------------------
@@ -118,6 +123,40 @@ verify-matmul:
 	  $(RTL_SOURCES) $(SVA_ALL) $(TB_MATMUL) -o matmul >/dev/null
 	./build/matmul/matmul | tee build/matmul/run.log | grep -E "FAIL|PASSED|ERROR"
 	@grep -q "TESTS PASSED" build/matmul/run.log
+
+# --- Constrained-random regression vs. the Python golden model ---------------
+#   make rand-build ; make rand N=200 LAT=6          (seeds 0..N-1)
+RAND_SEEDS ?= 0
+N ?= 50
+LAT ?= 0
+rand-build:
+	mkdir -p build/rand
+	verilator $(VL_SIM) -DTARGET_ASIC=1 -DUSE_COMB_DIV=1 -DSYNTHESIS=1 --top-module tb_random -Mdir build/rand \
+	  $(RTL_SOURCES) $(SVA_ALL) src/tb/random/tb_random.sv -o rand_tb >/dev/null
+
+rand-quick: rand-build
+	python3 scripts/test_model.py
+	python3 scripts/rand_regress.py --bin build/rand/rand_tb --seeds 0 40 --lat 6
+
+# --- Documented-limitation characterization + docs consistency -------------------
+# `limits` passes while each limitation in docs/04-limitations.md still exists; a FAIL means the design changed
+# (update the docs). `docs-check` verifies generated tables, citations, links and static RTL facts.
+limits: rand-build
+	python3 scripts/limits.py --bin build/rand/rand_tb
+
+docs-check:
+	python3 scripts/docs_check.py
+
+# Datasheet PDF (LaTeX, pdflatex; TikZ-drawn bit fields because `bytefield` is not installed here).
+datasheet:
+	mkdir -p build/datasheet
+	cd docs/datasheet && pdflatex -interaction=nonstopmode -halt-on-error -output-directory=../../build/datasheet mahi-gpu-datasheet.tex >/dev/null
+	cd docs/datasheet && pdflatex -interaction=nonstopmode -halt-on-error -output-directory=../../build/datasheet mahi-gpu-datasheet.tex >/dev/null
+	cp build/datasheet/mahi-gpu-datasheet.pdf docs/datasheet/mahi-gpu-datasheet.pdf
+	@echo "datasheet: docs/datasheet/mahi-gpu-datasheet.pdf"
+
+rand: rand-build
+	python3 scripts/rand_regress.py --bin build/rand/rand_tb --seeds $(RAND_SEEDS) $$(($(RAND_SEEDS)+$(N))) --lat $(LAT)
 
 # Same test with MEM_TRACE (icache/L2/scheduler/dmem logging) for debugging.
 verify-asic-trace:

@@ -122,6 +122,8 @@ def check_static():
     has(f'{R}/scheduler.sv', r"localparam STACK_DEPTH = 4", why='L7')
     has(f'{R}/scheduler.sv', r"is_reconverge = ", why='L1'); has(f'{R}/scheduler.sv', r"barrier_count >= num_active_warps_comb", why='L1')
     has(f'{R}/gpu.sv', r"exception", want=False, why='L12 exceptions not exported')
+    has(f'{R}/lsu.sv', r"rs\[i\]\[ADDR_BITS-1:0\] \+ ext_addr_offset", why='L14 address truncation')
+    has(f'{R}/core.sv', r"MAX_MEM_ADDR\s*=\s*32'h0000_FFFF", why='L14')
     # fixes present in ASIC
     has(f'{R}/l2_cache.sv', r"vwb_can_push = vwb_push_ready && !vwb_push_valid", why='B4')
     has(f'{R}/core.sv', r"if_instruction_valid = if_instruction_valid_raw && \(if_fetched_pc == if_pc\)", why='B3')
@@ -170,9 +172,35 @@ def check_headers():
     stale = [fn for fn in sorted(os.listdir(DOCS)) if fn.endswith('.md') and (m := re.search(r'Verified against commit `(\w+)`', read(f'{DOCS}/{fn}'))) and m.group(1) != head]
     if stale: notes.append(f'INFO: pages verified against an older commit than HEAD ({head}): {", ".join(stale)}')
 
+def check_datasheet():
+    p = f'{DOCS}/datasheet/mahi-gpu-datasheet.tex'
+    if not os.path.isfile(p): err('datasheet .tex missing'); return
+    t = read(p)
+    pkg = read(f'{ASIC}/src/rtl/include/gpu_pkg.sv')
+    asic = pkg[pkg.index('`ifdef TARGET_ASIC'):pkg.index('`elsif TARGET_FPGA')]
+    def cfg(k): return int(re.search(rf'{k}\s*=\s*(\d+)', asic).group(1))
+    facts = {  # (description, value that must appear in the datasheet text)
+        'shared memory words': f"\\textbf{{{cfg('CFG_SHARED_MEM_SIZE')} words}}",
+        'warps/lanes': f"{cfg('CFG_NUM_WARPS')} warps",
+        'L2 lines': f"{cfg('CFG_L2_CACHE_LINES')} lines",
+        'VWB depth': f"{cfg('CFG_VWB_DEPTH')}-entry",
+    }
+    for what, needle in facts.items():
+        if needle not in t: err(f'datasheet: expected "{needle}" for {what} (gpu_pkg.sv changed?)')
+    # pin count from the module header of gpu_asic_top
+    top = read(f'{ASIC}/src/rtl/gpu_asic_top.sv'); hdr = top[:top.index(');')]
+    pins = 0
+    for m in re.finditer(r'(input|output)\s+(?:wire|reg)?\s*(?:\[(\d+):0\])?\s*\w+', hdr):
+        pins += int(m.group(2)) + 1 if m.group(2) else 1
+    if f'{pins} signal pins' not in t: err(f'datasheet: pin count {pins} not stated as "{pins} signal pins"')
+    nop = len(re.findall(r"=\s*6'd\d+", read(f'{ASIC}/src/rtl/decoder.sv').split('always_comb')[0]))
+    if f'{nop} opcodes defined' not in t: err(f'datasheet: opcode count {nop} not stated')
+    for cmd in re.findall(r'make (limits|docs-check|verify|datasheet)', t): pass
+    notes.append(f'datasheet cross-checked (pins={pins}, opcodes={nop})')
+
 if __name__ == '__main__':
     update = '--update' in sys.argv
-    check_blocks(update); check_citations(); check_static(); check_links(); check_headers()
+    check_blocks(update); check_citations(); check_static(); check_links(); check_datasheet(); check_headers()
     for n in notes: print('note:', n)
     if errors:
         print('\n'.join('FAIL: ' + e for e in errors)); print(f'docs-check: {len(errors)} problem(s)'); sys.exit(1)

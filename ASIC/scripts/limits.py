@@ -121,7 +121,17 @@ def case_L12(b):
         f'div0 done={d1} stores={m1[OUT:OUT+8]}, badaddr done={d2} stores={m2[OUT:OUT+8]}'
 
 
-CASES = {'L1': case_L1, 'L5': case_L5, 'L6': case_L6, 'L8': case_L8, 'L12': case_L12}
+def case_L14(b):
+    """A store to 0x4000+300 (beyond the 14-bit data address bus but below the 0xFFFF fault limit) is not
+    faulted: it aliases onto address 300."""
+    c = [enc_LUI(1, 0x00004), enc_I('CONST', 2, 0, 300), enc_R('ADD', 1, 1, 2),     # R1 = 0x4000 + 300
+         enc_I('CONST', 3, 0, 0x1234), enc_I('STR', 3, 1, 0), enc_EXIT()]
+    done, mem = run(b, c)
+    ok = done and mem[300] == 0x1234
+    return ok, 'store to 0x412C landed at 300 (14-bit alias, no fault)' if ok else f'done={done}, mem[300]={mem[300]:#x}'
+
+
+CASES = {'L1': case_L1, 'L5': case_L5, 'L6': case_L6, 'L8': case_L8, 'L12': case_L12, 'L14': case_L14}
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--bin', required=True); ap.add_argument('--only', default='')

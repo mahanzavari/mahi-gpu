@@ -16,3 +16,9 @@ logs/
 *.xlsx
 ASIC/flow/runs
 Errorflow.md
+# LaTeX build artefacts
+*.aux
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
