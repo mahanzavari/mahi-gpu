@@ -219,13 +219,12 @@ class Machine:
         out = {}
         gens = {t: self.thread(t, out) for t in range(self.n)}
         while gens:
-            waiting = []
+            waiting, finished = [], []
             for t, g in list(gens.items()):
                 try:
                     next(g); waiting.append(t)
                 except StopIteration:
-                    del gens[t]
-            if gens and len(waiting) != len(gens) + 0 or (waiting and len(out) > 0 and gens):
-                # some threads exited while others reached a barrier
-                if len(out) > 0: raise Fault('barrier reached by only a subset of threads')
+                    finished.append(t); del gens[t]
+            if waiting and finished:
+                raise Fault('barrier reached by only a subset of threads (others exited)')
         return [out[t] for t in range(self.n)]
