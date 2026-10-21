@@ -7,6 +7,7 @@
 #   make unit-pc            -> a single unit test (unit-<name> for tb_<name>.sv)
 #   make verify-asic        -> ASIC-profile system test (NZP branch + CALL/RET)
 #   make verify-matmul      -> 2-core 5x5 matmul system test
+#   make top-quick          -> chip-level (gpu_asic_top over Wishbone) random regression, 2 kernels/seed
 #   make limits             -> characterization tests for docs/04-limitations.md
 #   make datasheet          -> docs/datasheet/mahi-gpu-datasheet.pdf (LaTeX)
 #   make docs-check         -> docs consistency (tables, citations, links, static facts)
@@ -45,16 +46,20 @@ RTL_SOURCES := $(RTL_PKG) \
   src/rtl/controller.sv src/rtl/dcr.sv src/rtl/core_pmu.sv src/rtl/fp32_fma.sv \
   src/rtl/core.sv src/rtl/gpu.sv
 
+# Chip top (Wishbone front end + on-chip SRAM window); ASIC profile only.
+TOP_SOURCES := $(RTL_SOURCES) src/rtl/mahi_sram.sv src/rtl/gpu_mem_subsys.sv src/rtl/gpu_asic_top.sv
+
 # Verilator flags shared by all simulations. Width/pin warnings in the RTL are
 # baselined (see LINT_WAIVE); simulation builds just don't fail on them.
 VL_SIM  := --binary --timing --assert -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING
 
 # SVA checkers (bound, no RTL edits). Checkers + per-module bind files.
 SVA_DIR   := src/rtl/sva
-SVA_CHK   := $(SVA_DIR)/core_sva.sv $(SVA_DIR)/misc_sva.sv
+SVA_CHK   := $(SVA_DIR)/core_sva.sv $(SVA_DIR)/misc_sva.sv $(SVA_DIR)/top_sva.sv
 SVA_BINDS := $(addprefix $(SVA_DIR)/,bind_core.sv bind_pc.sv bind_scheduler.sv bind_lsu.sv \
              bind_fetcher.sv bind_victim_write_buffer.sv)
 SVA_ALL   := $(SVA_CHK) $(SVA_BINDS)
+TOP_SVA   := $(SVA_DIR)/bind_top.sv      # only valid where gpu_asic_top / gpu_mem_subsys exist
 
 # Lint gate: -Wall, with the 10 warning categories present in the baseline
 # waived. Any NEW category (LATCH, UNDRIVEN, MULTIDRIVEN, COMBDLY, ...) fails.
@@ -65,9 +70,9 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-macro convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
-verify: lint unit verify-asic verify-matmul rand-quick limits docs-check
+verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
 
 # --- Lint -------------------------------------------------------------------
@@ -76,7 +81,8 @@ lint:
 	  echo "lint gpu [$$d]"; \
 	  verilator --lint-only -Wall $(LINT_WAIVE) $$d --top-module gpu $(RTL_SOURCES) || exit 1; \
 	done
-	@echo "lint OK (sim/asic/fpga)"
+	verilator --lint-only -Wall $(LINT_WAIVE) -DTARGET_ASIC=1 --top-module gpu_asic_top $(TOP_SOURCES) || exit 1
+	@echo "lint OK (sim/asic/fpga + gpu_asic_top)"
 
 # --- Unit tests: src/tb/unit/tb_<name>.sv -> `make unit-<name>` ---------------
 # Each test lists its DUT sources in UNIT_SRC_<name> (default: rtl/<name>.sv).
@@ -137,6 +143,30 @@ rand-build:
 rand-quick: rand-build
 	python3 scripts/test_model.py
 	python3 scripts/rand_regress.py --bin build/rand/rand_tb --seeds 0 40 --lat 6
+
+# --- Chip level: gpu_asic_top driven only through its Wishbone pins -------------
+#   host loads PMEM/DMEM windows, starts, polls STATUS, reads DMEM back; then soft-resets
+#   and repeats with a different program. Same golden model as `rand`.
+top-build:
+	mkdir -p build/top
+	verilator $(VL_SIM) -DTARGET_ASIC=1 -DUSE_COMB_DIV=1 -DSYNTHESIS=1 --top-module tb_asic_top -Mdir build/top \
+	  $(TOP_SOURCES) $(SVA_ALL) $(TOP_SVA) src/tb/top/tb_asic_top.sv -o top_tb >/dev/null
+
+top-quick: top-build
+	python3 scripts/top_regress.py --bin build/top/top_tb --seeds 0 24 --gap 0
+	python3 scripts/top_regress.py --bin build/top/top_tb --seeds 24 40 --gap 3
+
+# Same chip test, but with the real OpenRAM macro model (3 ns read delay, negedge write)
+# instead of the behavioural array. Needs the pre-built macro (SRAM_MACRO_DIR).
+SRAM_MACRO_DIR ?= $(HOME)/Projects/sky130_sram_macros
+SRAM_V := $(SRAM_MACRO_DIR)/sky130_sram_2kbyte_1rw1r_32x512_8/sky130_sram_2kbyte_1rw1r_32x512_8.v
+top-macro:
+	mkdir -p build/top_macro
+	sed 's/parameter VERBOSE = 1/parameter VERBOSE = 0/; 1i `timescale 1ns/1ps' $(SRAM_V) > build/top_macro/openram_quiet.v
+	verilator $(VL_SIM) -Wno-STMTDLY -Wno-INITIALDLY -Wno-COMBDLY -DTARGET_ASIC=1 -DUSE_COMB_DIV=1 -DSYNTHESIS=1 -DMAHI_SRAM_MACRO=1 \
+	  --top-module tb_asic_top -Mdir build/top_macro $(TOP_SOURCES) $(SVA_ALL) $(TOP_SVA) build/top_macro/openram_quiet.v \
+	  src/tb/top/tb_asic_top.sv -o top_macro_tb >/dev/null
+	python3 scripts/top_regress.py --bin build/top_macro/top_macro_tb --seeds 0 16 --gap 0 --work build/top_macro/work
 
 # --- Documented-limitation characterization + docs consistency -------------------
 # `limits` passes while each limitation in docs/04-limitations.md still exists; a FAIL means the design changed

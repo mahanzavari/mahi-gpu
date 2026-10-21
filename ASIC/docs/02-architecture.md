@@ -49,8 +49,8 @@ flowchart LR
     l2 <--> vwb["victim write buffer (4)"]
     l2 --> d_ctrl["data controller"]
   end
-  pc_ctrl --> ext1["program memory (EXTERNAL - not present, see L3)"]
-  d_ctrl --> ext2["data memory (EXTERNAL - not present, see L3)"]
+  pc_ctrl --> ext1["PMEM SRAM 512 words (on chip, L15)"]
+  d_ctrl --> ext2["DMEM SRAM 512 words (on chip, L15)"]
 ```
 Evidence: instantiations in `gpu.sv` (L2 `unified_cache`, `program_memory_controller`, `data_memory_controller`,
 per-core `icache_inst`/`dcache_inst`) and `core.sv`.
@@ -91,19 +91,27 @@ back through the D-cache.
 
 ## Chip top: `gpu_asic_top` (`src/rtl/gpu_asic_top.sv`)
 Pins: `clk`, `reset`, Wishbone slave (`wb_cyc_i, wb_stb_i, wb_we_i, wb_sel_i[3:0], wb_adr_i[31:0], wb_dat_i[31:0], wb_dat_o[31:0], wb_ack_o`), `gpu_done_pin`.
-Decode uses only `wb_adr_i[15:12]==0` and `wb_adr_i[7:0]` (upper bits ignored). One-cycle ack.
+`wb_adr_i[31:12]` selects the page (`0x30000` = CSR, `0x30001` = memory window); every access is acked (registered ack, one transaction at a time).
 
-| Offset | R/W | Meaning |
+| Address | R/W | Meaning |
 |---|---|---|
-| `0x00` | W | `[0]` → `gpu_start` (stays set until written 0); `[15:8]` → DCR 0x00 = `thread_count`; pulses a DCR write |
-| `0x00` | R | `{16'b0, thread_count, 7'b0, start}` |
-| `0x04` | R | `[0]` = `done` |
-| `0x1000…` | — | comment promises a 4 KB memory window; **not implemented** |
+| `0x3000_0000` | W | `[0]` start (level, held until written 0); `[1]` **soft reset** (8 cycles; clears DCR/scheduler/caches, keeps SRAM; other bits ignored); `[15:8]` → DCR 0x00 = `thread_count`. `start` reaches the GPU 2 cycles after the DCR write |
+| `0x3000_0000` | R | `{16'b0, thread_count, 7'b0, start}` |
+| `0x3000_0004` | R | `[0]` done, `[1]` busy, `[2]` gpu_oob (sticky), `[3]` host_blocked (sticky) |
+| `0x3000_0004` | W | write 1 to `[2]`/`[3]` to clear |
+| `0x3000_1000–17FF` | R/W | **PMEM**: 512 words = GPU instruction words 0..511 (byte strobes honoured) |
+| `0x3000_1800–1FFF` | R/W | **DMEM**: 512 words = GPU data words 0..511 |
+| other | R/W | acked; reads 0, writes ignored |
+
+Memory (`gpu_mem_subsys.sv`, `mahi_sram.sv`): two 512×32 dual-port (1RW+1R) SRAMs, `mahi_sram` = the OpenRAM macro
+`sky130_sram_2kbyte_1rw1r_32x512_8` when `MAHI_SRAM_MACRO` is defined (physical flow) or a behavioural array with the same
+1-cycle read contract (simulation). The GPU side speaks the 128-bit block protocol: a block read is 4 sequential word reads on
+port 1 (5 cycles), a block write is up to 4 word writes on port 0 (strobe per word, 4 cycles). The host owns the SRAM ports
+whenever it issues a request, and is refused (`0xBAD0_BAD0`) while `busy`. Limits: [L15](04-limitations.md#l15),
+[L16](04-limitations.md#l16). Host read latency: 3 cycles to ack; write: 2.
 
 `device_control_address` is only ever 0 from this wrapper, so **PMU configuration DCR addresses (0x01, 0x02, 0x10–0x13)
-are unreachable from the chip pins**; PMU snapshot outputs are left unconnected. The memory ports of `gpu` are
-tied: `*_read_ready = '1`, `*_read_data = '0`, `*_write_ready = '1` and address/valid outputs unconnected
-(`gpu_asic_top.sv:89-103`) → [L3](04-limitations.md#l3).
+are unreachable from the chip pins**; PMU snapshot outputs are left unconnected ([L13](04-limitations.md#l13)).
 
 ## Reset / run protocol
 1. Assert `reset`; release.

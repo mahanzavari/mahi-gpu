@@ -110,8 +110,10 @@ def has(path, rx, want=True, why=''):
 
 def check_static():
     R = 'src/rtl'
-    has(f'{R}/gpu_asic_top.sv', r"program_mem_read_data\('\{default: '0\}\)", why='L3 memory tied off')
-    has(f'{R}/gpu_asic_top.sv', r"data_mem_read_ready\('1\)", why='L3')
+    has(f'{R}/gpu_asic_top.sv', r"gpu_mem_subsys mem_inst", why='L3 resolved: memory attached')
+    has(f'{R}/gpu_asic_top.sv', r"\.program_mem_read_ready\(pm_rr\)", why='L3 resolved')
+    has(f'{R}/gpu_mem_subsys.sv', r"\|dm_ra\[13:7\]", why='L15 out-of-range data blocks')
+    has(f'{R}/gpu_asic_top.sv', r"rst_cnt\s*<=\s*4'd8", why='L16 soft reset')
     t = read(f'{ASIC}/{R}/gpu_asic_top.sv')
     assigns = set(re.findall(r'dcr_addr\s*<=\s*([^;]+);', t))
     if not assigns <= {"8'd0", "8'h00"}: err(f'static: gpu_asic_top dcr_addr assigned from {assigns} (L13 says always 0)')

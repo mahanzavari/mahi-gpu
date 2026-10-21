@@ -22,3 +22,6 @@ Errorflow.md
 *.out
 *.fls
 *.fdb_latexmk
+
+# fetched by ASIC/run_asic.sh (OpenRAM macro views)
+ASIC/flow/macros/

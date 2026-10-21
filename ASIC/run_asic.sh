@@ -14,6 +14,12 @@ BUILD_DIR="$REPO_ROOT/build/test"
 OUT_VERILOG="$BUILD_DIR/gpu_asic_converted.v"
 CONFIG_FILE="$SCRIPT_DIR/flow/config.yaml"
 
+# Pre-built OpenRAM sky130 macros (gds/lef/lib). Copied into flow/macros/ (gitignored) because the
+# dockerized flow only sees the design directory. Override with SRAM_MACRO_DIR=...
+SRAM_NAME="sky130_sram_2kbyte_1rw1r_32x512_8"
+SRAM_MACRO_DIR="${SRAM_MACRO_DIR:-$HOME/Projects/sky130_sram_macros}"
+MACRO_DST="$SCRIPT_DIR/flow/macros"
+
 # Colors for terminal output
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
@@ -77,14 +83,25 @@ if ! command -v yosys &> /dev/null; then
     exit 1
 fi
 
-mkdir -p "$BUILD_DIR"
+mkdir -p "$BUILD_DIR" "$MACRO_DST"
+
+for ext in gds lef; do
+    if [ ! -f "$MACRO_DST/$SRAM_NAME.$ext" ]; then
+        SRC="$SRAM_MACRO_DIR/$SRAM_NAME/$SRAM_NAME.$ext"
+        [ -f "$SRC" ] || { echo -e "${RED}[ERROR] missing $SRC (set SRAM_MACRO_DIR)${NC}"; exit 1; }
+        cp "$SRC" "$MACRO_DST/"
+    fi
+done
+if [ ! -f "$MACRO_DST/${SRAM_NAME}_TT_1p8V_25C.lib" ]; then
+    cp "$SRAM_MACRO_DIR/$SRAM_NAME/${SRAM_NAME}_TT_1p8V_25C.lib" "$MACRO_DST/"
+fi
 
 # ==============================================================================
 # 2. Step 1: SystemVerilog to Verilog (sv2v)
 # ==============================================================================
-echo -e "\n${YELLOW}>>> [1/3] Running sv2v conversion (Profile: TARGET_ASIC)...${NC}"
+echo -e "\n${YELLOW}>>> [1/3] Running sv2v conversion (Profile: TARGET_ASIC, SRAM macros)...${NC}"
 
-sv2v -DSYNTHESIS -DTARGET_ASIC=1 \
+sv2v -DSYNTHESIS -DTARGET_ASIC=1 -DMAHI_SRAM_MACRO=1 \
   -I "$INCLUDE_DIR" \
   "$INCLUDE_DIR/gpu_pkg.sv" \
   "$SRC_DIR"/*.sv \
@@ -98,6 +115,7 @@ echo -e "${GREEN}[PASS] Converted netlist created at:${NC} $OUT_VERILOG"
 echo -e "\n${YELLOW}>>> [2/3] Running fast Yosys synthesis & latch check...${NC}"
 
 yosys -q -p "
+  read_liberty -lib $MACRO_DST/${SRAM_NAME}_TT_1p8V_25C.lib;
   read_verilog $OUT_VERILOG;
   hierarchy -check -top gpu_asic_top;
   proc; opt; memory; opt; fsm; opt;

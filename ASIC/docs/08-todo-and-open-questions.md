@@ -5,7 +5,9 @@
 ## Backlog
 | Pri | Item | Why / done when |
 |---|---|---|
-| P0 | **Attach memory to `gpu_asic_top`** (SRAM macros or Wishbone-loadable program/data memory) and add a pin-level bring-up test | [L3](04-limitations.md#l3); done when a kernel runs through the Wishbone pins in simulation |
+| ~~P0~~ | ~~Attach memory to `gpu_asic_top`~~ — **done** (2×2 KB OpenRAM window, `make top-quick`) | [L3](04-limitations.md#l3) |
+| P1 | Grow memory beyond 512+512 words (4 KB / 16 KB macros need OpenRAM to generate them) and re-validate programs > 512 words | [L15](04-limitations.md#l15) |
+| P1 | Multi-corner SRAM liberty (SS/FF) before timing sign-off | [L17](04-limitations.md#l17) |
 | P0 | Re-run synthesis/PnR on current RTL + memory; complete the flow (DRC, LVS, final metrics) | [07](07-physical-flow.md); done when `final/metrics.json` exists and LVS is clean |
 | P1 | **Phase 3: gate-level simulation** of post-synthesis and post-route netlist (+SDF) running the random programs; RTL↔netlist equivalence (yosys `equiv`); STA gates | catches synthesis-only divergence; reuse `tb_random.sv` + `scripts/rand_regress.py` |
 | P1 | Decide on reconvergence ([L1](04-limitations.md#l1)): implement join-point reconvergence **or** document `SYNC` as warp-uniform-only in the programmer's guide | flip `limits.py` case L1 when fixed |

@@ -16,3 +16,29 @@ PL_TARGET_DENSITY_PCT: 40
 
 # Target PDK
 PDK: "sky130A"
+
+# --- On-chip memory: 2 x OpenRAM sky130_sram_2kbyte_1rw1r_32x512_8 (PMEM + DMEM windows) ---
+# Copied here by run_asic.sh. Only a TT lib exists, so every STA corner uses it (approximation:
+# macro timing is not re-characterised at SS/FF; see docs/07-physical-flow.md).
+MACROS:
+  sky130_sram_2kbyte_1rw1r_32x512_8:
+    gds:
+      - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8.gds"
+    lef:
+      - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8.lef"
+    vh:
+      - "dir::macro_stubs/sky130_sram_2kbyte_1rw1r_32x512_8.v"
+    lib:
+      "*":
+        - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8_TT_1p8V_25C.lib"
+    instances:
+      mem_inst.pmem.macro:
+        location: [80, 80]
+        orientation: N
+      mem_inst.dmem.macro:
+        location: [80, 600]
+        orientation: N
+
+PDN_MACRO_CONNECTIONS:
+  - "mem_inst.pmem.macro vccd1 vssd1 vccd1 vssd1"
+  - "mem_inst.dmem.macro vccd1 vssd1 vccd1 vssd1"

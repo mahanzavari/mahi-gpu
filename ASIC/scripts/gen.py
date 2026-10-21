@@ -28,7 +28,7 @@ Inter-thread features (kept race-free so a per-thread interpreter is exact):
     old value goes to the dead scratch register R26 and is never observed.
   * floating point FADD/FSUB/FMUL/FMA: checked bit-exactly against a port of fp32_fma.
 """
-import random
+import os, random
 from isa import *
 
 POOL = list(range(0, 18))
@@ -40,7 +40,9 @@ LOOPCNT = [18, 19]
 C1, C3, C127, C63, TMP, ZERO, BASE = 21, 22, 24, 25, 26, 27, 28
 C7, ATOMB = 20, 23
 ATOM_BASE = 128
-PRIV_BASE, PRIV_STRIDE, INPUT_WORDS = 256, 64, 128
+# GEN_STRIDE=32 shrinks the per-thread private region so 8 threads fit the 512-word on-chip DMEM
+# (gpu_asic_top); the default 64 needs 768 words and is for the block-protocol testbench.
+PRIV_BASE, PRIV_STRIDE, INPUT_WORDS = 256, int(os.environ.get('GEN_STRIDE', '64')), 128
 DUMP_WORDS = len(POOL)
 
 
@@ -118,6 +120,8 @@ class Gen:
             self.emit(enc_I('LDR', self.rd(), BASE, self.r.randrange(DUMP_WORDS, PRIV_STRIDE)))
         else:                                                                                # data-dependent private
             self.emit(enc_R('AND', TMP, self.rs(), C63))
+            if PRIV_STRIDE == 32: self.emit(enc_R('SHR', TMP, TMP, C1))                      # keep inside the 32-word region
+            else: assert PRIV_STRIDE == 64
             self.emit(enc_R('ADD', TMP, TMP, BASE))
             if self.r.random() < 0.5: self.emit(enc_I('STR', self.rs(), TMP, 0))
             else: self.emit(enc_I('LDR', self.rd(), TMP, 0))

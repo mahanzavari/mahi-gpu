@@ -9,11 +9,13 @@
 | Unit tests | `alu`(×2 configs), `decoder`, `pc`, `registers`, `fp32_fma`, `dcache`, `l2_cache`(+VWB) — self-checking, random + corner vectors | `src/tb/unit/tb_*.sv` | `make unit` / `make unit-<name>` |
 | System tests | `tb_asic_call_ret_branch` (NZP, nested CALL/RET, divergence, ASIC profile); `tb_matmul` (2 cores, 5×5, CALL/RET, DIV; **default profile + `USE_COMB_DIV`**) | `src/tb/ISA`, `src/tb/kernels` | `make verify-asic`, `make verify-matmul` |
 | SVA | bound checkers: issue/fetch PC match, no dropped instruction, stack-pointer discipline, NZP update, divergence-stack bound, LSU strobe, fetcher overlap, VWB no-drop/hold | `src/rtl/sva/*.sv` (+`bind_<module>.sv`) | enabled (`--assert`) in all unit/system/random builds |
+| Chip SVA | `memsub_sva` (host/GPU port exclusivity, ready/valid hold-and-release, no spontaneous ready) and `top_sva` (single-cycle ack, host never reaches SRAM while running/resetting), bound by `bind_top.sv`. Mutation check: three arbiter/blocking mutants each fire a distinct assertion | `src/rtl/sva/top_sva.sv`, `bind_top.sv` | runs inside `make top-quick` |
+| Chip level | `tb_asic_top.sv`: loads PMEM/DMEM over Wishbone, starts, polls, reads back, soft-resets and runs a second program; directed window/byte-strobe/blocked-access checks plus corner cases (zero byte-enable, aborted cycles, status W1C, start+soft-reset together, write during soft reset, hard reset mid-run); `top_regress.py` compares both runs with the golden model (`GEN_STRIDE=32`) | `src/tb/top/`, `scripts/top_regress.py` | `make top-quick`; `make top-macro` repeats it against the real OpenRAM model (3 ns read delay, negedge write) |
 | Golden model + random regression | Python ISA interpreter (`isa.py`, FP bit-exact), constrained-random generator (`gen.py`), runner (`rand_regress.py`), TB with random memory latency (`tb_random.sv`) | `scripts/`, `src/tb/random/` | `make rand N=200 LAT=6`, `make rand-quick` |
 | Limitation characterization | one program per documented limitation | `scripts/limits.py` | `make limits` |
 | Docs consistency | generated tables / citations / static patterns | `scripts/docs_check.py` | `make docs-check` |
 
-`make verify` = lint + unit + `verify-asic` + `verify-matmul` + `rand-quick` + `limits` + `docs-check` (several minutes, mostly Verilator compiles).
+`make verify` = lint + unit + `verify-asic` + `verify-matmul` + `rand-quick` + `top-quick` + `limits` + `docs-check` (several minutes, mostly Verilator compiles).
 
 ## What the random regression covers
 Integer ALU (incl. MAC, DIV/MOD, bit ops), CMP/BR with **divergent** control flow (if/else, loops with per-thread trip counts), nested CALL/RET (acyclic,
@@ -42,7 +44,7 @@ Faults injected into copies of the RTL; all of these are *killed* unless noted.
 
 ## Blind spots (what is *not* verified)
 Gate-level behaviour and synthesis equivalence; timing; `ATOM_CAS`; multi-core random; barriers after divergence ([L1](04-limitations.md#l1));
-fault reporting ([L12](04-limitations.md#l12)); AXI wrapper (`gpu_axi4_adaptor`, `axi4_adaptor` — not in the ASIC top); `gpu_asic_top` (no memory, [L3](04-limitations.md#l3));
+fault reporting ([L12](04-limitations.md#l12)); AXI wrapper (`gpu_axi4_adaptor`, `axi4_adaptor` — not in the ASIC top); `gpu_asic_top` Wishbone corner cases beyond the directed checks in `tb_asic_top.sv` (back-to-back masters, aborted cycles);
 PMU counters; programs larger than 4 K words; the FP model is a *port of the RTL* so arithmetic design errors are only caught by `tb_fp32_fma` (tolerance check).
 
 ## Gotchas (each cost real time)
