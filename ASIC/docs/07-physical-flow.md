@@ -102,6 +102,14 @@ Other effects measured: the gate-level netlist is correct (200-seed zero-delay G
 
 Next: set the clock for the SS corner (~50-52 ns), keep met4 straps away from the macro pins (macro halo / PDN settings), post-process the Magic GDS to one top cell (or run KLayout DRC on the KLayout GDS), provide macro SPICE for LVS, and decide how to treat OpenRAM macro DRC (waiver).
 
+## Die map (colour by block)
+`make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
+`docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
+from the routed DEF. The synthesized netlist is flat, so the block of each cell is **inferred**: flip-flops are seeded from the hierarchical net names Yosys kept, the other logic takes
+the majority label of its netlist neighbours, and cells added after synthesis (repair buffers, clock tree, diodes, taps) are grey tones. ALU/decoder logic has no registers to seed it and is
+absorbed by its neighbours. The committed figures are the mini-profile run `floor_1022_1610` (2.4 x 2.4 mm): register files ~21% of cell area, FP32 FMA units 8%, core pipeline 9%; timing-repair buffers
+are 21.5% of cell area (32k cells) and taps 5.4%.
+
 ## Not done (sign-off gaps)
 | Item | Status |
 |---|---|

@@ -84,7 +84,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -204,6 +204,15 @@ gls-build:
 gls: gls-build
 	MAHI_NO_DIV=1 python3 scripts/top_regress.py --bin $(B)/gls/obj/gls_tb --seeds 0 24 --gap 0 --work $(B)/gls/work \
 	  --plus +verilator+rand+reset+2 +verilator+seed+1{seed}
+
+# --- Die map: colour-by-block picture of a routed run (scripts/die_map.py) ----------------
+#   make die-map RUN=flow/runs/floor_1022_1610 NETLIST=flow/runs/mini_1022_1554/06-yosys-synthesis/gpu_asic_top.nl.v
+DIE_LEF   ?= $(firstword $(wildcard $(HOME)/.ciel/ciel/sky130/versions/*/sky130A/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef))
+DIE_DEF   ?= $(lastword $(wildcard $(RUN)/*detailedrouting/gpu_asic_top.def))
+die-map:
+	@test -n "$(RUN)" -a -n "$(NETLIST)" || { echo "usage: make die-map RUN=<run dir> NETLIST=<06-yosys-synthesis/...nl.v>"; exit 1; }
+	python3 scripts/die_map.py --def $(DIE_DEF) --netlist $(NETLIST) --lef $(DIE_LEF) flow/macros/sky130_sram_2kbyte_1rw1r_32x512_8.lef \
+	  --out docs/figures/die_map.png --regions-out docs/figures/die_regions.png --title "$(or $(TITLE),mahi-gpu die map)"
 
 # --- Documented-limitation characterization + docs consistency -------------------
 # `limits` passes while each limitation in docs/04-limitations.md still exists; a FAIL means the design changed
