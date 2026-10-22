@@ -89,6 +89,12 @@ Note: the I-cache goes directly to the program controller; **it does not pass th
 Atomics (`ATOM_ADD/CAS`) are serialised lane-by-lane in the LSU (`lsu.sv` `ATOMIC_*` states): read block, add, write
 back through the D-cache.
 
+## Mini profile (`-DTARGET_ASIC_MINI`, `make MINI=1 ...`)
+A half-size variant for physical bring-up on small machines (the full profile does not route in 16 GB): 2 lanes x 2 warps = 4 threads (`R30` = 4), shared memory 32 words,
+L1 8 lines, victim buffer 2; everything else (ISA, pipeline, L2, SRAM windows) is unchanged. It lives in `gpu_pkg.sv` as an overlay inside the ASIC block; the tables on this page describe the
+full profile. Test infrastructure follows it through `scripts/profile_cfg.py` (`MAHI_THREADS/LANES/SHARED`, exported by `make MINI=1`). Verified: lint, unit, 4,000 random programs, 40 chip-level seeds
+(`make MINI=1 rand-quick top-quick`); `verify-asic`/`verify-matmul`/`limits` are full-profile tests. Physical results: [07](07-physical-flow.md).
+
 ## Chip top: `gpu_asic_top` (`src/rtl/gpu_asic_top.sv`)
 Pins: `clk`, `reset`, Wishbone slave (`wb_cyc_i, wb_stb_i, wb_we_i, wb_sel_i[3:0], wb_adr_i[31:0], wb_dat_i[31:0], wb_dat_o[31:0], wb_ack_o`), `gpu_done_pin`.
 `wb_adr_i[31:12]` selects the page (`0x30000` = CSR, `0x30001` = memory window); every access is acked (registered ack, one transaction at a time).

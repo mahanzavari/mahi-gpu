@@ -21,9 +21,13 @@ def read(p): return open(p, encoding='utf-8', errors='replace').read()
 def err(m): errors.append(m)
 
 # ------------------------------------------------------------ generated blocks
+def full_profile_pkg(text):
+    """gpu_pkg.sv without the TARGET_ASIC_MINI overlay (the docs describe the full ASIC profile)."""
+    return re.sub(r'`ifdef TARGET_ASIC_MINI\n.*?`else\n(.*?)`endif\n', r'\1', text, flags=re.S)
+
 def profile_table():
     prof, vals, order = None, {'asic': {}, 'fpga': {}, 'sim': {}}, []
-    for line in read(f'{ASIC}/src/rtl/include/gpu_pkg.sv').splitlines():
+    for line in full_profile_pkg(read(f'{ASIC}/src/rtl/include/gpu_pkg.sv')).splitlines():
         s = line.strip()
         if s.startswith('`ifdef TARGET_ASIC'): prof = 'asic'
         elif s.startswith('`elsif TARGET_FPGA'): prof = 'fpga'
@@ -178,7 +182,7 @@ def check_datasheet():
     p = f'{DOCS}/datasheet/mahi-gpu-datasheet.tex'
     if not os.path.isfile(p): err('datasheet .tex missing'); return
     t = read(p)
-    pkg = read(f'{ASIC}/src/rtl/include/gpu_pkg.sv')
+    pkg = full_profile_pkg(read(f'{ASIC}/src/rtl/include/gpu_pkg.sv'))
     asic = pkg[pkg.index('`ifdef TARGET_ASIC'):pkg.index('`elsif TARGET_FPGA')]
     def cfg(k): return int(re.search(rf'{k}\s*=\s*(\d+)', asic).group(1))
     facts = {  # (description, value that must appear in the datasheet text)
