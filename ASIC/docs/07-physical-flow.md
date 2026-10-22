@@ -1,7 +1,8 @@
 # 07 — Physical flow (sv2v → Yosys → LibreLane/OpenROAD → GDS)
 
-> Verified against commit `dadec7f` (+ uncommitted docs), 2026-10-21. **Bottom line: the one existing run is stale, incomplete, and not representative.
-> Re-run after memory is attached ([L3](04-limitations.md#l3)) before quoting any number from this page.**
+> Verified against commit `1d42d45`, 2026-10-22. **Bottom line: with memory attached the design synthesizes, places, CTS-es and globally routes, but there is
+> still NO routed/DRC-clean layout, no GDS, no LVS and no final metrics.** The sections "The existing run" below describe the *old, memory-less* run
+> from 2026-10-19 and are kept only as history; the numbers that matter are in "Attempts since memory was attached".
 
 ## How to run
 ```bash
@@ -10,6 +11,10 @@ cd ASIC
 ./run_asic.sh -f         # ... through OpenROAD floorplan
 ./run_asic.sh -r         # ... through detailed routing
 ./run_asic.sh            # full flow
+./run_asic.sh -R         # resume from global routing in the newest run dir
+./run_asic.sh -D         # resume from detailed routing in the newest run dir
+./run_asic.sh -P RUN_DIR # re-run placement onward (new run dir) from RUN_DIR's pre-placement state
+./run_asic.sh -F RUN_DIR # re-run floorplan onward (e.g. new die) from RUN_DIR's synthesis
 ./run_asic.sh --clean    # delete build/ and flow/runs (destructive)
 ```
 `run.sh` is a byte-identical copy of `run_asic.sh`. Requirements: `sv2v`, `yosys` on PATH; LibreLane virtualenv at
@@ -59,6 +64,26 @@ Status of the run:
 `wb_dat_o`, `wb_ack_o`, `gpu_done_pin`. Yosys therefore keeps only logic that can influence those, and constant instruction data
 lets most of the datapath fold away (854 flops vs ≥ 16 k state bits for registers + caches). To confirm, count flops/hierarchy after
 attaching a memory model; or run `yosys … stat` before `opt` on `build/test/gpu_asic_converted.v`.
+
+## Attempts since memory was attached (2026-10-21/22)
+All runs use the netlist of the then-current RTL (`gpu_asic_top` + SRAM macros) and 40 ns clock. Evidence is in each run's logs under `flow/runs/` (git-ignored); the
+failed first global-routing log is kept in `flow/failed_logs/`.
+
+| Run | Design | Result |
+|---|---|---|
+| `RUN_2026-10-21_10-58-33` | 2 OpenRAM macros (PMEM/DMEM windows), die 2.5 mm; 175,640 instances, **31,818 flops** (was 854 before memory), 2.70 mm² | Timing repair after CTS took ~5 h (−9.2 ns setup at the slow corner, ~24k gates resized). Global routing with `GRT_ADJUSTMENT 0.3` ended with **71,864 overflow** after 50 extra iterations (~7 h). |
+| same run, resumed | `GRT_ADJUSTMENT 0.15` | Overflow 0 with 40 iterations, global route 4 min. 4,027 nets violate antenna rules; OpenROAD's GRT antenna repair crashes (`GRT-0183`, net34287) so it is disabled (`RUN_ANTENNA_REPAIR: false`). **Detailed routing was OOM-killed by the kernel twice** (11.0 and 11.1 GB resident on a 16 GB host), 8 vs ~17 threads made no difference. |
+| `RUN_2026-10-22_07-31-46` | 3 macros (L2 data array moved into SRAM, `l2_data_array.sv`); 151,502 instances, 24,269 flops, 1.80 mm² cells + 0.85 mm² macros | Timing repair converged quickly; global route overflow 280. Detailed routing: pass 0 **223,731 violations**, pass 1 **139,474**, ~35 min/pass, 11.07/11.34 GB; stopped by the user in pass 2. |
+
+**Violation breakdown (detailed routing log, same run):** met1 shorts 137,622 → 101,063 (61% → 72% of all violations), met2 shorts 35,155 → 18,483, met1 spacing 24,867 → 13,974;
+met4+met5 (the macro-pin layers) ~1% → 0.2%. So the SRAM macros are not the problem; it is local pin access in dense standard-cell regions (global routing layer usage was only 57% met1 / 66% met2).
+
+**Placement density:** `PL_TARGET_DENSITY_PCT` below ~44% had no effect on the 2.5 mm die. The placer reports "target density too low for the available free area" and raises it
+(0.40 → 0.44; 0.28 → 0.44). Cells (1.88 mm², of which 0.09 mm² are tap cells, plus 0.24 mm² virtual pin-density area) need that much of the ~4.3 mm² placeable area.
+Lowering density therefore needs a bigger die: the current config uses a 3.0 mm die (core 2.9 mm), where the placer honours 0.30. That run (`floor_*` run dir) was in progress when this page was written;
+its detailed-routing result is **not** recorded here.
+
+Other effects measured: the gate-level netlist is correct (200-seed zero-delay GLS, see [06](06-verification.md)); area barely changed by the L2 macro (−2%) but cells −14% and flops −24%.
 
 ## Not done (sign-off gaps)
 | Item | Status |

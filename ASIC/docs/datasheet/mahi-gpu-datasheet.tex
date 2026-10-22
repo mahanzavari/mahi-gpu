@@ -95,8 +95,8 @@
 \vfill
 \begin{statbox}{Status of this document}
 This manual describes the RTL \emph{as implemented}. It deliberately states what is \textbf{not} yet true of the chip:
-the top level has no program/data memory attached, the physical-design run on record is incomplete and was made on an
-almost-empty netlist, and barriers are only correct under warp-uniform control flow. See Chapter~\ref{ch:errata} (Errata)
+the top level now carries a 4\,KB SRAM window, but no routed, DRC-clean layout exists yet (detailed routing has not converged; see Chapter~\ref{ch:phys}),
+the physical numbers are preliminary, and barriers are only correct under warp-uniform control flow. See Chapter~\ref{ch:errata} (Errata)
 before relying on any number in Chapter~\ref{ch:phys}.
 \end{statbox}
 \end{titlepage}
@@ -139,8 +139,8 @@ Shared memory & \textbf{64 words} (256\,B), 4 banks $\times$ 16 words\\
 L1 I-cache / L1 D-cache & 16 lines each; 16-byte lines (4 words); I: direct-mapped, D: 2-way, write-through\\
 L2 cache & 64 lines (16 sets $\times$ 4 ways), 16-byte lines, 4 sectors/line with dirty bits, PLRU, write-back; 4-entry victim write buffer\\
 Host interface & 32-bit Wishbone slave, single-cycle ack; \textbf{107 signal pins} (excl.\ power)\\
-Synthesised logic area (pre-PnR) & 38\,657\,\textmu m\textsuperscript{2} / 3\,162 cells --- \textbf{not representative} (\S\ref{sec:flow})\\
-Die size (floorplan) & 2.5\,mm $\times$ 2.5\,mm (6.25\,mm\textsuperscript{2}), absolute sizing\\
+Synthesised logic (current RTL) & 151\,502 instances, 24\,269 flip-flops; 1.80\,mm\textsuperscript{2} cells + 0.85\,mm\textsuperscript{2} for three SRAM macros (\S\ref{sec:flow})\\
+Die size (floorplan) & 3.0\,mm $\times$ 3.0\,mm (9\,mm\textsuperscript{2}) in the current config; 2.5\,mm in the earlier runs\\
 \end{longtable}
 
 \section{Conventions}
@@ -164,20 +164,20 @@ The words \emph{limitation} and \emph{erratum} refer to the register in Chapter~
  \node[blk,below=1.0cm of disp,minimum width=3.6cm,minimum height=1.5cm] (core) {\textbf{core} (1)\\scheduler, 2 warps $\times$ 4 lanes\\LSU, shared memory, FPU};
  \node[blk,below left=1.0cm and 0.2cm of core,minimum width=2.4cm] (ic) {I-cache\\16 lines};
  \node[blk,below=1.0cm of core,minimum width=2.4cm] (dc) {D-cache (L1)\\2-way, write-through};
- \node[blk,below=0.7cm of dc,minimum width=3.0cm] (l2) {L2 cache\\4-way, write-back\\sector dirty bits};
+ \node[blk,below=0.7cm of dc,minimum width=3.0cm] (l2) {L2 cache\\4-way, write-back\\sector dirty bits\\data in SRAM macro};
  \node[blk,right=0.8cm of l2,minimum width=2.4cm] (vwb) {Victim write\\buffer (4)};
- \node[ext,below=0.8cm of ic,minimum width=3.0cm] (pm) {Program memory\\\textbf{external, not attached}};
- \node[ext,below=0.8cm of l2,minimum width=3.4cm] (dm) {Global data memory\\\textbf{external, not attached}};
+\node[blk,fill=green!8,below=0.8cm of ic,minimum width=3.0cm] (pm) {PMEM SRAM macro\\512 words};
+\node[blk,fill=green!8,below=0.8cm of l2,minimum width=3.4cm] (dm) {DMEM SRAM macro\\512 words};
  \draw[arr] (host) -- (top); \draw[arr] (top) -- (disp); \draw[arr] (disp) -- (core);
  \draw[arr] (core) -| (ic); \draw[arr] (core) -- (dc); \draw[arr] (dc) -- (l2);
  \draw[arr,<->] (l2) -- (vwb); \draw[arr] (ic) -- (pm); \draw[arr] (l2) -- (dm);
  \draw[arr,->,dashed] (core.east) -- ++(1.4,0) |- (top.south east) node[pos=0.25,right]{core\_done};
 \end{tikzpicture}
-\caption{System block diagram of the ASIC profile. Dashed red boxes mark interfaces that exist in the RTL but are tied off in \sig{gpu_asic_top} (erratum L3).}
+\caption{System block diagram of the ASIC profile. Green boxes are on-chip OpenRAM SRAM macros (a third, inside the L2 cache, holds its data array); the host reaches PMEM and DMEM through the Wishbone window.}
 \end{figure}
 The I-cache has its own path to the program-memory controller and does \emph{not} pass through the L2.
 Both memory interfaces use a native 128-bit block protocol (valid/ready/address/data/strobe) through
-\sig{controller.sv}. An AXI4 adaptor exists in the repository but is \textbf{not} instantiated in the ASIC top level.
+\sig{controller.sv}. On chip, \sig{gpu_mem_subsys} terminates them on two 512$\times$32 SRAM macros (one block = four sequential word accesses). An AXI4 adaptor exists in the repository but is \textbf{not} instantiated in the ASIC top level.
 
 \section{Host interface: Wishbone slave}
 \sig{gpu_asic_top} is a 32-bit Wishbone classic slave with a registered, single-cycle acknowledge
@@ -188,8 +188,8 @@ Both memory interfaces use a native 128-bit block protocol (valid/ready/address/
 \tblhead{Signal} & \tblhead{Dir} & \tblhead{Width} & \tblhead{Function}\\
 \sig{clk}, \sig{reset} & in & 1, 1 & clock, synchronous reset\\
 \sig{wb_cyc_i}, \sig{wb_stb_i}, \sig{wb_we_i} & in & 1 each & cycle, strobe, write enable\\
-\sig{wb_sel_i} & in & 4 & byte select (\emph{ignored} by the RTL)\\
-\sig{wb_adr_i} & in & 32 & address (only bits [15:12] and [7:0] decoded)\\
+\sig{wb_sel_i} & in & 4 & byte select (memory-window writes only)\\
+\sig{wb_adr_i} & in & 32 & address (bits [31:12] select the page, [7:0] the register)\\
 \sig{wb_dat_i} & in & 32 & write data\\
 \sig{wb_dat_o} & out & 32 & read data (registered)\\
 \sig{wb_ack_o} & out & 1 & acknowledge\\
@@ -200,20 +200,21 @@ Both memory interfaces use a native 128-bit block protocol (valid/ready/address/
 \end{table}
 
 \subsection{Register map}
-The intended base address is \texttt{0x3000\_0000}. The decoder uses only \sig{wb_adr_i[15:12]==0} and \sig{wb_adr_i[7:0]};
-the upper address bits are not compared, so the registers alias throughout the 4\,GiB space unless the surrounding
-interconnect decodes the base. Accesses to undecoded offsets are acknowledged and read as the previous \sig{wb_dat_o}.
+The base address is \texttt{0x3000\_0000}. \sig{wb_adr_i[31:12]} selects the page: \texttt{0x30000} is the control/status page, \texttt{0x30001} the memory window; every
+other address is acknowledged, reads as 0 and ignores writes. Every access is acknowledged (a window access that is refused still returns an ack).
+While the GPU runs, window accesses are refused: reads return \texttt{0xBAD0\_BAD0}, writes are dropped and STATUS[3] is set (erratum L16).
 
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lllp{8.4cm}@{}}
 \tblhead{Address} & \tblhead{Access} & \tblhead{Name} & \tblhead{Description}\\
-\texttt{0x3000\_0000} & W & CTRL & \texttt{[0]} START (level; stays set until written 0); \texttt{[15:8]} THREAD\_COUNT (total threads to launch, written to internal DCR 0x00); other bits ignored\\
+\texttt{0x3000\_0000} & W & CTRL & \texttt{[0]} START (level; stays set until written 0); \texttt{[1]} SOFT\_RESET (8 cycles; clears DCR, scheduler and all caches, keeps SRAM contents; drops START; other bits ignored); \texttt{[15:8]} THREAD\_COUNT (written to internal DCR 0x00)\\
 \texttt{0x3000\_0000} & R & CTRL & \texttt{\{16'b0, THREAD\_COUNT[7:0], 7'b0, START\}}\\
-\texttt{0x3000\_0004} & R & STATUS & \texttt{[0]} DONE; \texttt{[31:1]} 0\\
-\texttt{0x3000\_1000}--\texttt{1FFF} & --- & \emph{unified memory window} & \textbf{Not implemented} (described in a source comment only; erratum L3)\\
+\texttt{0x3000\_0004} & R/W1C & STATUS & \texttt{[0]} DONE; \texttt{[1]} BUSY; \texttt{[2]} GPU\_OOB (sticky: data access outside the 512 words); \texttt{[3]} HOST\_BLOCKED (sticky); write 1 to clear [2]/[3]\\
+\texttt{0x3000\_1000}--\texttt{17FF} & R/W & PMEM & 512 words = GPU instruction words 0..511, byte strobes honoured\\
+\texttt{0x3000\_1800}--\texttt{1FFF} & R/W & DMEM & 512 words = GPU data words 0..511, byte strobes honoured\\
 \bottomrule
 \end{tabular}
-\caption{Wishbone register map as implemented (\sig{gpu_asic_top.sv:55-70}).}
+\caption{Wishbone register map as implemented (\sig{gpu_asic_top.sv:27-38}).}
 \end{table}
 
 \subsection{Internal Device Control Register (DCR) block}
@@ -236,10 +237,10 @@ integration and simulation.
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}p{2.8cm}p{3.1cm}p{2.2cm}p{7.6cm}@{}}
 \tblhead{Space} & \tblhead{Size / width} & \tblhead{Access} & \tblhead{Notes}\\
-Program memory & 4\,K words, 12-bit PC & fetch only & word-addressed; I-cache fetches 4-word blocks; external memory required\\
-Global data & 16\,K words, 14-bit address & \ins{LDR STR ATOM_*} & word-addressed; the core faults accesses above \texttt{0xFFFF}, but the bus carries only 14 bits, so \texttt{0x4000}--\texttt{0xFFFF} \textbf{silently alias} (L14)\\
+Program memory & 4\,K words, 12-bit PC & fetch only & word-addressed; I-cache fetches 4-word blocks; only words 0..511 exist on chip (L15)\\
+Global data & 16\,K words, 14-bit address & \ins{LDR STR ATOM_*} & only words 0..511 exist on chip (L15); the core faults accesses above \texttt{0xFFFF}, but the bus carries only 14 bits, so \texttt{0x4000}--\texttt{0xFFFF} \textbf{silently alias} (L14)\\
 Shared memory & 64 words & \ins{LDSH STSH} & per-core, shared by all 8 threads; bank = \texttt{addr[1:0]}; fault if address $\ge$ 64\\
-Host MMIO & 2 registers & Wishbone & \S2.2\\
+Host MMIO & 2 registers + 4\,KB window & Wishbone & \S2.2\\
 \bottomrule
 \end{tabular}
 \caption{Address spaces of the ASIC profile.}
@@ -639,13 +640,17 @@ Nesting deeper than 8 \ins{CALL}s wraps the 3-bit stack pointer silently and cor
 \tblhead{Campaign (generator content)} & \tblhead{Memory latency (max extra cycles)} & \tblhead{Programs / latency} & \tblhead{Mismatches}\\
 Integer, control flow, CALL/RET & 0, 2, 5, 10, 25 & 600 each (3000) & 0\\
 + FP, shared memory, SYNC, atomics & 0, 5, 20 & 1200 each (3600) & 0\\
-+ warp-imbalanced barriers (final) & 0, 3, 10, 30 & 800 each (3200) & 0\\
++ warp-imbalanced barriers & 0, 3, 10, 30 & 800 each (3200) & 0\\
+Same generator, \textbf{current RTL} (L2 data in SRAM) & 0, 3, 10, 30 & 750 each (3000) & 0\\
+Same generator, current RTL, other seeds & 0, 2, 5, 10, 25, 40 & 1700 each (10200) & 0\\
 \bottomrule
 \end{tabular}
-\caption{Constrained-random campaigns on the final RTL (ASIC profile, 8 threads). Each program is 150--300 instructions.}
+\caption{Constrained-random campaigns (ASIC profile, 8 threads). The first three ran before the L2 data array moved into an SRAM macro; the last two ran on the current RTL. Each program is 150--300 instructions.}
 \end{table}
-All 9\,800 runs matched the model bit-for-bit with all SVA checkers enabled. The first campaign pre-dates the FP/shared-memory/atomic extension of the generator;
-the latency sweep requested for sign-off (0, 2, 5, 10, 25) was therefore also covered by the later campaigns at 0, 3, 5, 10, 20 and 30 cycles.
+All 22\,800 runs matched the model bit-for-bit with all SVA checkers enabled. The first campaign pre-dates the FP/shared-memory/atomic extension of the generator;
+the latency sweep requested for sign-off (0, 2, 5, 10, 25) was therefore also covered by the later campaigns, and the last campaign repeats it on the current RTL.
+At chip level (\texttt{make top-quick}) 40 seeds, two kernels each with a soft reset between them, ran purely through the Wishbone pins and matched the model; the same test passes against the real OpenRAM model (\texttt{make top-macro}),
+and a zero-delay gate-level simulation of the synthesised netlist matched for 200 seeds (\texttt{make gls}; pre-placement, no SDF, two-state). Mutation scores were not re-measured after the L2 change.
 
 \section{Mutation testing}
 Faults were injected into copies of the RTL and the random regression was run on 100 programs at 4 cycles of latency (200 for the barrier fault).
@@ -682,11 +687,12 @@ B4 & \texttt{e086fc4} & L2 pushed to a full victim write buffer (stale ready); t
 \end{table}
 
 \section{Physical implementation}\label{sec:flow}
-\begin{statbox}{Read this first --- the recorded run is not sign-off quality}
-(1) It was produced from RTL \emph{before} fixes B1--B4. (2) The run stopped during Magic DRC: there is no final metrics file and LVS never ran.
-(3) \sig{gpu_asic_top} leaves all memory outputs unconnected and ties inputs to constants, and synthesis kept only \textbf{854 flip-flops}
-(the register files alone need at least 8\,192), so area, timing and power below describe an almost-empty design.
-All values are preliminary placeholders until the flow is repeated with memory attached.
+\begin{statbox}{Read this first --- there is no routed layout yet}
+The design now synthesises with its memory attached (151\,502 instances, 24\,269 flip-flops), places, builds a clock tree and globally routes with zero overflow.
+\textbf{Detailed routing has not converged}: on the 2.5\,mm die the first two passes left 223\,731 and 139\,474 violations (61--72\,\% of them metal-1 shorts from local
+pin access in dense logic, not from the SRAM macros), at about 35 minutes per pass; the router was also killed by the kernel twice for memory (about 11\,GB resident).
+No GDS, DRC, LVS or final metrics exist. The table of results below is the \emph{earlier, memory-less} run and is kept only as history. A 3.0\,mm die (placement density 0.30)
+is the current attempt. Antenna repair in global routing is disabled (an OpenROAD crash), and SRAM timing is typical-corner only (erratum L17).
 \end{statbox}
 \subsection{Flow and configuration}
 \texttt{run\_asic.sh} converts the SystemVerilog to Verilog with \texttt{sv2v} (\texttt{-DSYNTHESIS -DTARGET\_ASIC=1}), runs a Yosys elaboration/latch audit (zero latches required),
@@ -696,15 +702,15 @@ then runs LibreLane (OpenROAD-based) in a container with \texttt{flow/config.yam
 \tblhead{Parameter} & \tblhead{Value}\\
 Design / top & \texttt{gpu\_asic\_top}\\
 Clock & port \texttt{clk}, 40.0\,ns\\
-Die / core area & [0,0,2500,2500] \textmu m / [50,50,2450,2450] \textmu m, absolute sizing\\
-Placement density target & 40\,\%\\
+Die / core area & [0,0,3000,3000] \textmu m / [50,50,2950,2950] \textmu m, absolute sizing (2.5\,mm in earlier runs)\\
+Placement density target & 30\,\% (the placer silently raised 40\,\% to 44\,\% on the 2.5\,mm die)\\
 PDK / library & \texttt{sky130A} / \texttt{sky130\_fd\_sc\_hd}\\
-Other & LibreLane defaults (CTS enabled); no SDC file, no macros\\
+Other & CTS enabled; three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} macros (typical-corner liberty for all corners); global-route adjustment 0.15, antenna repair off, 16 detailed-route passes max; no SDC file\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Results of the recorded run}
+\subsection{Results of the earlier memory-less run (history only)}
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lp{9cm}@{}}
 \tblhead{Metric} & \tblhead{Value}\\
@@ -737,12 +743,12 @@ Worst slack from OpenSTA on the routed design (clock 40\,ns). Corner names: \tex
 \texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.709 & \textbf{0.105} (worst hold)\\
 \bottomrule
 \end{tabular}
-\caption{Slack by corner. All slacks are positive; however the netlist is nearly empty (see box above), so these numbers say nothing about the real critical path.}
+\caption{Slack by corner of the earlier memory-less run. All slacks are positive; however that netlist was nearly empty (854 flip-flops), so these numbers say nothing about the real critical path.}
 \end{table}
 
 \subsection{Outstanding sign-off items}
-Attach memory (or SRAM macros) to \sig{gpu_asic_top}; re-run synthesis and place-and-route on current RTL; complete Magic/KLayout DRC and LVS; gate-level simulation of the post-synthesis and
-post-route netlists (SDF files exist for all nine corners) running the random programs; RTL-to-netlist equivalence; IO constraint (SDC) review and multi-corner timing sign-off on the real design.
+Obtain a converged, DRC-clean detailed route (then Magic/KLayout DRC and LVS); gate-level simulation of the post-route netlist with SDF (the zero-delay post-synthesis run already passes 200 seeds); RTL-to-netlist equivalence;
+IO constraint (SDC) review and multi-corner timing sign-off on the real design, with SRAM liberty files for all corners.
 
 % =============================================================================
 \chapter{Errata and known limitations}\label{ch:errata}
@@ -754,7 +760,7 @@ Severity: \textbf{H} may give silently wrong results or blocks use, \textbf{M} s
 \tblhead{ID} & \tblhead{Sev} & \tblhead{Title} & \tblhead{Description / workaround}\\\endhead
 L1 & H & No join-point reconvergence & Lane groups run the rest of the program serially; \ins{SYNC} after divergence releases early. Use warp-uniform control flow before every barrier (R1).\\
 L2 & M & \ins{DIV}/\ins{MOD} stubbed & Return 0 unless \texttt{USE\_COMB\_DIV} is defined.\\
-L3 & H & No memory at the chip top & Memory read/write ports of \sig{gpu} are tied off in \sig{gpu_asic_top}; the advertised window at \texttt{0x3000\_1000} does not exist; the chip cannot load or run a program. Physical results are not representative.\\
+L3 & -- & Memory at the chip top (resolved) & Previously tied off. The window at \texttt{0x3000\_1000} is implemented on two OpenRAM macros; see L15--L17 for what remains.\\
 L4 & L & L2 PMU events zero & L2 hit/miss/evict event outputs are constants.\\
 L5 & M & \ins{CMP} unsigned; NZP resets to 0 & See rules R3, R4.\\
 L6 & M & 8-deep call stack wraps & Silent corruption on the ninth nested call.\\
@@ -766,6 +772,9 @@ L11 & L & Test debt & Legacy testbenches do not build against the current block 
 L12 & H & Faults invisible & Division by zero / bad address kills the warp; DONE still asserts and results are missing; \sig{exception_*} outputs are unconnected.\\
 L13 & L & PMU/DCR unreachable & Only DCR address 0 is driven by the Wishbone wrapper.\\
 L14 & M & Address aliasing & The fault limit (\texttt{0xFFFF}) exceeds the 14-bit bus: accesses in \texttt{0x4000}--\texttt{0xFFFF} wrap onto \texttt{addr \& 0x3FFF} without a fault. Keep global addresses below \texttt{0x4000}.\\
+L15 & M & Only 512+512 words on chip & GPU program and data words $\ge$512 read as 0 (instruction fetch) or read 0 / drop stores and set STATUS[2] (data). Programs must fit 512 words; the random generator uses a 32-word private region per thread.\\
+L16 & M & Host access exclusive; soft reset to re-run & Window accesses are refused while BUSY. Caches are flushed but not invalidated after a run, so write CTRL[1] (soft reset) before loading a new kernel.\\
+L17 & M & Macro timing is typical corner only & OpenRAM supplies one liberty corner (TT\_1p8V\_25C); it is used for all nine STA corners, so SS/FF slack on the SRAM pins is not trustworthy.\\
 \bottomrule
 \end{longtable}
 \textit{Pin count:} the wrapper has 107 signal pins; meeting a smaller GPIO budget (for example a 38-pin user area) would require a narrower address/data interface.

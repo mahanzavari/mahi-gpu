@@ -29,7 +29,7 @@ cover what is *different or specific* in the ASIC variant and link there instead
 | Unit tests (7 modules) | Pass; mutation-checked | `make unit` — [06-verification](06-verification.md) |
 | System tests | `verify-asic` (NZP/CALL/RET), `verify-matmul` (2-core 5×5) pass | `make verify-asic verify-matmul` |
 | SVA assertions | 6 checker modules bound, silent on current design, each shown to fire on its historical bug | `src/rtl/sva/` |
-| Random regression vs Python model | 9,800 runs on the final RTL (3 campaigns, int/FP/shared mem/barriers/atomics, latency 0–30), 0 mismatches | `make rand` |
+| Random regression vs Python model | 22,800 runs (3 campaigns on the pre-SRAM-L2 RTL, 2 on the current RTL; int/FP/shared mem/barriers/atomics, latency 0–40), 0 mismatches | `make rand` |
 | **Chip-level regression** (`gpu_asic_top` over Wishbone, 2 kernels/seed with soft reset) | `make top-quick` = 40 seeds; see [06](06-verification.md) | `make top-quick` |
 | **Barrier (`SYNC`) after divergence** | **Not supported** (no join-point reconvergence) | [L1](04-limitations.md#l1) |
 | **Chip top (`gpu_asic_top`)** | Wishbone-loadable 2×2 KB SRAM window; random kernels run end-to-end over the pins (`make top-quick`) | [L15](04-limitations.md#l15), [L16](04-limitations.md#l16) |
