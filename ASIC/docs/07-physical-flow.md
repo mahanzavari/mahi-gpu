@@ -112,6 +112,14 @@ Measured on `floor_1022_1610`, before changing anything:
   waives a box only if its rule is in the macro list AND it lies inside a macro box). This is the same met4 problem the router reports (53 violations: macro data pins vs VPWR).
 - The macro-intrinsic errors still make the chip not "DRC clean" under Magic's deck: whether a shuttle accepts OpenRAM sky130 macros with these errors is a question for the shuttle operator, not something this repo can settle.
 
+## The met4 boundary errors: cause and fix (2026-10-22/23)
+**Cause (measured, not assumed).** The macros' signal pins are 0.38 x 1.06 um met4 rectangles on the top/bottom edges (35 on top, 72 on bottom, 5.44 um pitch) and the router reaches them with ~7 um met4 stubs.
+The power grid's vertical met4 straps (VPWR/VGND pairs, 1.6 um wide, 1.7 um apart, every 153.6 um) ran **right up to the macro edge** and some stubs ended 0.12 um from a strap (met4.2 needs 0.30 um).
+That is all 53 router violations (51 spacing + 2 shorts, on `d_dout1`, `p_dout1`, `din0` nets vs VPWR/VGND) and the 34 Magic met4.2 boxes. `PDN_*_HALO`/`FP_MACRO_*_HALO` = 10 um did not prevent it.
+**Shifting the macros cannot fix it:** with pins spanning ~510 um (top) and ~540 um (bottom) and a 153.6 um strap pitch, 3-4 strap pairs always fall among pins that are 5.44 um apart (a pair plus clearance needs ~6.3 um); a sweep of macro x-origins found none that clears every pin.
+**Fix:** `PDN_OBSTRUCTIONS` in `flow/config.yaml` - 12 um met4 keep-out bands above and below each macro (only while the PDN is generated). Dry run (`TO_STEP=Odb.RemovePDNObstructions MINI=1 ./run_asic.sh -F <run>`):
+strap ends moved from exactly the macro edge to 12.3 um away on all six pin edges (e.g. 496.5 -> 508.8, 1016.5 -> 1028.8, 600 -> 587.7); straps in the 103 um channels between macros remain (79 um long). Whether this clears the router/Magic errors is **not yet verified** (needs the full run).
+
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)

@@ -68,3 +68,16 @@ DRT_THREADS: 16
 
 # Detailed-routing effort cap: ~35 min/pass here; 64 passes would be >35 h.
 DRT_OPT_ITERS: 16
+
+# Keep the vertical met4 power straps off the macro pin edges. The macros' signal pins are 0.38 um met4 rectangles on the
+# top/bottom edges (5.44 um pitch) and the router reaches them with ~7 um stubs; the VPWR/VGND strap pairs (1.6 um wide,
+# every 153.6 um) ran right up to the edge and sat 0.12 um from some stubs (met4 needs 0.30) -> 53 router DRC errors.
+# Obstructions exist only while the PDN is generated. Bands: 12 um above/below each macro, across the macro width.
+# macros at (80,80), (80,600), (80,1120); size 683.1 x 416.54
+PDN_OBSTRUCTIONS:
+  - [met4, 80, 68, 763.1, 80]            # pmem, below
+  - [met4, 80, 496.54, 763.1, 508.54]    # pmem, above
+  - [met4, 80, 588, 763.1, 600]          # dmem, below
+  - [met4, 80, 1016.54, 763.1, 1028.54]  # dmem, above
+  - [met4, 80, 1108, 763.1, 1120]        # l2 data, below
+  - [met4, 80, 1536.54, 763.1, 1548.54]  # l2 data, above

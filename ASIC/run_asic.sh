@@ -178,6 +178,7 @@ fi
 # shellcheck source=/dev/null
 source "$VENV_PATH/bin/activate"
 
+[ -n "${TO_STEP:-}" ] && STAGE_TARGET="$STAGE_TARGET --to $TO_STEP"
 LIBRELANE_CMD="librelane --dockerized $STAGE_TARGET $CONFIG_FILE"
 echo -e "${CYAN}Executing:${NC} $LIBRELANE_CMD\n"
 
