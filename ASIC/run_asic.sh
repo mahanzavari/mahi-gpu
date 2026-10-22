@@ -38,6 +38,18 @@ while [[ "$#" -gt 0 ]]; do
         -f|--floorplan) STAGE_TARGET="--to OpenROAD.Floorplan" ;;
         -r|--route)     STAGE_TARGET="--to OpenROAD.DetailedRouting" ;;
         -a|--audit)     AUDIT_ONLY=1 ;;
+        -P|--resume-place)
+            # Re-run placement onward from the pre-placement state (step 27) of an earlier run dir, into a NEW run dir.
+            # (--last-run --from would start from that run's *latest* state, i.e. the already-routed design.)
+            PLACE_SRC="$(cd "$2" && pwd)"; shift
+            [ -f "$PLACE_SRC/27-odb-applydeftemplate/state_out.json" ] || { echo "no 27-odb-applydeftemplate state in $PLACE_SRC"; exit 1; }
+            STAGE_TARGET="--from OpenROAD.GlobalPlacement --with-initial-state $PLACE_SRC/27-odb-applydeftemplate/state_out.json --run-tag place_$(date +%m%d_%H%M)" ;;
+        -F|--resume-floorplan)
+            # Re-run floorplan onward (e.g. after changing the die) from the post-synthesis state of an earlier run dir.
+            FP_SRC="$(cd "$2" && pwd)"; shift
+            [ -f "$FP_SRC/12-openroad-staprepnr/state_out.json" ] || { echo "no 12-openroad-staprepnr state in $FP_SRC"; exit 1; }
+            STAGE_TARGET="--from OpenROAD.Floorplan --with-initial-state $FP_SRC/12-openroad-staprepnr/state_out.json --run-tag floor_$(date +%m%d_%H%M)" ;;
+        -D|--resume-drt) STAGE_TARGET="--last-run --from OpenROAD.DetailedRouting" ;;
         -R|--resume-route) STAGE_TARGET="--last-run --from OpenROAD.GlobalRouting" ;;
         --clean)
             echo -e "${YELLOW}[CLEAN] Removing previous build & run artifacts...${NC}"
@@ -54,6 +66,9 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -r, --route     Stop after OpenROAD Detailed Routing"
             echo "  -a, --audit     Run only sv2v and Yosys synthesis check"
             echo "  -R, --resume-route  Re-run from Global Routing in the most recent run dir"
+            echo "  -P, --resume-place RUN_DIR  Re-run from Global Placement onward (into a new run dir) using RUN_DIR's pre-placement state"
+            echo "  -F, --resume-floorplan RUN_DIR  Re-run from Floorplan onward (new run dir), reusing RUN_DIR's synthesis"
+            echo "  -D, --resume-drt    Re-run from Detailed Routing in the most recent run dir"
             echo "  --clean         Remove build/ and runs/ directories"
             echo "  -h, --help      Show this help message"
             exit 0

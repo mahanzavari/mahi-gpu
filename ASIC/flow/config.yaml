@@ -8,11 +8,11 @@ CLOCK_PERIOD: 40.0
 
 # Die Sizing: 2.5 mm x 2.5 mm (fits standard 275k cell count comfortably)
 FP_SIZING: "absolute"
-DIE_AREA: [0, 0, 2500, 2500]
-CORE_AREA: [50, 50, 2450, 2450]
+DIE_AREA: [0, 0, 3000, 3000]   # was 2500: the placer's density floor was 0.44 (cells need ~2.1 mm2 of a ~4.3 mm2 free area)
+CORE_AREA: [50, 50, 2950, 2950]
 
 # Density and Placement Target (keep conservative at 40% to prevent routing congestion)
-PL_TARGET_DENSITY_PCT: 40
+PL_TARGET_DENSITY_PCT: 30   # DRT was dominated by met1 pin-access shorts (61-72%); 40 was silently raised to 44 by the placer
 
 # Target PDK
 PDK: "sky130A"
@@ -62,5 +62,9 @@ GRT_ALLOW_CONGESTION: true
 RUN_ANTENNA_REPAIR: false
 
 # Attempt 4: detailed routing was OOM-killed (kernel, 11 GB RSS on a 16 GB host) at 90% of pass 0 with the
-# default ~17 threads. Fewer threads -> lower peak memory, slower wall-clock.
-DRT_THREADS: 8
+# default ~17 threads. Peak memory turned out independent of the thread count (11.0-11.3 GB at 17 and 8),
+# so use 16 to speed up iterations (~35 min each at 8 threads).
+DRT_THREADS: 16
+
+# Detailed-routing effort cap: ~35 min/pass here; 64 passes would be >35 h.
+DRT_OPT_ITERS: 16
