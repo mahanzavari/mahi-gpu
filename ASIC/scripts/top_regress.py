@@ -15,6 +15,7 @@ os.environ['GEN_STRIDE'] = '32'
 sys.path.insert(0, os.path.dirname(__file__))
 from gen import Gen, make_input, write_hex
 from isa import Machine, Fault
+from profile_cfg import THREADS
 from rand_regress import bounded_run, read_hex
 
 def prep(d, tag, seed):
@@ -32,7 +33,7 @@ def run_seed(a, seed):
     except Fault as e:
         return seed, 'GENFAULT', str(e)
     cmd = [a.bin, '+verilator+quiet', f'+prog={d}/p1.hex', f'+dmem={d}/d1.hex', f'+out={d}/o1.hex',
-           f'+prog2={d}/p2.hex', f'+dmem2={d}/d2.hex', f'+out2={d}/o2.hex', f'+gap={a.gap}', '+maxcyc=60000'] + [x.replace('{seed}', str(seed)) for x in a.plus]
+           f'+prog2={d}/p2.hex', f'+dmem2={d}/d2.hex', f'+out2={d}/o2.hex', f'+gap={a.gap}', f'+threads={THREADS}', '+maxcyc=60000'] + [x.replace('{seed}', str(seed)) for x in a.plus]
     try:
         rc, log = bounded_run(cmd, a.timeout)
     except subprocess.TimeoutExpired:

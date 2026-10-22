@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(__file__))
 from gen import Gen, make_input, write_hex, PRIV_BASE, PRIV_STRIDE, POOL
 from isa import Machine, Fault
+from profile_cfg import THREADS
 
 def read_hex(path):
     with open(path) as f: return [int(l, 16) for l in f if l.strip()]
@@ -46,7 +47,7 @@ def run_seed(a, seed):
         return seed, 'GENFAULT', str(e)           # generator/model bug, not a DUT failure
     expect = [mem.get(i, 0) for i in range(1024)]
     cmd = [a.bin, f'+prog={d}/prog.hex', f'+dmem={d}/dmem.hex', f'+out={d}/out.hex',
-           f'+lat={a.lat}', f'+seed={seed}', '+verilator+quiet']
+           f'+lat={a.lat}', f'+seed={seed}', f'+threads={THREADS}', '+verilator+quiet']
     try:
         rc, log = bounded_run(cmd, a.timeout)
     except subprocess.TimeoutExpired:

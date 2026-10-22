@@ -10,7 +10,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_PATH="$HOME/eda/librelane/.venv"
 SRC_DIR="$SCRIPT_DIR/src/rtl"
 INCLUDE_DIR="$SRC_DIR/include"
-BUILD_DIR="$REPO_ROOT/build/test"
+# MINI=1 ./run_asic.sh ...  -> "physical bring-up" profile (gpu_pkg.sv TARGET_ASIC_MINI: 2 lanes, smaller L1/VWB/shared mem).
+# It converts into build/test_mini, uses a generated flow/config_mini.yaml and its own run-dir prefix.
+if [ "${MINI:-0}" = "1" ]; then
+    PROFILE_DEFS="-DTARGET_ASIC=1 -DTARGET_ASIC_MINI=1"
+    BUILD_DIR="$REPO_ROOT/build/test_mini"
+    RUN_PREFIX="mini"
+else
+    PROFILE_DEFS="-DTARGET_ASIC=1"
+    BUILD_DIR="$REPO_ROOT/build/test"
+    RUN_PREFIX="full"
+fi
 OUT_VERILOG="$BUILD_DIR/gpu_asic_converted.v"
 CONFIG_FILE="$SCRIPT_DIR/flow/config.yaml"
 
@@ -118,7 +128,7 @@ fi
 # ==============================================================================
 echo -e "\n${YELLOW}>>> [1/3] Running sv2v conversion (Profile: TARGET_ASIC, SRAM macros)...${NC}"
 
-sv2v -DSYNTHESIS -DTARGET_ASIC=1 -DMAHI_SRAM_MACRO=1 \
+sv2v -DSYNTHESIS $PROFILE_DEFS -DMAHI_SRAM_MACRO=1 \
   -I "$INCLUDE_DIR" \
   "$INCLUDE_DIR/gpu_pkg.sv" \
   "$SRC_DIR"/*.sv \
@@ -152,6 +162,15 @@ fi
 # 4. Step 3: Run LibreLane Flow
 # ==============================================================================
 echo -e "\n${YELLOW}>>> [3/3] Activating LibreLane virtual environment & starting flow...${NC}"
+
+# MINI: derive a config that points at the mini netlist (same macros / die unless overridden in flow/config.yaml)
+if [ "${MINI:-0}" = "1" ]; then
+    CONFIG_FILE="$SCRIPT_DIR/flow/config_mini.yaml"
+    sed -e 's|build/test/gpu_asic_converted.v|build/test_mini/gpu_asic_converted.v|' \
+        -e 's|^DIE_AREA: .*|DIE_AREA: [0, 0, 2600, 2600]|' \
+        -e 's|^CORE_AREA: .*|CORE_AREA: [50, 50, 2550, 2550]|' "$SCRIPT_DIR/flow/config.yaml" > "$CONFIG_FILE"
+    case "$STAGE_TARGET" in *--run-tag*) ;; *) STAGE_TARGET="$STAGE_TARGET --run-tag mini_$(date +%m%d_%H%M)" ;; esac
+fi
 
 # Source the virtualenv
 # shellcheck source=/dev/null

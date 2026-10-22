@@ -28,19 +28,37 @@ package gpu_pkg;
         // --- ASIC Silicon Profile (Sky130 SRAM-Constrained) ---
         localparam int CFG_NUM_CORES                 = 1;
         localparam int CFG_NUM_WARPS                 = 2;
+        // TARGET_ASIC_MINI (with TARGET_ASIC): "physical bring-up" overlay -- half the lanes and
+        // smaller caches/buffers so place-and-route fits a 16 GB machine. Same ISA and microarchitecture.
+`ifdef TARGET_ASIC_MINI
+        localparam int CFG_THREADS_PER_BLOCK         = 2;  // 2 lanes x 2 warps = 4 threads
+`else
         localparam int CFG_THREADS_PER_BLOCK         = 4;
+`endif
         localparam int CFG_PMEM_ADDR_BITS            = 12; // 4K words (16KB)
         localparam int CFG_PMEM_DATA_BITS            = 32;
         localparam int CFG_DMEM_ADDR_BITS            = 14; // 16K words (64KB)
         localparam int CFG_DMEM_DATA_BITS            = 32;
         localparam int CFG_SHARED_MEM_ADDR_BITS      = 8;
+`ifdef TARGET_ASIC_MINI
+        localparam int CFG_SHARED_MEM_SIZE           = 32; // 32 words (128B)
+`else
         localparam int CFG_SHARED_MEM_SIZE           = 64; // 64 words (256B)
+`endif
         localparam int CFG_DEBUG                     = 0;
+`ifdef TARGET_ASIC_MINI
+        localparam int CFG_L1_CACHE_LINES            = 8;
+`else
         localparam int CFG_L1_CACHE_LINES            = 16;
+`endif
         localparam int CFG_L2_CACHE_LINES            = 64;
         localparam int CFG_L2_WAYS                   = 4;
         localparam int CFG_L2_SECTORS                = 4;
+`ifdef TARGET_ASIC_MINI
+        localparam int CFG_VWB_DEPTH                 = 2;
+`else
         localparam int CFG_VWB_DEPTH                 = 4;
+`endif
         localparam int CFG_DATA_MEM_NUM_CHANNELS     = 1;
         localparam int CFG_PROGRAM_MEM_NUM_CHANNELS  = 1;
 
