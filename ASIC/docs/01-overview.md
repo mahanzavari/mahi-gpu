@@ -52,7 +52,7 @@ ASIC/
 ├── run_asic.sh / run.sh  sv2v + LibreLane driver (identical copies)
 ├── flow/config.yaml    LibreLane configuration; flow/runs/ = generated runs (git-ignored)
 ├── scripts/            isa.py (golden model), gen.py (program generator), rand_regress.py, test_model.py
-├── src/rtl/            RTL (+ include/gpu_pkg.sv, sva/, verilog-sv2v/ legacy artifacts)
+├── src/rtl/            RTL (+ include/gpu_pkg.sv, sva/; a local verilog-sv2v/ holds untracked legacy artifacts)
 ├── src/tb/             unit/ (new), ISA/tb_asic_call_ret_branch.sv, random/tb_random.sv, kernels/tb_matmul.sv, legacy dirs
 └── docs/               this documentation
 ```

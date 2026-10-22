@@ -26,10 +26,10 @@ Stages (`run_asic.sh`):
 | Key | Value |
 |---|---|
 | `DESIGN_NAME` | `gpu_asic_top` |
-| `VERILOG_FILES` | `dir::../../build/test/gpu_asic_converted.v` |
+| `VERILOG_FILES` | `gpu_inst.unified_cache.data_eng.g_sram.sram.macro vccd1 vssd1 vccd1 vssd1` |
 | `CLOCK_PORT` / `CLOCK_PERIOD` | `clk` / 40.0 ns |
-| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | absolute / [0, 0, 2500, 2500] / [50, 50, 2450, 2450] |
-| `PL_TARGET_DENSITY_PCT` | 40 |
+| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | absolute / [0, 0, 3000, 3000] / [50, 50, 2950, 2950] |
+| `PL_TARGET_DENSITY_PCT` | 30 |
 | `PDK` | `sky130A` |
 <!-- END GENERATED: flowcfg -->
 Everything else is a LibreLane default (CTS on, linter on). There is **no** SDC/IO-constraint file and **no** macros (no SRAM).
