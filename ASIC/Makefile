@@ -84,7 +84,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build macro-drc drc-waiver die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -204,6 +204,21 @@ gls-build:
 gls: gls-build
 	MAHI_NO_DIV=1 python3 scripts/top_regress.py --bin $(B)/gls/obj/gls_tb --seeds 0 24 --gap 0 --work $(B)/gls/work \
 	  --plus +verilator+rand+reset+2 +verilator+seed+1{seed}
+
+# --- OpenRAM macro DRC waiver basis ----------------------------------------------------
+#   make macro-drc            standalone Magic DRC of the macro GDS (needs docker + the LibreLane image; ~2 min)
+#   make drc-waiver RUN=<run> split an in-chip Magic DRC report into macro-intrinsic (waived) vs integration errors
+MACRO_NAME := sky130_sram_2kbyte_1rw1r_32x512_8
+MAGIC_RC   ?= $(firstword $(wildcard $(HOME)/.ciel/ciel/sky130/versions/*/sky130A/libs.tech/magic/sky130A.magicrc))
+macro-drc:
+	mkdir -p $(B)/macro_drc
+	docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e PDK_ROOT=$(HOME)/.ciel -e PDK=sky130A -e HOME=$(HOME) \
+	  -e MACRO_GDS=$(CURDIR)/flow/macros/$(MACRO_NAME).gds -e MACRO_CELL=$(MACRO_NAME) -e OUT=$(CURDIR)/$(B)/macro_drc/macro_drc.rpt \
+	  ghcr.io/librelane/librelane:3.0.16 magic -dnull -noconsole -rcfile $(MAGIC_RC) $(CURDIR)/scripts/macro_drc.tcl | grep MACRO_DRC_COUNT
+
+drc-waiver:
+	@test -n "$(RUN)" || { echo "usage: make drc-waiver RUN=<run dir>"; exit 1; }
+	python3 scripts/drc_waiver.py --report $(RUN)/*magic-drc/reports/drc.magic.rpt
 
 # --- Die map: colour-by-block picture of a routed run (scripts/die_map.py) ----------------
 #   make die-map RUN=flow/runs/floor_1022_1610 NETLIST=flow/runs/mini_1022_1554/06-yosys-synthesis/gpu_asic_top.nl.v

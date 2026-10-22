@@ -102,6 +102,16 @@ Other effects measured: the gate-level netlist is correct (200-seed zero-delay G
 
 Next: set the clock for the SS corner (~50-52 ns), keep met4 straps away from the macro pins (macro halo / PDN settings), post-process the Magic GDS to one top cell (or run KLayout DRC on the KLayout GDS), provide macro SPICE for LVS, and decide how to treat OpenRAM macro DRC (waiver).
 
+## OpenRAM macros in signoff: what is intrinsic and what is ours (2026-10-22)
+Measured on `floor_1022_1610`, before changing anything:
+- **KLayout XOR (Magic vs KLayout GDS): all 10,814,649 differences lie inside the three macro boxes; none outside.** The standard cells and routing are identical between the two stream-outs; only how each tool writes the macro content differs.
+- **Magic DRC of the macro alone** (`make macro-drc`; Magic 8.3.623, `drc(full)`): 5,579,811 boxes, 32 rule types (largest: diff/tap.9 N-diffusion to N-well spacing, li.1 local-interconnect width, licon.8, poly.8, diff/tap.1, licon.5a).
+  In the chip the same rules fire with the same proportions (about 0.78x the standalone count per rule; Magic counts hierarchical errors per placement, so the absolute totals are not directly comparable). The rule list is committed in
+  `flow/waivers/openram_2kb_macro_drc_rules.txt`.
+- **Integration errors = the only rule that fires in the chip but not on the macro alone: Metal4 spacing < 60 (met4.2), 34 raw boxes, all at macro boundaries** (`make drc-waiver RUN=...`, `scripts/drc_waiver.py`;
+  waives a box only if its rule is in the macro list AND it lies inside a macro box). This is the same met4 problem the router reports (53 violations: macro data pins vs VPWR).
+- The macro-intrinsic errors still make the chip not "DRC clean" under Magic's deck: whether a shuttle accepts OpenRAM sky130 macros with these errors is a question for the shuttle operator, not something this repo can settle.
+
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
