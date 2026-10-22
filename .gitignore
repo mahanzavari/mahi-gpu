@@ -14,3 +14,17 @@ work/
 logs/
 *.log
 *.xlsx
+ASIC/flow/runs
+Errorflow.md
+# LaTeX build artefacts
+*.aux
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+
+# fetched by ASIC/run_asic.sh (OpenRAM macro views)
+ASIC/flow/macros/
+
+# legacy generated artifacts (old 16-bit-era flattened copy, yosys JSON dump); not sources
+ASIC/src/rtl/verilog-sv2v/

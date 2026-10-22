@@ -1,0 +1,70 @@
+DESIGN_NAME: "gpu_asic_top"
+VERILOG_FILES: 
+  - "dir::../../build/test/gpu_asic_converted.v"
+
+# Clock constraint: 25 MHz (40.0 ns) to start safe
+CLOCK_PORT: "clk"
+CLOCK_PERIOD: 40.0
+
+# Die Sizing: 2.5 mm x 2.5 mm (fits standard 275k cell count comfortably)
+FP_SIZING: "absolute"
+DIE_AREA: [0, 0, 3000, 3000]   # was 2500: the placer's density floor was 0.44 (cells need ~2.1 mm2 of a ~4.3 mm2 free area)
+CORE_AREA: [50, 50, 2950, 2950]
+
+# Density and Placement Target (keep conservative at 40% to prevent routing congestion)
+PL_TARGET_DENSITY_PCT: 30   # DRT was dominated by met1 pin-access shorts (61-72%); 40 was silently raised to 44 by the placer
+
+# Target PDK
+PDK: "sky130A"
+
+# --- On-chip memory: 3 x OpenRAM sky130_sram_2kbyte_1rw1r_32x512_8 (PMEM + DMEM windows) ---
+# Copied here by run_asic.sh. Only a TT lib exists, so every STA corner uses it (approximation:
+# macro timing is not re-characterised at SS/FF; see docs/07-physical-flow.md).
+MACROS:
+  sky130_sram_2kbyte_1rw1r_32x512_8:
+    gds:
+      - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8.gds"
+    lef:
+      - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8.lef"
+    vh:
+      - "dir::macro_stubs/sky130_sram_2kbyte_1rw1r_32x512_8.v"
+    lib:
+      "*":
+        - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8_TT_1p8V_25C.lib"
+    instances:
+      mem_inst.pmem.macro:
+        location: [80, 80]
+        orientation: N
+      mem_inst.dmem.macro:
+        location: [80, 600]
+        orientation: N
+      gpu_inst.unified_cache.data_eng.g_sram.sram.macro:   # L2 data array (64 lines x 4 words)
+        location: [80, 1120]
+        orientation: N
+
+PDN_MACRO_CONNECTIONS:
+  - "mem_inst.pmem.macro vccd1 vssd1 vccd1 vssd1"
+  - "mem_inst.dmem.macro vccd1 vssd1 vccd1 vssd1"
+  - "gpu_inst.unified_cache.data_eng.g_sram.sram.macro vccd1 vssd1 vccd1 vssd1"
+
+# --- Routing (attempt 2) -----------------------------------------------------
+# Attempt 1 (GRT_ADJUSTMENT 0.3, 50 extra iterations) ended with 71,864 overflow after ~7 h
+# (flow/failed_logs/). Less reserved capacity, fewer wasted iterations, and let detailed
+# routing try to finish what global routing could not.
+GRT_ADJUSTMENT: 0.15
+GRT_OVERFLOW_ITERS: 40
+GRT_ALLOW_CONGESTION: true
+
+# Attempt 3: GRT antenna repair (OpenROAD repair_antennas) aborts with "GRT-0183 heap underflow during
+# 3D maze routing" on net34287 (4,027 violating nets before repair, 0 global-route overflow).
+# Skip it and let the detailed router's antenna repair (DRT_ANTENNA_REPAIR_ITERS) handle them;
+# the final antenna check decides whether that was enough.
+RUN_ANTENNA_REPAIR: false
+
+# Attempt 4: detailed routing was OOM-killed (kernel, 11 GB RSS on a 16 GB host) at 90% of pass 0 with the
+# default ~17 threads. Peak memory turned out independent of the thread count (11.0-11.3 GB at 17 and 8),
+# so use 16 to speed up iterations (~35 min each at 8 threads).
+DRT_THREADS: 16
+
+# Detailed-routing effort cap: ~35 min/pass here; 64 passes would be >35 h.
+DRT_OPT_ITERS: 16
