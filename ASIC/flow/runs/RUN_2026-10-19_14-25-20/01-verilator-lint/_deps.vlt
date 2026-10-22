@@ -1,0 +1,5 @@
+`verilator_config
+lint_off -rule DECLFILENAME
+lint_off -rule EOFNEWLINE
+lint_off -rule UNDRIVEN -file "/home/mahan/Projects/mahi-gpu/ASIC/flow/runs/RUN_2026-10-19_14-25-20/tmp/578a126abfd54335bc7ff67513bc1449.bb.v"
+lint_off -rule UNUSEDSIGNAL -file "/home/mahan/Projects/mahi-gpu/ASIC/flow/runs/RUN_2026-10-19_14-25-20/tmp/578a126abfd54335bc7ff67513bc1449.bb.v"
