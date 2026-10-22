@@ -85,6 +85,23 @@ its detailed-routing result is **not** recorded here.
 
 Other effects measured: the gate-level netlist is correct (200-seed zero-delay GLS, see [06](06-verification.md)); area barely changed by the L2 macro (−2%) but cells −14% and flops −24%.
 
+## Mini profile run (`TARGET_ASIC_MINI`, `flow/runs/floor_1022_1610`, 2026-10-22)
+`MINI=1 ./run_asic.sh` builds a half-size design (2 lanes x 2 warps, shared memory 32 words, L1 8 lines, victim buffer 2; `gpu_pkg.sv`). Synthesis: **79,657 instances, 14,390 flops, 0.96 mm² cells**
+(full profile: 151,502 / 24,269 / 1.80 mm²). Die 2.4 mm, placement density 0.30 (honoured; no override), 40 ns clock. First run that got through detailed routing and stream-out on a 16 GB host:
+
+| Step | Result |
+|---|---|
+| Detailed routing | 76,392 → 39,382 → 36,940 → 3,181 → 94 → 27 → 14 violations in 41 min (peak 7.1 GB). After the router's antenna-repair passes: **53 violations**, all met4 (51 spacing, 2 shorts) next to the SRAM macro pins (`mem_inst.d_dout1[*]` vs VPWR near the DMEM macro's top edge). None in standard-cell logic. |
+| Antenna | ~4,000 violating nets before routing repair → 2 nets |
+| Post-route STA, 9 corners | hold met everywhere (worst +0.047 ns, max_ff); setup met at TT (+15.1 ns) and FF (+17.0 ns) but **fails at SS: worst -9.27 ns (max_ss_100C_1v60), 817 endpoints, TNS -1190 ns**. The OpenROAD resizer optimises one corner, so 40 ns closes at TT only; SS needs roughly 50 ns. Max-slew violations 48,540, max-cap 991 (counts across corners) |
+| IR drop / power | 0.28 mV worst drop; total 41 mW (nominal) |
+| Magic DRC | 12,984,273 raw error boxes, of which **12,984,243 (99.9998%) lie inside the three OpenRAM macros** and 30 are outside (all `met4.2` spacing, same macro-adjacent area). The OpenRAM macros are not clean under Magic's sky130 deck; they need waivers or a macro-aware deck, not a logic fix |
+| KLayout XOR (Magic vs KLayout GDS) | 10,814,649 differences (deferred); not yet attributed, suspected macro handling since the memory-less run was XOR-clean |
+| KLayout render and KLayout DRC | **abort**: the Magic GDS has 13 top-level cells (unreferenced OpenRAM sub-cells), KLayout wants one. The KLayout-written GDS has a single top cell |
+| LVS, final timing checkers | not reached |
+
+Next: set the clock for the SS corner (~50-52 ns), keep met4 straps away from the macro pins (macro halo / PDN settings), post-process the Magic GDS to one top cell (or run KLayout DRC on the KLayout GDS), provide macro SPICE for LVS, and decide how to treat OpenRAM macro DRC (waiver).
+
 ## Not done (sign-off gaps)
 | Item | Status |
 |---|---|

@@ -59,6 +59,7 @@ while [[ "$#" -gt 0 ]]; do
             FP_SRC="$(cd "$2" && pwd)"; shift
             [ -f "$FP_SRC/12-openroad-staprepnr/state_out.json" ] || { echo "no 12-openroad-staprepnr state in $FP_SRC"; exit 1; }
             STAGE_TARGET="--from OpenROAD.Floorplan --with-initial-state $FP_SRC/12-openroad-staprepnr/state_out.json --run-tag floor_$(date +%m%d_%H%M)" ;;
+        -S|--resume-signoff) STAGE_TARGET="--last-run --from Magic.WriteLEF" ;;   # after KLayout.Render (its PNG fails on the OpenRAM GDS's extra top cells)
         -D|--resume-drt) STAGE_TARGET="--last-run --from OpenROAD.DetailedRouting" ;;
         -R|--resume-route) STAGE_TARGET="--last-run --from OpenROAD.GlobalRouting" ;;
         --clean)
@@ -78,6 +79,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -R, --resume-route  Re-run from Global Routing in the most recent run dir"
             echo "  -P, --resume-place RUN_DIR  Re-run from Global Placement onward (into a new run dir) using RUN_DIR's pre-placement state"
             echo "  -F, --resume-floorplan RUN_DIR  Re-run from Floorplan onward (new run dir), reusing RUN_DIR's synthesis"
+            echo "  -S, --resume-signoff  Re-run from Magic.WriteLEF (XOR, DRC, LVS, final checks) in the most recent run dir"
             echo "  -D, --resume-drt    Re-run from Detailed Routing in the most recent run dir"
             echo "  --clean         Remove build/ and runs/ directories"
             echo "  -h, --help      Show this help message"
@@ -167,9 +169,9 @@ echo -e "\n${YELLOW}>>> [3/3] Activating LibreLane virtual environment & startin
 if [ "${MINI:-0}" = "1" ]; then
     CONFIG_FILE="$SCRIPT_DIR/flow/config_mini.yaml"
     sed -e 's|build/test/gpu_asic_converted.v|build/test_mini/gpu_asic_converted.v|' \
-        -e 's|^DIE_AREA: .*|DIE_AREA: [0, 0, 2600, 2600]|' \
-        -e 's|^CORE_AREA: .*|CORE_AREA: [50, 50, 2550, 2550]|' "$SCRIPT_DIR/flow/config.yaml" > "$CONFIG_FILE"
-    case "$STAGE_TARGET" in *--run-tag*) ;; *) STAGE_TARGET="$STAGE_TARGET --run-tag mini_$(date +%m%d_%H%M)" ;; esac
+        -e 's|^DIE_AREA: .*|DIE_AREA: [0, 0, 2400, 2400]|' \
+        -e 's|^CORE_AREA: .*|CORE_AREA: [50, 50, 2350, 2350]|' "$SCRIPT_DIR/flow/config.yaml" > "$CONFIG_FILE"
+    case "$STAGE_TARGET" in *--run-tag*|*--last-run*) ;; *) STAGE_TARGET="$STAGE_TARGET --run-tag mini_$(date +%m%d_%H%M)" ;; esac
 fi
 
 # Source the virtualenv
