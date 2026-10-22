@@ -38,6 +38,7 @@ while [[ "$#" -gt 0 ]]; do
         -f|--floorplan) STAGE_TARGET="--to OpenROAD.Floorplan" ;;
         -r|--route)     STAGE_TARGET="--to OpenROAD.DetailedRouting" ;;
         -a|--audit)     AUDIT_ONLY=1 ;;
+        -R|--resume-route) STAGE_TARGET="--last-run --from OpenROAD.GlobalRouting" ;;
         --clean)
             echo -e "${YELLOW}[CLEAN] Removing previous build & run artifacts...${NC}"
             rm -rf "$BUILD_DIR" "$SCRIPT_DIR/flow/runs"
@@ -52,6 +53,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -f, --floorplan Stop after OpenROAD Floorplan"
             echo "  -r, --route     Stop after OpenROAD Detailed Routing"
             echo "  -a, --audit     Run only sv2v and Yosys synthesis check"
+            echo "  -R, --resume-route  Re-run from Global Routing in the most recent run dir"
             echo "  --clean         Remove build/ and runs/ directories"
             echo "  -h, --help      Show this help message"
             exit 0

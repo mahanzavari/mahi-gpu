@@ -42,12 +42,12 @@ TB_MATMUL := src/tb/kernels/tb_matmul.sv
 RTL_SOURCES := $(RTL_PKG) \
   src/rtl/dispatch.sv src/rtl/fetcher.sv src/rtl/decoder.sv src/rtl/registers.sv \
   src/rtl/alu.sv src/rtl/pc.sv src/rtl/lsu.sv src/rtl/scheduler.sv src/rtl/shared_mem.sv \
-  src/rtl/dcache.sv src/rtl/icache.sv src/rtl/l2_cache.sv src/rtl/victim_write_buffer.sv \
+  src/rtl/dcache.sv src/rtl/icache.sv src/rtl/mahi_sram.sv src/rtl/l2_data_array.sv src/rtl/l2_cache.sv src/rtl/victim_write_buffer.sv \
   src/rtl/controller.sv src/rtl/dcr.sv src/rtl/core_pmu.sv src/rtl/fp32_fma.sv \
   src/rtl/core.sv src/rtl/gpu.sv
 
 # Chip top (Wishbone front end + on-chip SRAM window); ASIC profile only.
-TOP_SOURCES := $(RTL_SOURCES) src/rtl/mahi_sram.sv src/rtl/gpu_mem_subsys.sv src/rtl/gpu_asic_top.sv
+TOP_SOURCES := $(RTL_SOURCES) src/rtl/gpu_mem_subsys.sv src/rtl/gpu_asic_top.sv
 
 # Verilator flags shared by all simulations. Width/pin warnings in the RTL are
 # baselined (see LINT_WAIVE); simulation builds just don't fail on them.
@@ -91,7 +91,7 @@ UNIT_DEF_alu := -DUSE_COMB_DIV=1
 UNIT_SRC_registers := src/rtl/registers.sv
 UNIT_SRC_fp32_fma := src/rtl/fp32_fma.sv
 UNIT_SRC_decoder := src/rtl/decoder.sv
-UNIT_SRC_l2_cache := src/rtl/victim_write_buffer.sv src/rtl/l2_cache.sv
+UNIT_SRC_l2_cache := src/rtl/victim_write_buffer.sv src/rtl/mahi_sram.sv src/rtl/l2_data_array.sv src/rtl/l2_cache.sv
 UNIT_SRC_dcache := src/rtl/dcache.sv
 UNIT_SVA_pc := $(SVA_DIR)/bind_pc.sv
 UNIT_SVA_l2_cache := $(SVA_DIR)/bind_victim_write_buffer.sv
