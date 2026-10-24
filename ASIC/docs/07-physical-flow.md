@@ -144,6 +144,25 @@ Clock stays **40 ns**. Tried and reverted: banning delay cells (`EXTRA_EXCLUDED_
 - The deliverable GDS with macros is `final/mag_gds` (Magic's); `final/gds` (KLayout's) lacks the macro layout. Macro internals are not LVS-checked (black box) and the macro SPICE/timing views are typical-corner only (L17).
 - Not done: post-route gate-level simulation with the SDF, RTL-vs-netlist equivalence, a full-size (non-mini) run, whether a shuttle accepts the macro DRC waiver, margin on hold.
 
+## Slew / cap clean-up, experiment A (`flow/runs/slew_a`, 2026-10-24)
+**Why the violations exist.** Placement-stage repair and the post-CTS timing repair work on the typical corner with pre-route wire estimates; after routing the same pins are seen at 9 corners. Post-route slew violations at `d4_full`:
+nominal typical 2,581, nominal slow 24,576, worst (max RC, slow) 30,058, against the flow's `MAX_TRANSITION_CONSTRAINT` of **0.75 ns** (the library's own limit is 1.5 ns, which is only exceeded by 1,135 pins at the worst corner).
+Cap violations (618) are mild (median 1.24x the cell limit), fanout (369, limit 10) median 12.
+**Experiment.** Resume `d4_full` at global routing with `RUN_POST_GRT_DESIGN_REPAIR: true`, `GRT_DESIGN_REPAIR_MAX_SLEW_PCT: 55`, `GRT_DESIGN_REPAIR_MAX_CAP_PCT: 40` (repair with real route estimates, limits tightened so the typical-corner target is 0.34 ns), stop after post-route STA.
+The repair found 10,479 slew / 248 cap violations, resized 4,261 cells and inserted 1,946 buffers; detailed routing then converged to 0 violations (61 -> 3 -> 3 -> 0).
+
+| | baseline `d4_full` | experiment A |
+|---|---|---|
+| Routing DRC / antenna nets | 0 / 2 | 0 / 3 |
+| Setup worst / hold worst (ns) | +4.07 / +0.025 | +4.58 / +0.035 |
+| Slew violations: worst corner / nominal slow / nominal typical | 30,058 / 24,576 / 2,581 | 17,958 / 12,829 / 1,351 |
+| Slow-corner pins > 1.0 / > 1.5 / > 2.0 ns | 9,118 / 1,135 / 298 | 4,102 / 428 / 125 |
+| Cap / fanout violations | 618 / 369 | 576 / 382 |
+
+Of the 428 remaining slow-corner pins beyond the library range, 280 are antenna-diode pins (they carry their net's slew), 146 are logic pins and 2 are the clock-root buffer inputs (2.8 ns; the `clk` port net is also 0.384 pF against a 0.2 pF limit).
+**Takeaway:** margins halve the slew violations without hurting routing or timing, but the repair still targets one corner, so clearing the slow corner against 0.75 ns needs a much larger margin (the slow corner is ~2.4x slower), more buffers, or judging it against the 1.5 ns library limit.
+Not re-run for this experiment: LVS and DRC signoff (the netlist changed by ~1.9k buffers). The committed `flow/config.yaml` is unchanged.
+
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
