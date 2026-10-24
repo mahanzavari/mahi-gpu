@@ -31,7 +31,7 @@ Stages (`run_asic.sh`):
 | Key | Value |
 |---|---|
 | `DESIGN_NAME` | `gpu_asic_top` |
-| `VERILOG_FILES` | `gpu_inst.unified_cache.data_eng.g_sram.sram.macro vccd1 vssd1 vccd1 vssd1` |
+| `VERILOG_FILES` | `gpu_inst.unified_cache.data_eng.g_sram.sram.macro VPWR VGND vccd1 vssd1` |
 | `CLOCK_PORT` / `CLOCK_PERIOD` | `clk` / 40.0 ns |
 | `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | absolute / [0, 0, 3000, 3000] / [50, 50, 2950, 2950] |
 | `PL_TARGET_DENSITY_PCT` | 30 |
@@ -119,6 +119,30 @@ That is all 53 router violations (51 spacing + 2 shorts, on `d_dout1`, `p_dout1`
 **Shifting the macros cannot fix it:** with pins spanning ~510 um (top) and ~540 um (bottom) and a 153.6 um strap pitch, 3-4 strap pairs always fall among pins that are 5.44 um apart (a pair plus clearance needs ~6.3 um); a sweep of macro x-origins found none that clears every pin.
 **Fix:** `PDN_OBSTRUCTIONS` in `flow/config.yaml` - 12 um met4 keep-out bands above and below each macro (only while the PDN is generated). Dry run (`TO_STEP=Odb.RemovePDNObstructions MINI=1 ./run_asic.sh -F <run>`):
 strap ends moved from exactly the macro edge to 12.3 um away on all six pin edges (e.g. 496.5 -> 508.8, 1016.5 -> 1028.8, 600 -> 587.7); straps in the 103 um channels between macros remain (79 um long). Whether this clears the router/Magic errors is **not yet verified** (needs the full run).
+
+## Mini profile: closure run (`flow/runs/d4_full`, 2026-10-23) - setup, hold, DRC and LVS clean
+Changes against the earlier mini run (`floor_1022_1610`), each found from evidence: (1) **`PDN_MACRO_CONNECTIONS` named the wrong design nets** (`vccd1 vssd1`; this design's are `VPWR VGND`), so all three macros were *unpowered* in the layout
+(`PDN-0231` warning in every run since the macros were added; LVS: 4 macro power nets unmatched). Fixed: `<inst> VPWR VGND vccd1 vssd1`; the grid now has vias inside each macro (8/12/12). (2) 12 um met4 PDN keep-out bands at the macro pin edges (previous section).
+(3) **`SYNTH_STRATEGY: "DELAY 4"`** (was `AREA 0`): pre-placement STA of the five DELAY netlists at the 40 ns clock gave -173..-196 ns (DELAY 0-3, unbuffered) vs +12.4 ns at the slow corner for DELAY 4 (AREA 0: -63.6 ns); DELAY 4 costs +7.8% area, +14.6% cells (91,300 vs 79,657).
+Clock stays **40 ns**. Tried and reverted: banning delay cells (`EXTRA_EXCLUDED_CELLS`) made slow-corner setup worse (-9.27 -> -10.82 ns) and broke hold (45 violations).
+
+| Check | Result |
+|---|---|
+| Detailed routing | 9,812 -> 655 -> 104 -> **0** violations in 4 passes (55 min incl. antenna repair, ~8.7 GB) |
+| Antenna | 2 nets / 2 pins |
+| Setup, 9 corners | **all pass**, worst +4.07 ns (max_ss_100C_1v60); typical +15.5, fast +16.7 |
+| Hold, 9 corners | **all pass**, worst +0.025 ns (max_ff_n40C_1v95) - little margin |
+| LVS (macros as black boxes) | **0 errors** (was 5) |
+| Magic DRC on the Magic GDS that contains the macros (`scripts/macro_drc.tcl`) | 12,986,123 raw boxes, all inside macros and all in rules that also fire on the standalone OpenRAM macro; **0 integration errors** (`scripts/drc_waiver.py`) |
+| Flow's own Magic / KLayout DRC | 0 / 0, **but vacuous for the macros**: they read the KLayout GDS, in which the macros are empty cells (0 shapes). The flow's Magic-GDS is the one with macro content (301 cells, 13 top-level cells) |
+| KLayout XOR | 10.8M differences = exactly the missing macro content in the KLayout GDS (all inside macro boxes); not a layout error |
+| IR drop / power | 0.5 mV worst / 38 mW |
+
+**Still open:**
+- **Max-slew / max-cap / max-fanout violations** in the post-route STA (the flow's own checkers fail them in the min/max RC corners and ignore the nominal ones): `MAX_TRANSITION_CONSTRAINT` is 0.75 ns; at the slow corner 30,058 pins exceed it (9,118 > 1.0 ns, 1,135 > 1.5 ns, 298 > 2.0 ns; worst is the clock-root buffer input at 2.8 ns), 4,138 at typical, 572 at fast; 618 cap and 369 fanout violations.
+  60 of the slew violators are macro address pins with a 0.04 ns limit in the OpenRAM liberty (an artifact). The resizer repairs at the nominal corner only.
+- The deliverable GDS with macros is `final/mag_gds` (Magic's); `final/gds` (KLayout's) lacks the macro layout. Macro internals are not LVS-checked (black box) and the macro SPICE/timing views are typical-corner only (L17).
+- Not done: post-route gate-level simulation with the SDF, RTL-vs-netlist equivalence, a full-size (non-mini) run, whether a shuttle accepts the macro DRC waiver, margin on hold.
 
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes

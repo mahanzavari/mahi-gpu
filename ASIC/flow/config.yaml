@@ -42,10 +42,12 @@ MACROS:
         location: [80, 1120]
         orientation: N
 
+# Format: <instance> <design power net> <design ground net> <macro power pin> <macro ground pin>. The design nets are VPWR/VGND;
+# naming them vccd1/vssd1 (as before) left all three macros unconnected (PDN-0231) and made LVS fail on their power pins.
 PDN_MACRO_CONNECTIONS:
-  - "mem_inst.pmem.macro vccd1 vssd1 vccd1 vssd1"
-  - "mem_inst.dmem.macro vccd1 vssd1 vccd1 vssd1"
-  - "gpu_inst.unified_cache.data_eng.g_sram.sram.macro vccd1 vssd1 vccd1 vssd1"
+  - "mem_inst.pmem.macro VPWR VGND vccd1 vssd1"
+  - "mem_inst.dmem.macro VPWR VGND vccd1 vssd1"
+  - "gpu_inst.unified_cache.data_eng.g_sram.sram.macro VPWR VGND vccd1 vssd1"
 
 # --- Routing (attempt 2) -----------------------------------------------------
 # Attempt 1 (GRT_ADJUSTMENT 0.3, 50 extra iterations) ended with 71,864 overflow after ~7 h
@@ -81,3 +83,20 @@ PDN_OBSTRUCTIONS:
   - [met4, 80, 1016.54, 763.1, 1028.54]  # dmem, above
   - [met4, 80, 1108, 763.1, 1120]        # l2 data, below
   - [met4, 80, 1536.54, 763.1, 1548.54]  # l2 data, above
+
+# --- Attempt: timing, LVS and GDS handling (2026-10-23) ---------------------------------------------------------------
+# Worst slow-corner path (-9.27 ns @ 40 ns) was a ~58-stage fanout buffer chain from the register-file warp_id flop made of
+# clkdlybuf/dlymetal DELAY cells that the resizer was free to use as buffers. Exclude delay cells from buffering.
+# EXTRA_EXCLUDED_CELLS (delay cells) was tried and REVERTED: slow-corner setup got worse (-9.27 -> -10.82 ns) and hold broke (45 violations).
+# LVS: include the macros' (blackbox) Verilog header so Netgen knows the OpenRAM subcircuit; macro internals are not LVS-checked here.
+LVS_INCLUDE_MARCO_NETLISTS: true
+# Magic's stream-out writes 13 extra unreferenced top cells (the OpenRAM GDS itself has one) which breaks KLayout DRC/render.
+# Use KLayout's GDS (single top cell) as the primary one for DRC/render; the Magic GDS is still produced for the XOR.
+PRIMARY_GDSII_STREAMOUT_TOOL: klayout
+
+# --- Synthesis strategy (2026-10-23) -----------------------------------------------------------------------------
+# AREA 0 (default) maps deep, unbuffered logic: slow-corner setup was -9.3..-10.8 ns at 40 ns after place and route.
+# DELAY 4 is the only strategy whose netlist is timing-clean before placement (+12.4 ns at the slow corner, TNS 0; the other
+# DELAY strategies and AREA 0 were -170..-240 ns / -63 ns unbuffered) for +7.8% area, +14.6% cells. With it the routed
+# mini profile closes setup (>= +4.07 ns) and hold (>= +0.025 ns) in all 9 corners at the original 40 ns clock.
+SYNTH_STRATEGY: "DELAY 4"

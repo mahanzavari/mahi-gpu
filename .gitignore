@@ -33,3 +33,4 @@ ASIC/src/rtl/verilog-sv2v/
 ASIC/flow/config_mini.yaml
 build_mini/
 ASIC/build_mini/
+ASIC/flow/config_syn_d*.yaml
