@@ -127,7 +127,10 @@ def check_static():
     has(f'{R}/pc.sv', r"localparam STACK_DEPTH = 8", why='L6'); has(f'{R}/pc.sv', r"reg \[\$clog2\(STACK_DEPTH\)-1:0\]\s+stack_ptr", why='L6')
     has(f'{R}/scheduler.sv', r"localparam STACK_DEPTH = 4", why='L7')
     has(f'{R}/scheduler.sv', r"is_reconverge = ", why='L1'); has(f'{R}/scheduler.sv', r"barrier_count >= num_active_warps_comb", why='L1')
-    has(f'{R}/gpu.sv', r"exception", want=False, why='L12 exceptions not exported')
+    has(f'{R}/gpu.sv', r"\.exception_raised\(core_exc\[i\]\)", why='L12 resolved: faults exported')
+    has(f'{R}/gpu_asic_top.sv', r"wb_adr_i\[7:0\] == 8'h08", why='L12 resolved: FAULT_INFO')
+    has(f'{R}/core.sv', r"assign ex_has_sync_div = ex_sync", why='L1: SYNC while diverged faults')
+    has(f'{R}/core.sv', r"divider #\(", why='L2 resolved: shared divider')
     has(f'{R}/lsu.sv', r"rs\[i\]\[ADDR_BITS-1:0\] \+ ext_addr_offset", why='L14 address truncation')
     has(f'{R}/core.sv', r"MAX_MEM_ADDR\s*=\s*32'h0000_FFFF", why='L14')
     # fixes present in ASIC

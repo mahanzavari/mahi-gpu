@@ -41,7 +41,15 @@ module gpu #(
     output wire [31:0] pmu_snap_0 [NUM_CORES],
     output wire [31:0] pmu_snap_1 [NUM_CORES],
     output wire [31:0] pmu_snap_2 [NUM_CORES],
-    output wire [31:0] pmu_snap_3 [NUM_CORES]
+    output wire [31:0] pmu_snap_3 [NUM_CORES],
+
+    // First warp fault of the lowest faulting core (div by zero, memory fault, SYNC while diverged).
+    // fault stays high until that core is reset (the dispatcher resets a core per block), so a host
+    // wrapper must latch it (gpu_asic_top does: STATUS[4] / FAULT_INFO).
+    output logic        fault,
+    output logic [3:0]  fault_cause,
+    output logic [7:0]  fault_warp,
+    output logic [15:0] fault_pc
 );
 
     wire [7:0] thread_count;
@@ -55,6 +63,18 @@ module gpu #(
     wire [4:0] pmu_cfg_3_global;
 
     wire [NUM_CORES-1:0] core_start, core_reset, core_done;
+    wire [NUM_CORES-1:0] core_exc;
+    wire [3:0]  core_exc_cause [NUM_CORES];
+    wire [gpu_pkg::WARP_ID_BITS-1:0] core_exc_warp [NUM_CORES];
+    wire [PROGRAM_MEM_ADDR_BITS-1:0] core_exc_pc [NUM_CORES];
+
+    always_comb begin
+        fault = 1'b0; fault_cause = 4'd0; fault_warp = 8'd0; fault_pc = 16'd0;
+        for (int c = NUM_CORES - 1; c >= 0; c--) if (core_exc[c]) begin
+            fault = 1'b1; fault_cause = core_exc_cause[c];
+            fault_warp = 8'(core_exc_warp[c]); fault_pc = 16'(core_exc_pc[c]);
+        end
+    end
     wire [7:0] core_block_id [NUM_CORES];
     wire [$clog2(gpu_pkg::THREADS_PER_CORE):0] core_thread_count [NUM_CORES];
 
@@ -200,6 +220,8 @@ module gpu #(
                 
                 .pmu_snap_0(pmu_snap_0[i]), .pmu_snap_1(pmu_snap_1[i]), 
                 .pmu_snap_2(pmu_snap_2[i]), .pmu_snap_3(pmu_snap_3[i]),
+                .exception_raised(core_exc[i]), .exception_warp_id(core_exc_warp[i]),
+                .exception_pc(core_exc_pc[i]), .exception_cause(core_exc_cause[i]),
 
                 .ic_ev_access(ic_ev_acc), .ic_ev_hit(ic_ev_hit), .ic_ev_stall(ic_ev_stall),
                 .dc_ev_read_acc(dc_ev_r_acc), .dc_ev_read_hit(dc_ev_r_hit), .dc_ev_read_stall(dc_ev_r_stall),

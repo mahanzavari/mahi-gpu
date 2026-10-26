@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+# LibreLane --dockerized talks to the system Docker daemon. Pin the CLI context so a switched default
+# context (e.g. Docker Desktop, not running) cannot break the flow. Override by exporting DOCKER_CONTEXT.
+export DOCKER_CONTEXT="${DOCKER_CONTEXT:-default}"
+
 # ==============================================================================
 # Configuration & Paths
 # ==============================================================================

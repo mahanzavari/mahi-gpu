@@ -56,6 +56,8 @@ def run_seed(a, seed):
     sva = [l for l in log.splitlines() if 'SVA' in l or '%Error' in l]
     if 'TB_TIMEOUT' in log: return seed, 'HANG', 'DUT never asserted done'
     if sva: return seed, 'SVA', sva[0]
+    flt = [l for l in log.splitlines() if 'TB_FAULT' in l]
+    if flt: return seed, 'FAULT', flt[0].strip()          # generated programs never fault
     if rc != 0 or not os.path.exists(f'{d}/out.hex'): return seed, 'CRASH', f'rc={rc}'
     got = read_hex(f'{d}/out.hex')
     diffs = [i for i in range(1024) if got[i] != expect[i]]

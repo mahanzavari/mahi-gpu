@@ -26,7 +26,13 @@ module tb_random;
         .data_mem_read_valid(dm_rv), .data_mem_read_address(dm_ra), .data_mem_read_ready(dm_rr), .data_mem_read_data(dm_rd),
         .data_mem_write_valid(dm_wv), .data_mem_write_address(dm_wa), .data_mem_write_data(dm_wd),
         .data_mem_write_strobe(dm_ws), .data_mem_write_ready(dm_wr),
-        .pmu_snap_0(), .pmu_snap_1(), .pmu_snap_2(), .pmu_snap_3());
+        .pmu_snap_0(), .pmu_snap_1(), .pmu_snap_2(), .pmu_snap_3(),
+        .fault(fault), .fault_cause(fault_cause), .fault_warp(fault_warp), .fault_pc(fault_pc));
+
+    // first warp fault (the core clears its report on the next block reset, so latch it here)
+    wire fault; wire [3:0] fault_cause; wire [7:0] fault_warp; wire [15:0] fault_pc;
+    reg f_seen = 0; reg [3:0] f_cause = 0; reg [7:0] f_warp = 0; reg [15:0] f_pc = 0;
+    always @(posedge clk) if (fault && !f_seen) begin f_seen <= 1; f_cause <= fault_cause; f_warp <= fault_warp; f_pc <= fault_pc; end
 
     reg [31:0] p_mem [0:4095];
     reg [31:0] d_mem [0:1023];
@@ -105,6 +111,7 @@ module tb_random;
         fd = $fopen(out_f, "w");
         for (i = 0; i < 1024; i = i + 1) $fdisplay(fd, "%08x", d_mem[i]);
         $fclose(fd);
+        if (f_seen) $display("TB_FAULT cause=%0d warp=%0d pc=%0d", f_cause, f_warp, f_pc);
         $display("TB_DONE cycles=%0d", cyc);
         $finish;
     end

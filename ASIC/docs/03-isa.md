@@ -30,7 +30,7 @@ All integer values are 32-bit. "signed" = two's complement.
 |---|---|---|
 | Integer | `ADD SUB` | wrap-around |
 | | `MUL` | low 32 bits of signed product |
-| | `DIV MOD` | **unsigned**; `rt==0` raises a fault ([L12](04-limitations.md#l12)); **return 0 unless built with `USE_COMB_DIV`** ([L2](04-limitations.md#l2)) |
+| | `DIV MOD` | **unsigned**; `rt==0` raises a fault (cause 1, [L12](04-limitations.md#l12)); multi-cycle on the shared iterative divider, up to 33 cycles per active lane while the warp waits ([L2](04-limitations.md#l2)) |
 | | `AND OR XOR` | bitwise |
 | | `SHL SHR` | logical; shift count ≥ 32 gives 0 |
 | | `MIN MAX` | signed compare |
@@ -58,7 +58,7 @@ Write-port priority when several results target the same register: FP > LSU > AL
 instructions that read an FP result still in flight.
 
 ## Condition flags
-The ALU also produces C/V/Z/N/SAT flags (`alu.sv`), stored per warp/lane in `core.sv:345-349`, but **no instruction reads them**;
+The ALU also produces C/V/Z/N/SAT flags (`alu.sv`), stored per warp/lane in `core.sv:386-390`, but **no instruction reads them**;
 branches use only NZP.
 
 ## Faults

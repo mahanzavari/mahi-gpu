@@ -71,7 +71,7 @@ per-core `icache_inst`/`dcache_inst`) and `core.sv`.
 | State | Where | Depth | Behaviour on overflow |
 |---|---|---|---|
 | Return (call) stack, per lane | `pc.sv:29` | 8, 3-bit pointer | wraps silently — [L6](04-limitations.md#l6) |
-| Divergence stack, per warp | `scheduler.sv:57` | 4 | `stack_ptr` would exceed 4; SVA `sched_sva` flags it — [L7](04-limitations.md#l7) |
+| Divergence stack, per warp | `scheduler.sv:59` | 4 | `stack_ptr` would exceed 4; SVA `sched_sva` flags it — [L7](04-limitations.md#l7) |
 | NZP flags | `pc.sv` `nzp[warp]`, per lane | 3 bits | reset to 0 — [L5](04-limitations.md#l5) |
 
 Divergence/reconvergence is described in [04-limitations L1](04-limitations.md#l1): groups are only merged when a
@@ -96,15 +96,16 @@ full profile. Test infrastructure follows it through `scripts/profile_cfg.py` (`
 (`make MINI=1 rand-quick top-quick`); `verify-asic`/`verify-matmul`/`limits` are full-profile tests. Physical results: [07](07-physical-flow.md).
 
 ## Chip top: `gpu_asic_top` (`src/rtl/gpu_asic_top.sv`)
-Pins: `clk`, `reset`, Wishbone slave (`wb_cyc_i, wb_stb_i, wb_we_i, wb_sel_i[3:0], wb_adr_i[31:0], wb_dat_i[31:0], wb_dat_o[31:0], wb_ack_o`), `gpu_done_pin`.
+Pins: `clk`, `reset`, Wishbone slave (`wb_cyc_i, wb_stb_i, wb_we_i, wb_sel_i[3:0], wb_adr_i[31:0], wb_dat_i[31:0], wb_dat_o[31:0], wb_ack_o`), `gpu_done_pin`, `gpu_fault_pin` (= `STATUS[4]`).
 `wb_adr_i[31:12]` selects the page (`0x30000` = CSR, `0x30001` = memory window); every access is acked (registered ack, one transaction at a time).
 
 | Address | R/W | Meaning |
 |---|---|---|
 | `0x3000_0000` | W | `[0]` start (level, held until written 0); `[1]` **soft reset** (8 cycles; clears DCR/scheduler/caches, keeps SRAM; other bits ignored); `[15:8]` → DCR 0x00 = `thread_count`. `start` reaches the GPU 2 cycles after the DCR write |
 | `0x3000_0000` | R | `{16'b0, thread_count, 7'b0, start}` |
-| `0x3000_0004` | R | `[0]` done, `[1]` busy, `[2]` gpu_oob (sticky), `[3]` host_blocked (sticky) |
-| `0x3000_0004` | W | write 1 to `[2]`/`[3]` to clear |
+| `0x3000_0004` | R | `[0]` done, `[1]` busy, `[2]` gpu_oob (sticky), `[3]` host_blocked (sticky), `[4]` fault (sticky) |
+| `0x3000_0004` | W | write 1 to `[2]`/`[3]`/`[4]` to clear |
+| `0x3000_0008` | R | **FAULT_INFO** `{pc[15:0], warp[7:0], 4'b0, cause[3:0]}` of the first fault since `[4]` was clear; cause 1 div0, 2 bad address, 3 `SYNC` while diverged ([L12](04-limitations.md#l12)) |
 | `0x3000_1000–17FF` | R/W | **PMEM**: 512 words = GPU instruction words 0..511 (byte strobes honoured) |
 | `0x3000_1800–1FFF` | R/W | **DMEM**: 512 words = GPU data words 0..511 |
 | other | R/W | acked; reads 0, writes ignored |

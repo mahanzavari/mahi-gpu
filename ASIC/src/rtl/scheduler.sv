@@ -42,6 +42,8 @@ module scheduler #(
     input wire ex_sync,
     input wire ex_exception_valid,
     output reg done,
+    // per-warp: divergence stack non-empty (core faults a SYNC executed in this state, cause 3)
+    output wire [NUM_WARPS-1:0] warp_diverged,
 
     output wire ev_scheduler_idle,
     output wire ev_warp_switch,
@@ -63,6 +65,11 @@ module scheduler #(
     reg [PROGRAM_MEM_ADDR_BITS-1:0] stack_pc [NUM_WARPS][STACK_DEPTH];
     reg [THREADS_PER_BLOCK-1:0] stack_mask [NUM_WARPS][STACK_DEPTH];
     reg [$clog2(STACK_DEPTH+1)-1:0] stack_ptr [NUM_WARPS];
+
+    genvar gd;
+    generate for (gd = 0; gd < NUM_WARPS; gd = gd + 1) begin : g_div
+        assign warp_diverged[gd] = (stack_ptr[gd] != 0);
+    end endgenerate
 
     reg [WARP_PTR_WIDTH-1:0] rr_ptr;
     reg [$clog2(NUM_WARPS+1):0] barrier_count;

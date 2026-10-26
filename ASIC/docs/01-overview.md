@@ -21,7 +21,7 @@ Legend: **=** byte-identical to `src/rtl`; **Δ** differs. (Checked with `diff -
 | `gpu_pkg.sv` (`include/`) | new | profile constants; `WARP_ID_BITS`, `THREADS_PER_CORE`, … |
 | `gpu_asic_top.sv` | new | Wishbone slave + DCR/start/done/soft-reset + 4 KB SRAM window (`gpu_mem_subsys.sv`, `mahi_sram.sv` new) → [L3](04-limitations.md#l3) resolved, [L15](04-limitations.md#l15) |
 | `gpu.sv`, `core.sv`, `dispatch.sv`, `fetcher.sv`*, `registers.sv`, `icache.sv`, `dcache.sv`, `lsu.sv`, `shared_mem.sv`, `victim_write_buffer.sv`, `gpu_axi4_adaptor.sv`, `decoder.sv` | Δ | parameter defaults → `gpu_pkg::CFG_*`; formatting of instances |
-| `alu.sv` | Δ | `DIV`/`MOD` are **stubbed to 0 unless `USE_COMB_DIV`** (`alu.sv:78,90`) → [L2](04-limitations.md#l2); shift-carry index simplified |
+| `alu.sv` | Δ | `DIV`/`MOD` in the ALU are stubbed to 0 unless `USE_COMB_DIV` (`alu.sv:78,90`); ASIC builds compute them in the new shared `divider.sv` instead ([L2](04-limitations.md#l2), resolved); shift-carry index simplified |
 | `l2_cache.sv` | Δ | `ev_*` outputs changed `reg`→`wire`, tied to 0 (`l2_cache.sv:333+`) → [L4](04-limitations.md#l4); `$clog2(1)` guards (`PORT_PTR_WIDTH`, `WAY_PTR_WIDTH`) |
 | `scheduler.sv` | Δ | latch-avoiding default assignments (`comb_target_a`, `check_w_var`, `will_flush`); `$clog2` guard |
 | `pc.sv` | Δ | `$clog2` guard; debug prints under `` `ifndef SYNTHESIS ``. (A port bug that deleted the NZP/CALL/RET state updates was fixed — [B1](05-bug-log.md#b1).) |

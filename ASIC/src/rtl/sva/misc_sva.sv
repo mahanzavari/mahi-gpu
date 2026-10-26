@@ -71,3 +71,21 @@ module vwb_sva (
     a_hold: assert property (@(posedge clk) disable iff (reset) (mem_write_valid && !mem_write_ready) |=> mem_write_valid)
         else $error("SVA vwb: mem_write_valid dropped before ready");
 endmodule
+
+module div_sva #(parameter LANES = 4, DATA_BITS = 32) (
+    input wire clk, input wire reset, input wire start, input wire busy, input wire done, input wire ack
+);
+    // worst case: per lane 1 select cycle + DATA_BITS steps, plus capture and the final select
+    localparam MAXLAT = LANES * (DATA_BITS + 1) + 2;
+    // The core stalls a second DIV/MOD in ID while the unit is busy (div_busy_stall).
+    a_no_start_busy: assert property (@(posedge clk) disable iff (reset) start |-> !busy)
+        else $error("SVA div: start while busy");
+    a_ack_done: assert property (@(posedge clk) disable iff (reset) ack |-> done)
+        else $error("SVA div: ack without done");
+    a_done_busy: assert property (@(posedge clk) disable iff (reset) done |-> busy)
+        else $error("SVA div: done while idle");
+    integer run_cyc;
+    always @(posedge clk) run_cyc <= (reset || !busy || done) ? 0 : run_cyc + 1;
+    a_finishes: assert property (@(posedge clk) disable iff (reset) run_cyc <= MAXLAT)
+        else $error("SVA div: no result within %0d cycles", MAXLAT);
+endmodule

@@ -58,7 +58,7 @@ RTL_SOURCES := $(RTL_PKG) \
   src/rtl/alu.sv src/rtl/pc.sv src/rtl/lsu.sv src/rtl/scheduler.sv src/rtl/shared_mem.sv \
   src/rtl/dcache.sv src/rtl/icache.sv src/rtl/mahi_sram.sv src/rtl/l2_data_array.sv src/rtl/l2_cache.sv src/rtl/victim_write_buffer.sv \
   src/rtl/controller.sv src/rtl/dcr.sv src/rtl/core_pmu.sv src/rtl/fp32_fma.sv \
-  src/rtl/core.sv src/rtl/gpu.sv
+  src/rtl/divider.sv src/rtl/core.sv src/rtl/gpu.sv
 
 # Chip top (Wishbone front end + on-chip SRAM window); ASIC profile only.
 TOP_SOURCES := $(RTL_SOURCES) src/rtl/gpu_mem_subsys.sv src/rtl/gpu_asic_top.sv
@@ -71,7 +71,7 @@ VL_SIM  := --binary --timing --assert -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-
 SVA_DIR   := src/rtl/sva
 SVA_CHK   := $(SVA_DIR)/core_sva.sv $(SVA_DIR)/misc_sva.sv $(SVA_DIR)/top_sva.sv
 SVA_BINDS := $(addprefix $(SVA_DIR)/,bind_core.sv bind_pc.sv bind_scheduler.sv bind_lsu.sv \
-             bind_fetcher.sv bind_victim_write_buffer.sv)
+             bind_fetcher.sv bind_victim_write_buffer.sv bind_divider.sv)
 SVA_ALL   := $(SVA_CHK) $(SVA_BINDS)
 TOP_SVA   := $(SVA_DIR)/bind_top.sv      # only valid where gpu_asic_top / gpu_mem_subsys exist
 
@@ -84,7 +84,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build macro-drc drc-waiver die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build macro-drc drc-waiver signoff-drc die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -109,10 +109,11 @@ UNIT_SRC_l2_cache := src/rtl/victim_write_buffer.sv src/rtl/mahi_sram.sv src/rtl
 UNIT_SRC_dcache := src/rtl/dcache.sv
 UNIT_SVA_pc := $(SVA_DIR)/bind_pc.sv
 UNIT_SVA_l2_cache := $(SVA_DIR)/bind_victim_write_buffer.sv
+UNIT_SVA_divider := $(SVA_DIR)/bind_divider.sv
 
 unit: $(addprefix unit-,$(UNIT_TESTS)) unit-alu-stub
 
-# ALU again without USE_COMB_DIV: DIV/MOD must return 0 (documented ASIC stub).
+# ALU again without USE_COMB_DIV: the ALU's DIV/MOD output is 0 (ASIC builds take DIV/MOD from divider.sv instead).
 unit-alu-stub:
 	@mkdir -p $(B)/unit_alu_stub
 	verilator $(VL_SIM) $(ASIC_DEF) --top-module tb_alu -Mdir $(B)/unit_alu_stub \
@@ -151,7 +152,7 @@ N ?= 50
 LAT ?= 0
 rand-build:
 	mkdir -p $(B)/rand
-	verilator $(VL_SIM) $(ASIC_DEF) -DUSE_COMB_DIV=1 -DSYNTHESIS=1 --top-module tb_random -Mdir $(B)/rand \
+	verilator $(VL_SIM) $(ASIC_DEF) -DSYNTHESIS=1 --top-module tb_random -Mdir $(B)/rand \
 	  $(RTL_SOURCES) $(SVA_ALL) src/tb/random/tb_random.sv -o rand_tb >/dev/null
 
 rand-quick: rand-build
@@ -163,7 +164,7 @@ rand-quick: rand-build
 #   and repeats with a different program. Same golden model as `rand`.
 top-build:
 	mkdir -p $(B)/top
-	verilator $(VL_SIM) $(ASIC_DEF) -DUSE_COMB_DIV=1 -DSYNTHESIS=1 --top-module tb_asic_top -Mdir $(B)/top \
+	verilator $(VL_SIM) $(ASIC_DEF) -DSYNTHESIS=1 --top-module tb_asic_top -Mdir $(B)/top \
 	  $(TOP_SOURCES) $(SVA_ALL) $(TOP_SVA) src/tb/top/tb_asic_top.sv -o top_tb >/dev/null
 
 top-quick: top-build
@@ -177,20 +178,25 @@ SRAM_V := $(SRAM_MACRO_DIR)/sky130_sram_2kbyte_1rw1r_32x512_8/sky130_sram_2kbyte
 top-macro:
 	mkdir -p $(B)/top_macro
 	sed 's/parameter VERBOSE = 1/parameter VERBOSE = 0/; 1i `timescale 1ns/1ps' $(SRAM_V) > $(B)/top_macro/openram_quiet.v
-	verilator $(VL_SIM) -Wno-STMTDLY -Wno-INITIALDLY -Wno-COMBDLY $(ASIC_DEF) -DUSE_COMB_DIV=1 -DSYNTHESIS=1 -DMAHI_SRAM_MACRO=1 \
+	verilator $(VL_SIM) -Wno-STMTDLY -Wno-INITIALDLY -Wno-COMBDLY $(ASIC_DEF) -DSYNTHESIS=1 -DMAHI_SRAM_MACRO=1 \
 	  --top-module tb_asic_top -Mdir $(B)/top_macro $(TOP_SOURCES) $(SVA_ALL) $(TOP_SVA) $(B)/top_macro/openram_quiet.v \
 	  src/tb/top/tb_asic_top.sv -o top_macro_tb >/dev/null
 	python3 scripts/top_regress.py --bin $(B)/top_macro/top_macro_tb --seeds 0 16 --gap 0 --work $(B)/top_macro/work
+
+# sky130A version pinned by LibreLane 3.0.16 (resolved.json PDK_ROOT). ~/.ciel/sky130A may point at a different
+# version, so every target that reads PDK files uses this one explicitly.
+PDK_VER ?= 8afc8346a57fe1ab7934ba5a6056ea8b43078e71
+PDK_DIR := $(HOME)/.ciel/ciel/sky130/versions/$(PDK_VER)/sky130A
 
 # --- Gate-level simulation (zero delay) of the synthesized netlist -----------------
 #   make gls [GLS_NETLIST=path/to/gpu_asic_top.nl.v]    (~15 min Verilator build, ~3 GB RAM)
 # Cell models are generated from the liberty file (scripts/gen_cell_models.py; Verilator cannot read
 # the PDK's UDP models and the generator is truth-table-checked against them). The SRAM is the real
-# OpenRAM model. The golden model runs with MAHI_NO_DIV=1: the synthesized ALU stubs DIV/MOD to 0 (L2).
+# OpenRAM model. DIV/MOD run on the shared iterative divider (divider.sv), so the golden model is the plain one.
 # Flops start random (+verilator+rand+reset+2) so an unreset flop shows up as a mismatch.
 GLS_RUN     ?= $(lastword $(sort $(wildcard flow/runs/RUN_*/06-yosys-synthesis/gpu_asic_top.nl.v)))
 GLS_NETLIST ?= $(GLS_RUN)
-GLS_LIB     ?= $(firstword $(wildcard $(HOME)/.ciel/ciel/sky130/versions/*/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib))
+GLS_LIB     ?= $(PDK_DIR)/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 gls-build:
 	@test -f "$(GLS_NETLIST)" || { echo "no synthesized netlist (set GLS_NETLIST)"; exit 1; }
 	mkdir -p $(B)/gls $(B)/top_macro
@@ -202,19 +208,31 @@ gls-build:
 	  $(B)/gls/cells_func.v $(B)/gls/netlist.v $(B)/top_macro/openram_quiet.v src/tb/top/tb_asic_top.sv -o gls_tb >/dev/null
 
 gls: gls-build
-	MAHI_NO_DIV=1 python3 scripts/top_regress.py --bin $(B)/gls/obj/gls_tb --seeds 0 24 --gap 0 --work $(B)/gls/work \
+	python3 scripts/top_regress.py --bin $(B)/gls/obj/gls_tb --seeds 0 24 --gap 0 --work $(B)/gls/work \
 	  --plus +verilator+rand+reset+2 +verilator+seed+1{seed}
 
 # --- OpenRAM macro DRC waiver basis ----------------------------------------------------
 #   make macro-drc            standalone Magic DRC of the macro GDS (needs docker + the LibreLane image; ~2 min)
 #   make drc-waiver RUN=<run> split an in-chip Magic DRC report into macro-intrinsic (waived) vs integration errors
 MACRO_NAME := sky130_sram_2kbyte_1rw1r_32x512_8
-MAGIC_RC   ?= $(firstword $(wildcard $(HOME)/.ciel/ciel/sky130/versions/*/sky130A/libs.tech/magic/sky130A.magicrc))
+MAGIC_RC   ?= $(PDK_DIR)/libs.tech/magic/sky130A.magicrc
 macro-drc:
 	mkdir -p $(B)/macro_drc
-	docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e PDK_ROOT=$(HOME)/.ciel -e PDK=sky130A -e HOME=$(HOME) \
+	DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e PDK_ROOT=$(dir $(PDK_DIR)) -e PDK=sky130A -e HOME=$(HOME) \
 	  -e MACRO_GDS=$(CURDIR)/flow/macros/$(MACRO_NAME).gds -e MACRO_CELL=$(MACRO_NAME) -e OUT=$(CURDIR)/$(B)/macro_drc/macro_drc.rpt \
 	  ghcr.io/librelane/librelane:3.0.16 magic -dnull -noconsole -rcfile $(MAGIC_RC) $(CURDIR)/scripts/macro_drc.tcl | grep MACRO_DRC_COUNT
+	python3 scripts/drc_waiver.py --make-list --report $(B)/macro_drc/macro_drc.rpt --pdk $(PDK_VER)
+
+# Full-GDS Magic DRC of a finished run (the GDS that contains the macros) + macro waiver split.
+#   make signoff-drc RUN=flow/runs/<run>      (~30 min; report in <run>/signoff_drc/)
+SIGNOFF_GDS = $(firstword $(wildcard $(RUN)/final/mag_gds/*.gds))
+signoff-drc:
+	@test -n "$(RUN)" -a -f "$(SIGNOFF_GDS)" || { echo "usage: make signoff-drc RUN=<run dir with final/mag_gds>"; exit 1; }
+	mkdir -p $(RUN)/signoff_drc
+	DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e PDK_ROOT=$(dir $(PDK_DIR)) -e PDK=sky130A -e HOME=$(HOME) \
+	  -e MACRO_GDS=$(abspath $(SIGNOFF_GDS)) -e MACRO_CELL=gpu_asic_top -e OUT=$(abspath $(RUN))/signoff_drc/drc.magic.rpt \
+	  ghcr.io/librelane/librelane:3.0.16 magic -dnull -noconsole -rcfile $(MAGIC_RC) $(CURDIR)/scripts/macro_drc.tcl | grep MACRO_DRC_COUNT
+	python3 scripts/drc_waiver.py --report $(RUN)/signoff_drc/drc.magic.rpt
 
 drc-waiver:
 	@test -n "$(RUN)" || { echo "usage: make drc-waiver RUN=<run dir>"; exit 1; }
@@ -222,7 +240,7 @@ drc-waiver:
 
 # --- Die map: colour-by-block picture of a routed run (scripts/die_map.py) ----------------
 #   make die-map RUN=flow/runs/floor_1022_1610 NETLIST=flow/runs/mini_1022_1554/06-yosys-synthesis/gpu_asic_top.nl.v
-DIE_LEF   ?= $(firstword $(wildcard $(HOME)/.ciel/ciel/sky130/versions/*/sky130A/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef))
+DIE_LEF   ?= $(PDK_DIR)/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef
 DIE_DEF   ?= $(lastword $(wildcard $(RUN)/*detailedrouting/gpu_asic_top.def))
 die-map:
 	@test -n "$(RUN)" -a -n "$(NETLIST)" || { echo "usage: make die-map RUN=<run dir> NETLIST=<06-yosys-synthesis/...nl.v>"; exit 1; }
