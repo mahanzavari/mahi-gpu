@@ -93,6 +93,10 @@ LVS_INCLUDE_MARCO_NETLISTS: true
 # Magic's stream-out writes 13 extra unreferenced top cells (the OpenRAM GDS itself has one) which breaks KLayout DRC/render.
 # Use KLayout's GDS (single top cell) as the primary one for DRC/render; the Magic GDS is still produced for the XOR.
 PRIMARY_GDSII_STREAMOUT_TOOL: klayout
+# The KLayout GDS used to have EMPTY macro cells: stream_out.py clears every cell, then re-reads the GDS files, and with the
+# default RenameCell the re-read OpenRAM macro lands under a renamed cell that the top never references and that is dropped.
+# OverwriteCell puts the real content back under the original name (verified: macro 23,029 shapes / 7,357 children, one top cell).
+KLAYOUT_CONFLICT_RESOLUTION: OverwriteCell
 
 # --- Synthesis strategy (2026-10-23) -----------------------------------------------------------------------------
 # AREA 0 (default) maps deep, unbuffered logic: slow-corner setup was -9.3..-10.8 ns at 40 ns after place and route.
