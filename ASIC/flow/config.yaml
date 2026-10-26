@@ -97,6 +97,12 @@ PRIMARY_GDSII_STREAMOUT_TOOL: klayout
 # default RenameCell the re-read OpenRAM macro lands under a renamed cell that the top never references and that is dropped.
 # OverwriteCell puts the real content back under the original name (verified: macro 23,029 shapes / 7,357 children, one top cell).
 KLAYOUT_CONFLICT_RESOLUTION: OverwriteCell
+# The primary GDS now contains the OpenRAM macro, so the flow's Magic DRC reports its ~13M macro-internal boxes (OpenRAM is not
+# sky130 DRC-clean under Magic). Do not stop the flow on them; the DRC verdict is `make signoff-drc RUN=<run>`, which fails on any
+# box that is not inside a macro and not a rule the standalone macro already violates (flow/waivers/).
+# KLayout's sky130 DRC deck (sky130A_mr.drc, same options as the flow) reports 0 violations on both the standalone macro and the
+# full chip GDS with the macro (checked 2026-10-27), so ERROR_ON_KLAYOUT_DRC stays at its default (fatal).
+ERROR_ON_MAGIC_DRC: false
 
 # --- Synthesis strategy (2026-10-23) -----------------------------------------------------------------------------
 # AREA 0 (default) maps deep, unbuffered logic: slow-corner setup was -9.3..-10.8 ns at 40 ns after place and route.
