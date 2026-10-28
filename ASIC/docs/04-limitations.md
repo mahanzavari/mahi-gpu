@@ -59,8 +59,10 @@
 ## L2
 **RESOLVED — `DIV`/`MOD` compute real results.** They used to return 0 in every synthesized build (the ALU's divider is only
 compiled with `USE_COMB_DIV`, too big and slow for the ASIC). Now `core.sv` sends them to `divider.sv`: **one** radix-2
-restoring divider per core, shared by the lanes (one subtract per cycle, leading-zero skip, lanes one after another, about
-100 flops). It uses the FMA's long-latency path: the warp parks (`WAITING_FP`), `rd` is scoreboarded, the result comes back
+restoring divider per core, shared by the lanes (one subtract per cycle, leading-zero skip, lanes one after another).
+Measured standalone on the sky130 typical library: 309 flops / 14,409 um2 on the mini profile (2 lanes), 506 flops / 21,861 um2 on
+the full profile (4 lanes); most flops are the per-lane operand and result buffers. In the routed mini design the synthesized area
+grew 3.6% (+342 flops). A combinational `/` and `%` would be 22,549 um2 per lane with a ~93 ns path at the typical corner. It uses the FMA's long-latency path: the warp parks (`WAITING_FP`), `rd` is scoreboarded, the result comes back
 on the long-latency register write port; the other warp keeps issuing. A second `DIV`/`MOD` waits in ID while the unit is
 busy. Cost: up to `DATA_BITS - clz(dividend)` + 1 cycles per active lane (worst case 4 lanes × 33 = 132 + 3), 1 cycle for a
 zero dividend. Division by zero still faults in EX (cause 1) and never reaches the divider.
