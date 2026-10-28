@@ -95,9 +95,9 @@
 \vfill
 \begin{statbox}{Status of this document}
 This manual describes the RTL \emph{as implemented}. It deliberately states what is \textbf{not} yet true of the chip:
-the top level now carries a 4\,KB SRAM window, but no routed, DRC-clean layout exists yet (detailed routing has not converged; see Chapter~\ref{ch:phys}),
-the physical numbers are preliminary, and barriers require warp-uniform control flow (a \ins{SYNC} while diverged faults). See Chapter~\ref{ch:errata} (Errata)
-before relying on any number in Chapter~\ref{ch:phys}.
+the \textbf{mini profile} has a routed layout that passes the checks available in the repository, but the full-size profile has never been routed (Chapter~\ref{ch:phys}),
+the SRAM macros are timed at the typical corner only and are black boxes in LVS, nothing has been simulated on the gate-level netlist of this design, and barriers require warp-uniform control flow
+(a \ins{SYNC} while diverged faults). See Chapter~\ref{ch:errata} (Errata) before relying on any number in Chapter~\ref{ch:phys}.
 \end{statbox}
 \end{titlepage}
 
@@ -691,68 +691,73 @@ B4 & \texttt{e086fc4} & L2 pushed to a full victim write buffer (stale ready); t
 \end{table}
 
 \section{Physical implementation}\label{sec:flow}
-\begin{statbox}{Read this first --- there is no routed layout yet}
-The design now synthesises with its memory attached (151\,502 instances, 24\,269 flip-flops), places, builds a clock tree and globally routes with zero overflow.
-\textbf{Detailed routing has not converged}: on the 2.5\,mm die the first two passes left 223\,731 and 139\,474 violations (61--72\,\% of them metal-1 shorts from local
-pin access in dense logic, not from the SRAM macros), at about 35 minutes per pass; the router was also killed by the kernel twice for memory (about 11\,GB resident).
-No GDS, DRC, LVS or final metrics exist. The table of results below is the \emph{earlier, memory-less} run and is kept only as history. A 3.0\,mm die (placement density 0.30)
-is the current attempt. Antenna repair in global routing is disabled (an OpenROAD crash), and SRAM timing is typical-corner only (erratum L17).
+\begin{statbox}{Status --- the mini profile is routed and signoff-clean; the full profile is not}
+The \textbf{mini profile} (\texttt{MINI=1}: 2 lanes $\times$ 2 warps, 32 words of shared memory) has a routed layout at the 40\,ns clock that passes every check available in the repository:
+routing DRC 0, antenna 0, LVS 0 (macros compared at their pins), KLayout XOR 0, KLayout DRC 0, and a full-chip Magic DRC with 0 integration errors (the OpenRAM macros' own 12\,984\,239 violation boxes are
+waived, see below). Setup is met with $\geq$ +3.30\,ns and hold with $\geq$ +0.265\,ns in all nine corners.
+\textbf{Not done:} the full-size profile has never been routed (it needs a rectangular die inside the 2.92\,mm $\times$ 3.52\,mm Caravel user area and probably more than 16\,GB of memory);
+SRAM timing is typical-corner only and the macros are black boxes in LVS (erratum L17); 670 capacitance and 561 fanout violations remain, as do 69 slow-corner pins between 1.5 and 1.93\,ns;
+there is no gate-level simulation of this netlist, no equivalence check, and no Caravel wrapper.
 \end{statbox}
 \subsection{Flow and configuration}
-\texttt{run\_asic.sh} converts the SystemVerilog to Verilog with \texttt{sv2v} (\texttt{-DSYNTHESIS -DTARGET\_ASIC=1}), runs a Yosys elaboration/latch audit (zero latches required),
-then runs LibreLane (OpenROAD-based) in a container with \texttt{flow/config.yaml}:
+\texttt{run\_asic.sh} converts the SystemVerilog to Verilog with \texttt{sv2v} (\texttt{-DSYNTHESIS -DTARGET\_ASIC=1}, plus \texttt{-DTARGET\_ASIC\_MINI=1} for the mini profile), runs a Yosys elaboration/latch audit (zero latches required),
+then runs LibreLane 3.0.16 (OpenROAD-based) in a container with \texttt{flow/config.yaml} (\texttt{MINI=1 ./run\_asic.sh} reproduces the reference result: 85 of 85 compared metrics identical to the hand-assembled first run):
 \begin{table}[ht]\centering\rowcol
-\begin{tabular}{@{}ll@{}}
+\begin{tabular}{@{}lp{10.4cm}@{}}
 \tblhead{Parameter} & \tblhead{Value}\\
 Design / top & \texttt{gpu\_asic\_top}\\
-Clock & port \texttt{clk}, 40.0\,ns\\
-Die / core area & [0,0,3000,3000] \textmu m / [50,50,2950,2950] \textmu m, absolute sizing (2.5\,mm in earlier runs)\\
-Placement density target & 30\,\% (the placer silently raised 40\,\% to 44\,\% on the 2.5\,mm die)\\
-PDK / library & \texttt{sky130A} / \texttt{sky130\_fd\_sc\_hd}\\
-Other & CTS enabled; three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} macros (typical-corner liberty for all corners); global-route adjustment 0.15, antenna repair off, 16 detailed-route passes max; no SDC file\\
+Clock & port \texttt{clk}, 40.0\,ns, 0.25\,ns uncertainty, 5\,\% OCV derate; clock source modelled as \texttt{clkbuf\_16}\\
+Die / core area (mini) & [0,0,2400,2400] \textmu m / [50,50,2350,2350] \textmu m, absolute sizing; placement density target 30\,\%\\
+PDK / library & \texttt{sky130A} (version pinned in the Makefile) / \texttt{sky130\_fd\_sc\_hd}\\
+Synthesis & \texttt{SYNTH\_STRATEGY "DELAY 4"} (the only strategy whose netlist met 40\,ns before placement; +7.8\,\% area)\\
+Macros & three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} (PMEM window, DMEM window, L2 data array), typical-corner liberty for all corners; power connections \texttt{VPWR VGND vccd1 vssd1}; 12\,\textmu m metal-4 keep-out bands at the macro pin edges while the power grid is generated\\
+Repair and timing & post-routing slew/cap repair (margins 70\,\%/70\,\%, 1\,200\,\textmu m wire-length cap); post-CTS hold margin 0.4\,ns; timing repair again after the slew repair (hold margin 0.4\,ns); antenna repair up to 8 rounds at 25\,\%\\
+Stream-out and DRC & KLayout GDS is the deliverable (one top cell, \texttt{KLAYOUT\_CONFLICT\_RESOLUTION OverwriteCell}); flow Magic DRC non-fatal, verdict by \texttt{make signoff-drc}\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Results of the earlier memory-less run (history only)}
+\subsection{Results of the final mini layout (\texttt{flow/runs/place\_1027\_2317})}
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lp{9cm}@{}}
 \tblhead{Metric} & \tblhead{Value}\\
-Yosys cells / area & 3\,162 cells, 38\,657\,\textmu m\textsuperscript{2}; of which 854 \texttt{dfxtp\_2} flip-flops, 269 \texttt{mux2\_1}, 45 \texttt{mux4\_2}\\
-Standard cells after PnR & 86\,537 (154\,364\,\textmu m\textsuperscript{2}), of which 82\,119 tap cells, 2\,102 multi-input combinational, 854 sequential, 1\,101 timing-repair buffers, 142 clock buffers\\
-Fill cells & 1\,545\,744 (die utilisation of logic $\approx$2.5\,\%)\\
-Die / floorplan & 2.5\,mm $\times$ 2.5\,mm = 6.25\,mm\textsuperscript{2}\\
-Routing DRC (TritonRoute) & 0 errors (iterations: 4, 0, 120, 5, 0); antenna violations 0\\
-KLayout XOR (Magic vs KLayout stream-out) & clear\\
-Magic DRC / KLayout DRC / LVS & \textbf{not completed}\\
-IR drop (worst / average) & 0.15\,mV / 0.61\,\textmu V\\
-Power (vectorless estimate) & 1.78\,mW (not meaningful)\\
+Instances & 987\,919 in total: 205\,835 standard cells (1.61\,mm\textsuperscript{2}), 62\,490 tap cells, 782\,081 fill cells, 3 macros (0.85\,mm\textsuperscript{2}); of the standard cells 14\,732 flip-flops, 7\,578 antenna diodes, 3\,073 clock buffers\\
+Die / utilisation & 2.4\,mm $\times$ 2.4\,mm; standard-cell utilisation 36\,\%\\
+Routing & 9.37\,m of wire, 1\,050\,826 vias, 0 DRC errors, 0 antenna violations\\
+LVS / XOR / KLayout DRC & 0 / 0 / 0\\
+Magic DRC, full chip & 12\,984\,239 boxes, all inside the three macros and in rules that also fire on the standalone OpenRAM macro; \textbf{0 integration errors} (\texttt{make signoff-drc})\\
+Slew, slow corner & 6\,113 pins above the flow's 0.75\,ns target, 69 above the library's 1.5\,ns range, none above 2\,ns; clock-root input 0.98\,ns\\
+Capacitance / fanout violations & 670 / 561 (open); most capacitance violators are buffers inserted by the repair itself\\
+IR drop (worst / average) & 1.0\,mV / 19\,\textmu V\\
+Power (vectorless estimate) & 39.5\,mW\\
 \bottomrule
 \end{tabular}
 \end{table}
+The OpenRAM macros are not clean under Magic's sky130 rules (5\,579\,171 boxes in 31 rule types on one macro alone). A box is waived only if its rule also fires on the standalone macro and it lies inside a macro outline;
+whether a shuttle accepts these macros is the operator's decision (erratum L17 and the project's open-problems list). KLayout's deck reports no violation on the macro.
 
 \subsection{Static timing across PVT corners}
-Worst slack from OpenSTA on the routed design (clock 40\,ns). Corner names: \texttt{max/nom/min} = parasitic extraction corner, \texttt{ss/tt/ff} = process/voltage/temperature.
+Worst slack from OpenSTA on the routed design (clock 40\,ns, 0.25\,ns uncertainty, 5\,\% derate). Corner names: \texttt{max/nom/min} = parasitic extraction corner, \texttt{ss/tt/ff} = process/voltage/temperature.
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lllrr@{}}
 \tblhead{Corner} & \tblhead{Process} & \tblhead{V / T} & \tblhead{Setup WS (ns)} & \tblhead{Hold WS (ns)}\\
-\texttt{max\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & \textbf{19.169} (worst setup) & 0.834\\
-\texttt{nom\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 19.568 & 0.829\\
-\texttt{min\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 19.976 & 0.824\\
-\texttt{max\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 26.651 & 0.306\\
-\texttt{nom\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 26.713 & 0.305\\
-\texttt{min\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 26.782 & 0.303\\
-\texttt{max\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.621 & 0.106\\
-\texttt{nom\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.664 & 0.106\\
-\texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.709 & \textbf{0.105} (worst hold)\\
+\texttt{max\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & \textbf{3.299} (worst setup) & 1.444\\
+\texttt{nom\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 4.064 & 1.473\\
+\texttt{min\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 4.682 & 1.497\\
+\texttt{max\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 15.937 & 0.544\\
+\texttt{nom\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 15.995 & 0.561\\
+\texttt{min\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 16.125 & 0.599\\
+\texttt{max\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 16.846 & \textbf{0.265} (worst hold)\\
+\texttt{nom\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 16.959 & 0.277\\
+\texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 17.090 & 0.303\\
 \bottomrule
 \end{tabular}
-\caption{Slack by corner of the earlier memory-less run. All slacks are positive; however that netlist was nearly empty (854 flip-flops), so these numbers say nothing about the real critical path.}
+\caption{Slack by corner of the final mini layout. The SRAM macros are timed with their typical-corner liberty in every corner, so the slow- and fast-corner slack at their pins is not trustworthy (erratum L17).}
 \end{table}
 
 \subsection{Outstanding sign-off items}
-Obtain a converged, DRC-clean detailed route (then Magic/KLayout DRC and LVS); gate-level simulation of the post-route netlist with SDF (the zero-delay post-synthesis run already passes 200 seeds); RTL-to-netlist equivalence;
-IO constraint (SDC) review and multi-corner timing sign-off on the real design, with SRAM liberty files for all corners.
+Per-corner SRAM liberty files (needs OpenRAM) and a transistor-level LVS of the macro; the shuttle's decision on the macro DRC waiver; the capacitance and fanout violations and the 69 slow-corner pins above 1.5\,ns;
+gate-level simulation of the final netlist (zero-delay, then with the SDF files the flow writes), RTL-to-netlist equivalence; a routed full-size profile; the Caravel wrapper, harness simulation and precheck.
 
 % =============================================================================
 \chapter{Errata and known limitations}\label{ch:errata}

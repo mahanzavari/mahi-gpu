@@ -1,8 +1,9 @@
 # 07 — Physical flow (sv2v → Yosys → LibreLane/OpenROAD → GDS)
 
-> Verified against commit `1d42d45`, 2026-10-22. **Bottom line: with memory attached the design synthesizes, places, CTS-es and globally routes, but there is
-> still NO routed/DRC-clean layout, no GDS, no LVS and no final metrics.** The sections "The existing run" below describe the *old, memory-less* run
-> from 2026-10-19 and are kept only as history; the numbers that matter are in "Attempts since memory was attached".
+> Verified against commit `aed12bb`, 2026-10-28. **Bottom line: the mini profile (`MINI=1`) has a routed, signoff-clean layout at 40 ns: `flow/runs/place_1027_2317`**
+> (routing DRC 0, antenna 0, LVS 0, XOR 0, KLayout DRC 0, full-chip Magic DRC 0 integration errors, setup >= +3.30 ns and hold >= +0.265 ns in all 9 corners). See
+> "Phase 2 closure". Open: cap/fanout violations, 69 slow-corner pins above 1.5 ns, typical-corner-only SRAM models, black-box macro LVS, no gate-level simulation of this netlist,
+> and the full-size profile has never been routed. The older sections are the history of how we got here and quote the run they were measured on.
 
 ## How to run
 ```bash
@@ -31,13 +32,21 @@ Stages (`run_asic.sh`):
 | Key | Value |
 |---|---|
 | `DESIGN_NAME` | `gpu_asic_top` |
-| `VERILOG_FILES` | `gpu_inst.unified_cache.data_eng.g_sram.sram.macro VPWR VGND vccd1 vssd1` |
+| `VERILOG_FILES` | `dir::../../build/test/gpu_asic_converted.v` |
 | `CLOCK_PORT` / `CLOCK_PERIOD` | `clk` / 40.0 ns |
-| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | absolute / [0, 0, 3000, 3000] / [50, 50, 2950, 2950] |
+| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | absolute / [0, 0, 3000, 3000] / [50, 50, 2950, 2950] (the mini profile uses a 2.4 mm die) |
 | `PL_TARGET_DENSITY_PCT` | 30 |
 | `PDK` | `sky130A` |
+| `SYNTH_STRATEGY` | `DELAY 4` |
+| `SYNTH_CLK_DRIVING_CELL` | `sky130_fd_sc_hd__clkbuf_16/X` |
+| `RUN_POST_GRT_DESIGN_REPAIR` / slew % / cap % / max wire | true / 70 / 70 / 1200 um |
+| `PL_RESIZER_HOLD_SLACK_MARGIN` | 0.4 ns |
+| `RUN_POST_GRT_RESIZER_TIMING` / `GRT_RESIZER_HOLD_SLACK_MARGIN` | true / 0.4 ns |
+| `DRT_ANTENNA_REPAIR_ITERS` / `…_MARGIN` | 8 / 25 % |
+| `KLAYOUT_CONFLICT_RESOLUTION` | `OverwriteCell` |
+| `ERROR_ON_MAGIC_DRC` | false |
 <!-- END GENERATED: flowcfg -->
-Everything else is a LibreLane default (CTS on, linter on). There is **no** SDC/IO-constraint file and **no** macros (no SRAM).
+Everything else is a LibreLane default (CTS on, linter on). The SDC is the one LibreLane generates from these settings (no separate constraint file): 40 ns clock, 0.25 ns uncertainty, 8 ns input and output delays, 5% OCV derate. The three OpenRAM macros and their power connections, the met4 keep-out bands and the other flow settings are in `flow/config.yaml` below this table. `config_mini.yaml` is generated from it by `MINI=1 ./run_asic.sh` (netlist path and the 2.4 mm die only).
 
 ## The existing run: `flow/runs/RUN_2026-10-19_14-54-17` (git-ignored; `flow/runs` is in `.gitignore`)
 Status of the run:
@@ -163,6 +172,53 @@ Of the 428 remaining slow-corner pins beyond the library range, 280 are antenna-
 **Takeaway:** margins halve the slew violations without hurting routing or timing, but the repair still targets one corner, so clearing the slow corner against 0.75 ns needs a much larger margin (the slow corner is ~2.4x slower), more buffers, or judging it against the 1.5 ns library limit.
 Not re-run for this experiment: LVS and DRC signoff (the netlist changed by ~1.9k buffers). The committed `flow/config.yaml` is unchanged.
 
+## Phase 2 closure (`flow/runs/place_1027_2317`, 2026-10-27/28) - the mini layout passes every signoff check available here
+Three routed runs took the mini layout from `d4_full` to this state; all use the RTL with the divider, the fault registers and the `SYNC` rule ([04-limitations](04-limitations.md) L1, L2, L12).
+Runs 2 and 3 started at global placement from the previous run (`./run_asic.sh -P <run>`), about 3 h each.
+
+| Run | What changed | Result |
+|---|---|---|
+| 1 `mini_1027_0945` | whole flow: clock source modelled as `clkbuf_16`, post-routing slew/cap repair (margins 70/55), post-CTS hold margin 0.25 ns, antenna repair 5 rounds at 25%, `KLAYOUT_CONFLICT_RESOLUTION: OverwriteCell`, Magic DRC non-fatal | antenna 0, XOR 0, routing DRC 0; slew 30,058 -> 6,576; hold unchanged at +0.027 ns; cap/fanout up (717/577); 162 pins above 2 ns |
+| 2 `place_1027_1754` | hold margin 0.4 ns, `GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH: 1200`, cap margin 70% | no pin above 2 ns (worst 1.92 ns); hold still +0.032 ns; ended with 1 routing DRC error and 1 antenna net |
+| 3 `place_1027_2317` | `RUN_POST_GRT_RESIZER_TIMING` with `GRT_RESIZER_HOLD_SLACK_MARGIN: 0.4`; antenna repair up to 8 rounds | hold +0.265 ns; routing DRC 0, antenna 0 |
+
+| Check | Final layout | `d4_full` |
+|---|---|---|
+| Routing DRC / antenna nets | 0 / 0 | 0 / 2 |
+| LVS (macros as black boxes) | 0 errors | 0 |
+| KLayout XOR, Magic vs KLayout GDS | 0 differences | 10,813,574 |
+| KLayout DRC (the GDS now contains the SRAM layout) | 0 | 0, but the macros were empty |
+| Magic DRC, full chip, `make signoff-drc RUN=...` | 12,984,239 boxes, all inside the macros and in rules the standalone macro also violates; **0 integration errors** | same |
+| Setup, worst of 9 corners | +3.30 ns (max_ss) | +4.07 ns |
+| Hold, worst of 9 corners | +0.265 ns (max_ff) | +0.025 ns |
+| Slew violations, slow corner (max_ss) | 6,113; none above 2 ns, 69 above 1.5 ns, worst 1.93 ns | 30,058; 298 above 2 ns, 1,135 above 1.5 ns, worst 2.80 ns |
+| Clock-root input slew, slow corner | 0.98 ns | 2.80 ns |
+| Cap / fanout violations (flow metric) | 670 / 561 | 618 / 369 |
+| Standard cells, area | 205,835, 1.61 mm2 | 182,478, 1.37 mm2 |
+| Total power (vectorless) | 39.5 mW | 38.2 mW |
+
+The reference layout predates the divider, so part of the area difference is RTL (+3.6% at synthesis); the rest is delay cells for hold, buffers for slew and 7,578 antenna diodes (5,124 before).
+
+**GDS: why the macros were empty (#3).** `stream_out.py` (KLayout stream-out) clears every cell, re-reads the cell GDS files, and with the default conflict policy `RenameCell` the re-read SRAM went into a renamed cell that the top cell does not reference; only the referenced hierarchy is written out.
+`KLAYOUT_CONFLICT_RESOLUTION: OverwriteCell` writes it into the referenced cell: the SRAM cell has its 23,029 shapes and 7,357 child instances, the file has one top cell, and the XOR against Magic's GDS is 0.
+Verified offline first by replaying the 7 s step on a finished run's DEF (the `RenameCell` replay matched the flow's file byte for byte). Consequence: the flow's Magic DRC now sees the SRAM's own violations, so `ERROR_ON_MAGIC_DRC` is false and the DRC verdict is `make signoff-drc`; KLayout's DRC deck reports 0 on the standalone macro and on the full chip, so its error check stays on.
+
+**Clock root (#5).** The SDC drove `clk` with the same weak `inv_2` model as every data input (`SYNTH_CLK_DRIVING_CELL` unset). `sky130_fd_sc_hd__clkbuf_16/X` models the clock source as a clock buffer (in Caravel it comes from the management SoC's clock network).
+Root-buffer input slew at the slow corner 2.80 -> 0.85 / 1.02 / 0.98 ns in the three runs; worst hold-side clock skew 1.08 -> 0.90 / 0.93 / 0.94 ns. The routed `clk` port net is still about 0.36 pF against the flow's blanket 0.2 pF limit (a property of the wire, not of the modelled driver).
+This is an input-drive assumption: check it against the real harness before tape-out.
+
+**Slew / cap / fanout (#4).** Post-routing design repair with margins 70/70 cut the slow-corner slew count five-fold. Batch 1 had a new tail (162 pins above 2 ns, one at 5.4 ns), all antenna-diode pins on a few very long nets; the 1,200 um wire-length cap in the repair removed them.
+Cap and fanout did not improve: in batch 1, 460 of the cap violators sit on buffers the repair itself inserted (names `wire...`, `max_cap...`), median 1.26x the limit, because the final routed wires are longer than the global-route estimate the repair worked from. Not fixed.
+The 60 SRAM address pins with a 0.04 ns max-transition in the OpenRAM liberty always violate; they are a model artifact (see "Not done").
+
+**Hold (#11) - the margin setting was not the lever.** The expectation was that a bigger post-CTS hold margin would lift the fast corner. It did not: margin 0.1 / 0.25 / 0.4 ns gave +0.025 / +0.027 / +0.032 ns at max_ff, and the worst endpoint (`_162047_`, an FPU pipeline register: flop, one hold cell, flop) was the same each time.
+Per endpoint the fast corner is 0.158 to 0.379 ns (median 0.311) below the typical corner the repair works at (944 endpoints common to both corners' worst-1000 lists): the clock uncertainty (0.25 ns), the library hold time (0.064 ns) and the derate-induced clock skew do not shrink at the fast corner, while hold cells do.
+Root cause, from counting hold cells by type: the post-CTS repair placed 21,102 `dlygate4sd3_1` delay gates; the **post-global-route design repair then resized about 960 of them into `buf_1`/`buf_2`/larger buffers** (likely because their weak outputs violated slew/cap), removing most of their delay, and nothing repaired hold afterwards.
+Fix: run the timing repair again after the slew repair, `RUN_POST_GRT_RESIZER_TIMING: true` with `GRT_RESIZER_HOLD_SLACK_MARGIN: 0.4` (an experimental LibreLane step; it completed here). Hold is now >= +0.265 ns in all nine corners. +0.265 ns is measured after the 0.25 ns uncertainty, the derate and the CRPR term.
+
+**Antennas (#12).** Rounds of the router's repair loop (violating nets after each): `d4_full` 1,325 -> 178 -> 15 -> 2 left; batch 1 1,760 -> 242 -> 35 -> 2 -> 1 -> 0; batch 2 1,747 -> 235 -> 27 -> 3 -> 1 and the last diode left a 1-box met1 short against VGND at the round cap (1 DRC error, 1 antenna net); batch 3 1,806 -> 236 -> 32 -> 1 -> 0 after 4 rounds.
+The loop's last step is chaotic: raising the cap to 8 rounds was insurance, not what made batch 3 converge. Diodes cost slew on the long nets they sit on.
+
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
@@ -174,10 +230,11 @@ are 21.5% of cell area (32k cells) and taps 5.4%.
 ## Not done (sign-off gaps)
 | Item | Status |
 |---|---|
-| Complete the flow (Magic/KLayout DRC, LVS, final metrics) | not completed |
-| Gate-level simulation (post-synthesis, post-route + SDF) | not done (SDFs exist: `55-openroad-stapostpnr/*/*.sdf`) |
-| RTL ↔ netlist equivalence | not done |
-| IO constraints / SDC review, multi-corner timing sign-off on the real design | not done |
-| Re-run on current RTL with memory attached | not done |
-| SRAM macros (OpenRAM) for caches/register file | not decided |
+| Flow completion on the mini profile (DRC, LVS, XOR, final metrics) | done (`place_1027_2317`) |
+| Cap / fanout violations (670 / 561), 69 slow-corner pins at 1.5-1.93 ns | open; judge against the library limits, or fix (most cap violators are the repair's own buffers) |
+| SRAM timing at SS/FF, transistor-level LVS of the macro | not done: the OpenRAM liberty exists only at TT (every STA corner uses it) and the macros are compared at their pins; needs OpenRAM (download) |
+| Whether a shuttle accepts the OpenRAM macro DRC waiver | not decided; evidence is `make macro-drc`, `make signoff-drc`, `flow/waivers/openram_2kb_macro_drc_rules.txt` |
+| Gate-level simulation of this netlist (zero delay, then with SDF; SDFs are in `28-openroad-stapostpnr/*/*.sdf`), RTL <-> netlist equivalence | not done (the old zero-delay GLS predates the divider, see [06](06-verification.md)) |
+| Full-size (non-mini) profile | never routed; needs a rectangular die that fits a 2.92 x 3.52 mm Caravel user area and probably more than 16 GB |
+| Caravel wrapper, harness-level simulation, precheck | not started |
 See [08-todo](08-todo-and-open-questions.md).

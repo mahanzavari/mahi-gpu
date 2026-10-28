@@ -55,18 +55,30 @@ def opcode_line():
     return ' '.join(f'{n}={v}' for n, v in pairs)
 
 def flow_table():
-    cfg = {}
+    cfg, in_vf = {}, False
     for l in read(f'{ASIC}/flow/config.yaml').splitlines():
-        m = re.match(r'^([A-Z_]+):\s*"?([^"#]*)"?', l)
-        if m and m.group(2).strip(): cfg[m.group(1)] = m.group(2).strip()
+        m = re.match(r'^([A-Z_0-9]+):\s*"?([^"#]*)"?', l)
+        if m:
+            in_vf = (m.group(1) == 'VERILOG_FILES')
+            if m.group(2).strip(): cfg[m.group(1)] = m.group(2).strip()
+            continue
         m2 = re.match(r'^\s*-\s*"(.*)"', l)
-        if m2: cfg['VERILOG_FILES'] = m2.group(1)
+        if m2 and in_vf: cfg['VERILOG_FILES'] = m2.group(1)
+        elif not m2 and l.strip() and not l.lstrip().startswith('#'): in_vf = False
     g = lambda k: cfg.get(k, '?')
     rows = ['| Key | Value |', '|---|---|',
             f"| `DESIGN_NAME` | `{g('DESIGN_NAME')}` |", f"| `VERILOG_FILES` | `{g('VERILOG_FILES')}` |",
             f"| `CLOCK_PORT` / `CLOCK_PERIOD` | `{g('CLOCK_PORT')}` / {g('CLOCK_PERIOD')} ns |",
-            f"| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | {g('FP_SIZING')} / {g('DIE_AREA')} / {g('CORE_AREA')} |",
-            f"| `PL_TARGET_DENSITY_PCT` | {g('PL_TARGET_DENSITY_PCT')} |", f"| `PDK` | `{g('PDK')}` |"]
+            f"| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | {g('FP_SIZING')} / {g('DIE_AREA')} / {g('CORE_AREA')} (the mini profile uses a 2.4 mm die) |",
+            f"| `PL_TARGET_DENSITY_PCT` | {g('PL_TARGET_DENSITY_PCT')} |", f"| `PDK` | `{g('PDK')}` |",
+            f"| `SYNTH_STRATEGY` | `{g('SYNTH_STRATEGY')}` |",
+            f"| `SYNTH_CLK_DRIVING_CELL` | `{g('SYNTH_CLK_DRIVING_CELL')}` |",
+            f"| `RUN_POST_GRT_DESIGN_REPAIR` / slew % / cap % / max wire | {g('RUN_POST_GRT_DESIGN_REPAIR')} / {g('GRT_DESIGN_REPAIR_MAX_SLEW_PCT')} / {g('GRT_DESIGN_REPAIR_MAX_CAP_PCT')} / {g('GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH')} um |",
+            f"| `PL_RESIZER_HOLD_SLACK_MARGIN` | {g('PL_RESIZER_HOLD_SLACK_MARGIN')} ns |",
+            f"| `RUN_POST_GRT_RESIZER_TIMING` / `GRT_RESIZER_HOLD_SLACK_MARGIN` | {g('RUN_POST_GRT_RESIZER_TIMING')} / {g('GRT_RESIZER_HOLD_SLACK_MARGIN')} ns |",
+            f"| `DRT_ANTENNA_REPAIR_ITERS` / `…_MARGIN` | {g('DRT_ANTENNA_REPAIR_ITERS')} / {g('DRT_ANTENNA_REPAIR_MARGIN')} % |",
+            f"| `KLAYOUT_CONFLICT_RESOLUTION` | `{g('KLAYOUT_CONFLICT_RESOLUTION')}` |",
+            f"| `ERROR_ON_MAGIC_DRC` | {g('ERROR_ON_MAGIC_DRC')} |"]
     return '\n'.join(rows)
 
 BLOCKS = {('02-architecture.md', 'profile'): profile_table, ('03-isa.md', 'opcodes'): opcode_line,

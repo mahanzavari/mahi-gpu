@@ -18,7 +18,7 @@ cover what is *different or specific* in the ASIC variant and link there instead
 | 4 | [04-limitations](04-limitations.md) | **know what not to trust** (limitation register, IDs `L1…`) |
 | 5 | [05-bug-log](05-bug-log.md) | see the 4 bugs found/fixed, with the test + assertion that now guards each |
 | 6 | [06-verification](06-verification.md) | run/extend the verification stack; know its blind spots |
-| 7 | [07-physical-flow](07-physical-flow.md) | reproduce the LibreLane run; know why its numbers are **not yet meaningful** |
+| 7 | [07-physical-flow](07-physical-flow.md) | reproduce the LibreLane run; see what the signed-off mini layout does and does not prove |
 | 8 | [08-todo](08-todo-and-open-questions.md) | pick the next work item |
 | ✓ | [CHECKLIST](CHECKLIST.md) | re-audit everything in ~15 minutes |
 
@@ -26,15 +26,15 @@ cover what is *different or specific* in the ASIC variant and link there instead
 | Area | Status | Evidence / where |
 |---|---|---|
 | RTL port (`ASIC/src/rtl`) | Functionally working on the ASIC profile; 4 port-era/latent bugs fixed **in ASIC copy only** | [05-bug-log](05-bug-log.md), [L10](04-limitations.md#l10) |
-| Unit tests (7 modules) | Pass; mutation-checked | `make unit` — [06-verification](06-verification.md) |
+| Unit tests (8 modules, incl. the shared divider) | Pass; mutation-checked | `make unit` — [06-verification](06-verification.md) |
 | System tests | `verify-asic` (NZP/CALL/RET), `verify-matmul` (2-core 5×5) pass | `make verify-asic verify-matmul` |
 | SVA assertions | 6 checker modules bound, silent on current design, each shown to fire on its historical bug | `src/rtl/sva/` |
 | Random regression vs Python model | 22,800 runs (3 campaigns on the pre-SRAM-L2 RTL, 2 on the current RTL; int/FP/shared mem/barriers/atomics, latency 0–40), 0 mismatches | `make rand` |
 | **Chip-level regression** (`gpu_asic_top` over Wishbone, 2 kernels/seed with soft reset) | `make top-quick` = 40 seeds; see [06](06-verification.md) | `make top-quick` |
-| **Barrier (`SYNC`) after divergence** | **Not supported** (no join-point reconvergence) | [L1](04-limitations.md#l1) |
+| **Barrier (`SYNC`) after divergence** | **Not supported** (no join-point reconvergence); executing `SYNC` while diverged now faults (cause 3) instead of releasing early | [L1](04-limitations.md#l1) |
 | **Chip top (`gpu_asic_top`)** | Wishbone-loadable 2×2 KB SRAM window; random kernels run end-to-end over the pins (`make top-quick`) | [L15](04-limitations.md#l15), [L16](04-limitations.md#l16) |
-| Physical flow (LibreLane → GDS) | Completed once, **on stale RTL and an almost-empty netlist** | [07-physical-flow](07-physical-flow.md) |
-| Gate-level sim / equivalence / LVS / timing sign-off | **Not done** | [08-todo](08-todo-and-open-questions.md) |
+| Physical flow (LibreLane → GDS), **mini profile** | Routed and signoff-clean at 40 ns (`flow/runs/place_1027_2317`): routing DRC 0, antenna 0, LVS 0, XOR 0, KLayout DRC 0, full-chip Magic DRC 0 integration errors (SRAM-internal boxes waived), setup ≥ +3.3 ns, hold ≥ +0.265 ns in 9 corners. Open: cap/fanout violations, typical-corner-only SRAM models, black-box macro LVS. **Full-size profile never routed** | [07-physical-flow](07-physical-flow.md) |
+| Gate-level sim (new netlist) / SDF sim / equivalence | **Not done** (the old zero-delay GLS predates the divider) | [08-todo](08-todo-and-open-questions.md) |
 
 ## Quick start
 ```bash
