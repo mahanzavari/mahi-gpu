@@ -63,6 +63,11 @@ while [[ "$#" -gt 0 ]]; do
             FP_SRC="$(cd "$2" && pwd)"; shift
             [ -f "$FP_SRC/12-openroad-staprepnr/state_out.json" ] || { echo "no 12-openroad-staprepnr state in $FP_SRC"; exit 1; }
             STAGE_TARGET="--from OpenROAD.Floorplan --with-initial-state $FP_SRC/12-openroad-staprepnr/state_out.json --run-tag floor_$(date +%m%d_%H%M)" ;;
+        -T|--resume-sta)
+            # Re-run post-PnR STA and the checks after it (new macro libs, SDC) from RUN_DIR's post-RCX state, into a NEW run dir.
+            STA_SRC="$(cd "$2" && pwd)"; shift
+            [ -f "$STA_SRC/28-openroad-rcx/state_out.json" ] || { echo "no 28-openroad-rcx state in $STA_SRC"; exit 1; }
+            STAGE_TARGET="--from OpenROAD.STAPostPNR --to Checker.HoldViolations --with-initial-state $STA_SRC/28-openroad-rcx/state_out.json --run-tag sta_$(date +%m%d_%H%M)" ;;
         -S|--resume-signoff) STAGE_TARGET="--last-run --from Magic.WriteLEF" ;;   # after KLayout.Render (its PNG fails on the OpenRAM GDS's extra top cells)
         -D|--resume-drt) STAGE_TARGET="--last-run --from OpenROAD.DetailedRouting" ;;
         -R|--resume-route) STAGE_TARGET="--last-run --from OpenROAD.GlobalRouting" ;;
@@ -83,6 +88,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -R, --resume-route  Re-run from Global Routing in the most recent run dir"
             echo "  -P, --resume-place RUN_DIR  Re-run from Global Placement onward (into a new run dir) using RUN_DIR's pre-placement state"
             echo "  -F, --resume-floorplan RUN_DIR  Re-run from Floorplan onward (new run dir), reusing RUN_DIR's synthesis"
+            echo "  -T, --resume-sta RUN_DIR  Re-run post-PnR STA + slew/cap/setup/hold checks (new run dir) from RUN_DIR's post-RCX state"
             echo "  -S, --resume-signoff  Re-run from Magic.WriteLEF (XOR, DRC, LVS, final checks) in the most recent run dir"
             echo "  -D, --resume-drt    Re-run from Detailed Routing in the most recent run dir"
             echo "  --clean         Remove build/ and runs/ directories"
@@ -125,9 +131,8 @@ for ext in gds lef; do
         cp "$SRC" "$MACRO_DST/"
     fi
 done
-if [ ! -f "$MACRO_DST/${SRAM_NAME}_TT_1p8V_25C.lib" ]; then
-    cp "$SRAM_MACRO_DIR/$SRAM_NAME/${SRAM_NAME}_TT_1p8V_25C.lib" "$MACRO_DST/"
-fi
+# Per-corner liberties characterised with OpenRAM (scripts/openram_corners.sh); tracked in flow/openram/libs/.
+cp "$SCRIPT_DIR"/flow/openram/libs/${SRAM_NAME}_*.lib "$MACRO_DST/"
 
 # ==============================================================================
 # 2. Step 1: SystemVerilog to Verilog (sv2v)
