@@ -1,9 +1,9 @@
 # 07 — Physical flow (sv2v → Yosys → LibreLane/OpenROAD → GDS)
 
-> Verified against commit `aed12bb`, 2026-10-28. **Bottom line: the mini profile (`MINI=1`) has a routed, signoff-clean layout at 40 ns: `flow/runs/place_1027_2317`**
-> (routing DRC 0, antenna 0, LVS 0, XOR 0, KLayout DRC 0, full-chip Magic DRC 0 integration errors, setup >= +3.30 ns and hold >= +0.265 ns in all 9 corners). See
-> "Phase 2 closure". Open: cap/fanout violations, 69 slow-corner pins above 1.5 ns, typical-corner-only SRAM models, black-box macro LVS, no gate-level simulation of this netlist,
-> and the full-size profile has never been routed. The older sections are the history of how we got here and quote the run they were measured on.
+> Verified against commit `fd2b68f`, 2026-10-29. **Bottom line: the mini profile (`MINI=1`) has a routed layout at 40 ns that passes routing DRC 0, antenna 0, LVS 0, KLayout DRC 0, full-chip Magic DRC with 0 integration errors,
+> setup >= +3.27 ns and hold >= +0.27 ns in all 9 corners, now with per-corner SRAM timing: `flow/runs/place_1029_1604`** (the earlier `place_1027_2317` used a typical-corner SRAM library that was 4.7x too fast).
+> See "Phase 2 closure" and "SRAM per-corner timing". Open: the SRAM `dout1` nets exceed the macro's own 27.6 fF cap limit (waiver `flow/waivers/sram_dout_cap_slew.md`), cap/fanout violations, black-box macro LVS,
+> no gate-level simulation of this netlist, and the full-size profile has never been routed. The older sections are the history of how we got here and quote the run they were measured on.
 
 ## How to run
 ```bash
@@ -219,6 +219,40 @@ Fix: run the timing repair again after the slew repair, `RUN_POST_GRT_RESIZER_TI
 **Antennas (#12).** Rounds of the router's repair loop (violating nets after each): `d4_full` 1,325 -> 178 -> 15 -> 2 left; batch 1 1,760 -> 242 -> 35 -> 2 -> 1 -> 0; batch 2 1,747 -> 235 -> 27 -> 3 -> 1 and the last diode left a 1-box met1 short against VGND at the round cap (1 DRC error, 1 antenna net); batch 3 1,806 -> 236 -> 32 -> 1 -> 0 after 4 rounds.
 The loop's last step is chaotic: raising the cap to 8 rounds was insurance, not what made batch 3 converge. Diodes cost slew on the long nets they sit on.
 
+## SRAM per-corner timing (#6, `flow/runs/place_1029_1604`, 2026-10-29)
+The OpenRAM liberty shipped for `sky130_sram_2kbyte_1rw1r_32x512_8` exists only at TT (`nominal_corner_only = True`) and was used for all nine STA corners. OpenRAM v1.2.50 was installed outside the repository
+and the macro was characterised at TT 1.80 V/25 C, SS 1.60 V/100 C and FF 1.95 V/-40 C (`scripts/openram_corners.sh --parallel`, config `flow/openram/sky130_sram_2kbyte_1rw1r_32x512_8_corners.py`; one full-array ngspice run per step,
+20.5 h for FF, 24 h for TT, 28.7 h for SS on three cores). The libraries are tracked in `flow/openram/libs/`, copied by `run_asic.sh`, and mapped per corner in `config.yaml` (`*_tt_025C_1v80`, `*_ss_100C_1v60`, `*_ff_n40C_1v95`).
+
+| | shipped "TT" | regenerated TT | SS | FF |
+|---|---|---|---|---|
+| clk to dout, typical row | 0.38 ns | 1.81 ns | 3.06 ns | 1.19 ns |
+| minimum period | 1.96 ns | 5.31 ns | 10.0 ns | 3.30 ns |
+| address setup | 0.103 ns | 0.090 ns | 0.188 ns | 0.066 ns |
+
+The shipped numbers were optimistic (the minimum period is exactly twice the 0.978 ns pulse width, and the clock-to-output table has identical rows). The corner ordering FF < TT < SS is now physical.
+
+Run `place_1029_1604` (`./run_asic.sh -P flow/runs/mini_1027_0945`, same configuration as `place_1027_2317` plus the real libraries; an STA-only pass on the old layout, `-T`, first showed the effect):
+
+| Check | `place_1027_2317` (old lib) | `place_1029_1604` (real libs) |
+|---|---|---|
+| Routing DRC / antenna nets / LVS / KLayout DRC | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| Magic DRC, full chip | 12,984,239 boxes, 0 integration errors | 12,984,239 boxes, **0 integration errors** |
+| XOR, Magic vs KLayout GDS | 0 | 20 (all on layer 235/4, `prBoundary.boundary`, a cell-boundary marker, not a mask layer) |
+| Setup, worst (max_ss) | +3.299 ns | +3.274 ns |
+| Hold, worst (max_ff) | +0.265 ns | +0.271 ns |
+| Setup at nom TT / FF | +16.0 / +17.0 ns | +13.7 / +15.8 ns |
+| Slew violations, max_ss | 6,113 (69 above 1.5 ns, none above 2 ns) | 6,300 (278 above 1.5 ns, 128 above 2 ns, worst 6.0 ns) |
+| Cap / fanout violations | 670 / 561 | 642 / 524 |
+| Standard cells, area / power | 205,835, 1.61 mm2 / 39.5 mW | 205,333, 1.61 mm2 / 39.9 mW |
+
+Timing still passes: the worst setup path at SS does not go through the SRAM, and the SRAM read paths have slack. What got worse is slew and cap on the SRAM read-port outputs.
+**Cause (measured on the routed layout).** The OpenRAM liberty gives `dout` a `max_capacitance` of 27.6 fF (2.05 ns output slew at that load). After detailed routing 36 pins at TT and 39 at SS exceed it (`d_dout1[17]` 69 fF, `d_dout1[10]` 66 fF, `p_dout1[17]` 40 fF),
+and the slew at 70 fF is extrapolated to about 6 ns. The pin plus buffer load is about 6 fF; the rest is wire (33-63 fF) because the detailed router detours: the global-route guide for `d_dout1[10]` runs from the macro pin at x=345 um west to x=193 um and back to loads at x=279-312 um (the net's bounding box in the OpenROAD Inspector is 192 to 349 um, which agrees).
+Global-route overflow is 0 and met3 usage is 15%, so congestion alone does not explain it. The post-global-route repair buffered these nets but works from the global-route estimate, and nothing repairs after detailed routing.
+Not fixed; recorded as a waiver in `flow/waivers/sram_dout_cap_slew.md`. Candidates (untried): an explicit buffer at each `dout1` pin in the SRAM wrapper, a macro placement halo (`PL_MACRO_HALO`; key not verified for this LibreLane version), a repair step after detailed routing.
+The 20 XOR differences make the flow exit with a deferred error (exit code 2); the physical checks are clean.
+
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
@@ -230,9 +264,10 @@ are 21.5% of cell area (32k cells) and taps 5.4%.
 ## Not done (sign-off gaps)
 | Item | Status |
 |---|---|
-| Flow completion on the mini profile (DRC, LVS, XOR, final metrics) | done (`place_1027_2317`) |
-| Cap / fanout violations (670 / 561), 69 slow-corner pins at 1.5-1.93 ns | open; judge against the library limits, or fix (most cap violators are the repair's own buffers) |
-| SRAM timing at SS/FF, transistor-level LVS of the macro | not done: the OpenRAM liberty exists only at TT (every STA corner uses it) and the macros are compared at their pins; needs OpenRAM (download) |
+| Flow completion on the mini profile (DRC, LVS, XOR, final metrics) | done (`place_1029_1604`; `place_1027_2317` before the SRAM libraries) |
+| Cap / fanout violations (642 / 524), SRAM `dout1` pins above the macro's 27.6 fF limit, 128 slow-corner pins above 2 ns | open; waiver in `flow/waivers/sram_dout_cap_slew.md`; fixes untried (see "SRAM per-corner timing") |
+| SRAM timing at SS/FF | done 2026-10-29 (OpenRAM TT/SS/FF, `flow/openram/libs/`) |
+| Transistor-level LVS of the macro | not done: the macros are compared at their pins; the PDK has `libs.ref/sky130_sram_macros/spice/sky130_sram_2kbyte_1rw1r_32x512_8.spice` to use |
 | Whether a shuttle accepts the OpenRAM macro DRC waiver | not decided; evidence is `make macro-drc`, `make signoff-drc`, `flow/waivers/openram_2kb_macro_drc_rules.txt` |
 | Gate-level simulation of this netlist (zero delay, then with SDF; SDFs are in `28-openroad-stapostpnr/*/*.sdf`), RTL <-> netlist equivalence | not done (the old zero-delay GLS predates the divider, see [06](06-verification.md)) |
 | Full-size (non-mini) profile | never routed; needs a rectangular die that fits a 2.92 x 3.52 mm Caravel user area and probably more than 16 GB |

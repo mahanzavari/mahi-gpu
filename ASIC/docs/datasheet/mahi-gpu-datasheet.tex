@@ -691,12 +691,13 @@ B4 & \texttt{e086fc4} & L2 pushed to a full victim write buffer (stale ready); t
 \end{table}
 
 \section{Physical implementation}\label{sec:flow}
-\begin{statbox}{Status --- the mini profile is routed and signoff-clean; the full profile is not}
-The \textbf{mini profile} (\texttt{MINI=1}: 2 lanes $\times$ 2 warps, 32 words of shared memory) has a routed layout at the 40\,ns clock that passes every check available in the repository:
-routing DRC 0, antenna 0, LVS 0 (macros compared at their pins), KLayout XOR 0, KLayout DRC 0, and a full-chip Magic DRC with 0 integration errors (the OpenRAM macros' own 12\,984\,239 violation boxes are
-waived, see below). Setup is met with $\geq$ +3.30\,ns and hold with $\geq$ +0.265\,ns in all nine corners.
+\begin{statbox}{Status --- the mini profile is routed with per-corner SRAM timing; the full profile is not}
+The \textbf{mini profile} (\texttt{MINI=1}: 2 lanes $\times$ 2 warps, 32 words of shared memory) has a routed layout at the 40\,ns clock (\texttt{flow/runs/place\_1029\_1604}) with:
+routing DRC 0, antenna 0, LVS 0 (macros compared at their pins), KLayout DRC 0, and a full-chip Magic DRC with 0 integration errors (the OpenRAM macros' own 12\,984\,239 violation boxes are
+waived, see below). Setup is met with $\geq$ +3.27\,ns and hold with $\geq$ +0.27\,ns in all nine corners, using SRAM liberty files characterised with OpenRAM at the TT, SS and FF corners.
+The Magic-versus-KLayout XOR shows 20 differences, all on the cell-boundary marker layer 235/4 (not a mask layer).
 \textbf{Not done:} the full-size profile has never been routed (it needs a rectangular die inside the 2.92\,mm $\times$ 3.52\,mm Caravel user area and probably more than 16\,GB of memory);
-SRAM timing is typical-corner only and the macros are black boxes in LVS (erratum L17); 670 capacitance and 561 fanout violations remain, as do 69 slow-corner pins between 1.5 and 1.93\,ns;
+the macros are black boxes in LVS; the SRAM read-port (\texttt{dout1}) nets exceed the macro\textquotesingle s own 27.6\,fF capacitance limit (36--39 pins; slow-corner slew up to 6\,ns, extrapolated; waiver recorded; erratum L17), and 642 capacitance and 524 fanout violations remain;
 there is no gate-level simulation of this netlist, no equivalence check, and no Caravel wrapper.
 \end{statbox}
 \subsection{Flow and configuration}
@@ -710,26 +711,26 @@ Clock & port \texttt{clk}, 40.0\,ns, 0.25\,ns uncertainty, 5\,\% OCV derate; clo
 Die / core area (mini) & [0,0,2400,2400] \textmu m / [50,50,2350,2350] \textmu m, absolute sizing; placement density target 30\,\%\\
 PDK / library & \texttt{sky130A} (version pinned in the Makefile) / \texttt{sky130\_fd\_sc\_hd}\\
 Synthesis & \texttt{SYNTH\_STRATEGY "DELAY 4"} (the only strategy whose netlist met 40\,ns before placement; +7.8\,\% area)\\
-Macros & three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} (PMEM window, DMEM window, L2 data array), typical-corner liberty for all corners; power connections \texttt{VPWR VGND vccd1 vssd1}; 12\,\textmu m metal-4 keep-out bands at the macro pin edges while the power grid is generated\\
+Macros & three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} (PMEM window, DMEM window, L2 data array), per-corner liberty (TT, SS, FF, characterised with OpenRAM); power connections \texttt{VPWR VGND vccd1 vssd1}; 12\,\textmu m metal-4 keep-out bands at the macro pin edges while the power grid is generated\\
 Repair and timing & post-routing slew/cap repair (margins 70\,\%/70\,\%, 1\,200\,\textmu m wire-length cap); post-CTS hold margin 0.4\,ns; timing repair again after the slew repair (hold margin 0.4\,ns); antenna repair up to 8 rounds at 25\,\%\\
 Stream-out and DRC & KLayout GDS is the deliverable (one top cell, \texttt{KLAYOUT\_CONFLICT\_RESOLUTION OverwriteCell}); flow Magic DRC non-fatal, verdict by \texttt{make signoff-drc}\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Results of the final mini layout (\texttt{flow/runs/place\_1027\_2317})}
+\subsection{Results of the final mini layout (\texttt{flow/runs/place\_1029\_1604})}
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lp{9cm}@{}}
 \tblhead{Metric} & \tblhead{Value}\\
-Instances & 987\,919 in total: 205\,835 standard cells (1.61\,mm\textsuperscript{2}), 62\,490 tap cells, 782\,081 fill cells, 3 macros (0.85\,mm\textsuperscript{2}); of the standard cells 14\,732 flip-flops, 7\,578 antenna diodes, 3\,073 clock buffers\\
+Instances & 987\,884 in total: 205\,333 standard cells (1.61\,mm\textsuperscript{2}), 62\,490 tap cells, 782\,548 fill cells, 3 macros (0.85\,mm\textsuperscript{2}); of the standard cells 14\,732 flip-flops, 7\,187 antenna diodes, 3\,069 clock buffers\\
 Die / utilisation & 2.4\,mm $\times$ 2.4\,mm; standard-cell utilisation 36\,\%\\
-Routing & 9.37\,m of wire, 1\,050\,826 vias, 0 DRC errors, 0 antenna violations\\
-LVS / XOR / KLayout DRC & 0 / 0 / 0\\
+Routing & 9.36\,m of wire, 1\,050\,777 vias, 0 DRC errors, 0 antenna violations\\
+LVS / XOR / KLayout DRC & 0 / 20 (layer 235/4 boundary marker only) / 0\\
 Magic DRC, full chip & 12\,984\,239 boxes, all inside the three macros and in rules that also fire on the standalone OpenRAM macro; \textbf{0 integration errors} (\texttt{make signoff-drc})\\
-Slew, slow corner & 6\,113 pins above the flow's 0.75\,ns target, 69 above the library's 1.5\,ns range, none above 2\,ns; clock-root input 0.98\,ns\\
-Capacitance / fanout violations & 670 / 561 (open); most capacitance violators are buffers inserted by the repair itself\\
-IR drop (worst / average) & 1.0\,mV / 19\,\textmu V\\
-Power (vectorless estimate) & 39.5\,mW\\
+Slew, slow corner & 6\,300 pins above the flow's 0.75\,ns target, 278 above the library's 1.5\,ns range, 128 above 2\,ns (worst 6.0\,ns, on SRAM \texttt{dout1} outputs at loads beyond the library table); clock-root input about 1\,ns\\
+Capacitance / fanout violations & 642 / 524 (open); 36--39 are SRAM \texttt{dout1} pins above the macro\textquotesingle s 27.6\,fF limit (waived)\\
+IR drop (worst / average) & 0.9\,mV / 19\,\textmu V\\
+Power (vectorless estimate) & 39.9\,mW\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -741,22 +742,22 @@ Worst slack from OpenSTA on the routed design (clock 40\,ns, 0.25\,ns uncertaint
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lllrr@{}}
 \tblhead{Corner} & \tblhead{Process} & \tblhead{V / T} & \tblhead{Setup WS (ns)} & \tblhead{Hold WS (ns)}\\
-\texttt{max\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & \textbf{3.299} (worst setup) & 1.444\\
-\texttt{nom\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 4.064 & 1.473\\
-\texttt{min\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 4.682 & 1.497\\
-\texttt{max\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 15.937 & 0.544\\
-\texttt{nom\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 15.995 & 0.561\\
-\texttt{min\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 16.125 & 0.599\\
-\texttt{max\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 16.846 & \textbf{0.265} (worst hold)\\
-\texttt{nom\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 16.959 & 0.277\\
-\texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 17.090 & 0.303\\
+\texttt{max\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & \textbf{3.274} (worst setup) & 1.462\\
+\texttt{nom\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 3.932 & 1.486\\
+\texttt{min\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 4.554 & 1.509\\
+\texttt{max\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 13.624 & 0.565\\
+\texttt{nom\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 13.693 & 0.593\\
+\texttt{min\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 13.829 & 0.604\\
+\texttt{max\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 15.753 & \textbf{0.271} (worst hold)\\
+\texttt{nom\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 15.830 & 0.297\\
+\texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 15.940 & 0.309\\
 \bottomrule
 \end{tabular}
-\caption{Slack by corner of the final mini layout. The SRAM macros are timed with their typical-corner liberty in every corner, so the slow- and fast-corner slack at their pins is not trustworthy (erratum L17).}
+\caption{Slack by corner of the final mini layout. The SRAM macros are timed with liberty files characterised per corner (TT, SS, FF) with OpenRAM; the earlier typical-only library was 4.7 times too fast (erratum L17).}
 \end{table}
 
 \subsection{Outstanding sign-off items}
-Per-corner SRAM liberty files (needs OpenRAM) and a transistor-level LVS of the macro; the shuttle's decision on the macro DRC waiver; the capacitance and fanout violations and the 69 slow-corner pins above 1.5\,ns;
+A transistor-level LVS of the macro; the shuttle's decision on the macro DRC waiver; the SRAM \texttt{dout1} output nets above the macro's capacitance limit, and the other capacitance and fanout violations;
 gate-level simulation of the final netlist (zero-delay, then with the SDF files the flow writes), RTL-to-netlist equivalence; a routed full-size profile; the Caravel wrapper, harness simulation and precheck.
 
 % =============================================================================
@@ -783,7 +784,7 @@ L13 & L & PMU/DCR unreachable & Only DCR address 0 is driven by the Wishbone wra
 L14 & M & Address aliasing & The fault limit (\texttt{0xFFFF}) exceeds the 14-bit bus: accesses in \texttt{0x4000}--\texttt{0xFFFF} wrap onto \texttt{addr \& 0x3FFF} without a fault. Keep global addresses below \texttt{0x4000}.\\
 L15 & M & Only 512+512 words on chip & GPU program and data words $\ge$512 read as 0 (instruction fetch) or read 0 / drop stores and set STATUS[2] (data). Programs must fit 512 words; the random generator uses a 32-word private region per thread.\\
 L16 & M & Host access exclusive; soft reset to re-run & Window accesses are refused while BUSY. Caches are flushed but not invalidated after a run, so write CTRL[1] (soft reset) before loading a new kernel.\\
-L17 & M & Macro timing is typical corner only & OpenRAM supplies one liberty corner (TT\_1p8V\_25C); it is used for all nine STA corners, so SS/FF slack on the SRAM pins is not trustworthy.\\
+L17 & M & SRAM read-port outputs exceed the macro's capacitance limit & Per-corner liberty files now exist (the shipped typical-only file was 4.7 times too fast, clock to output 0.38 ns against 1.81 ns), and timing is met in all nine corners. After routing, 36--39 \texttt{dout1} pins carry 40--70\,fF against the macro's 27.6\,fF limit; the slow-corner slew there reaches about 6\,ns (extrapolated). Waiver recorded, not fixed.\\
 \bottomrule
 \end{longtable}
 \textit{Pin count:} the wrapper has 108 signal pins; meeting a smaller GPIO budget (for example a 38-pin user area) would require a narrower address/data interface.

@@ -25,7 +25,7 @@
 | [L14](#l14) | Global addresses above the 14-bit bus alias silently | M | exec |
 | [L15](#l15) | On-chip memory is only 512 + 512 words; out-of-range GPU accesses read 0 / are dropped | M | exec (chip TB) |
 | [L16](#l16) | Host cannot touch memory while running; re-running needs a soft reset | M | exec (chip TB) |
-| [L17](#l17) | SRAM macro timing is TT-only in every STA corner | M | static |
+| [L17](#l17) | SRAM macro output nets exceed the macro's own cap limit (27.6 fF); slow-corner slew up to 6 ns | M | static |
 
 ---
 ## L1
@@ -162,6 +162,19 @@ are flushed but **not invalidated**, so a second kernel (or new data) would read
 programs per seed with a soft reset in between and matches the model for both.
 
 ## L17
-**Macro timing is typical-corner only.** OpenRAM produced a single `TT_1p8V_25C` liberty file; `config.yaml` maps it to all nine
-STA corners (`lib: "*"`). SS/FF slack involving the SRAM pins is therefore not trustworthy; the SRAM clock-to-Q is also only
-modelled at one corner. Re-characterise (OpenRAM `-c corners`) before sign-off.
+**Per-corner SRAM timing exists now; the macro output nets still break the macro's own limits.** The shipped liberty (typical corner only) was
+about 4.7x too fast: 0.38 ns clock-to-output against 1.81 ns re-characterised. The three corners were re-characterised with OpenRAM
+(`scripts/openram_corners.sh`, `flow/openram/libs/`) and `config.yaml` maps them per STA corner (`*_tt_025C_1v80`, `*_ss_100C_1v60`, `*_ff_n40C_1v95`).
+
+| Corner | clk to dout (typical row) | minimum period | address setup |
+|---|---|---|---|
+| FF 1.95 V, -40 C | 1.19 ns | 3.30 ns | 0.066 ns |
+| TT 1.80 V, 25 C | 1.81 ns | 5.31 ns | 0.090 ns |
+| SS 1.60 V, 100 C | 3.06 ns | 10.0 ns | 0.188 ns |
+
+Setup and hold are still met in all nine corners with the real libraries (`place_1029_1604`: setup >= +3.27 ns at max_ss, hold >= +0.27 ns at max_ff).
+What remains: the `dout1` read-port pins of the three macros drive 40-70 fF after routing, but the OpenRAM liberty declares `max_capacitance` 27.6 fF on them (2.05 ns output slew at that load,
+extrapolated to about 6 ns at 70 fF). 36-39 macro pins violate the cap limit and about 128 pins sit above 2 ns at the slow corner. The post-global-route repair buffered the nets, but the buffers
+are not the problem: the pin plus buffer load is 6 fF, the routed wire is 33-63 fF, because the detailed router detours (e.g. `d_dout1[10]` runs about 90 um west of its loads). The repair works from the global-route estimate and nothing repairs after detailed routing.
+Timing already includes the slow edges, so this is a library-validity and electrical-rule item on read-only pins, not a timing failure. Candidate fixes (not tried): an explicit buffer at each `dout1` pin in the SRAM wrapper, a macro placement halo, a repair step after detailed routing.
+Also not done: transistor-level LVS of the macro.
