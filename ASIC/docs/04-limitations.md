@@ -3,14 +3,14 @@
 > Verified against commit `dadec7f` (+ uncommitted docs), 2026-10-21. A *limitation* is behaviour that is a design choice, a missing feature, or
 > a verification blind spot — as opposed to the *fixed bugs* in [05-bug-log](05-bug-log.md).
 > Entries marked **[exec]** have an executable characterization test (`make limits`, script `scripts/limits.py`) that
-> **passes while the limitation exists and fails if it is fixed** — a failure there means *update this page*.
+> **passes while the documented behaviour holds** (the limitation for open entries, the fix for resolved ones) — a failure there means *update this page*.
 > Entries marked **[static]** are checked by `make docs-check` (text/RTL pattern). Severity: **H** can silently give wrong
 > results or blocks use; **M** surprising but contained; **L** inconvenience.
 
 | ID | Title | Sev | Check |
 |---|---|---|---|
-| [L1](#l1) | No join-point reconvergence → `SYNC` unsafe after divergence | **H** | exec |
-| [L2](#l2) | `DIV`/`MOD` return 0 unless `USE_COMB_DIV` | M | exec (`unit-alu-stub`) |
+| [L1](#l1) | No join-point reconvergence; `SYNC` after divergence now **faults** (was: silent early release) | M | exec |
+| [L2](#l2) | ~~`DIV`/`MOD` return 0~~ — **resolved**: shared iterative divider (slow: up to 33 cycles/lane) | — | exec |
 | [L3](#l3) | ~~`gpu_asic_top` has no memory~~ — **resolved**: 2×2 KB SRAM window | — | static |
 | [L4](#l4) | L2 PMU events hard-wired to 0 | L | static |
 | [L5](#l5) | `CMP` is unsigned; NZP resets to 0 | M | exec |
@@ -20,40 +20,56 @@
 | [L9](#l9) | Atomics: `CAS`, ordering and multi-core untested | M | — |
 | [L10](#l10) | Fixes B2–B4 exist only in `ASIC/src/rtl` | M | static |
 | [L11](#l11) | Tooling/legacy test debt | L | — |
-| [L12](#l12) | Faults (div0, bad address) are invisible outside the core | **H** | exec |
+| [L12](#l12) | ~~Faults are invisible outside the core~~ — **resolved**: `STATUS[4]`, `FAULT_INFO`, `gpu_fault_pin` | — | exec |
 | [L13](#l13) | PMU/DCR registers unreachable from chip pins | L | static |
 | [L14](#l14) | Global addresses above the 14-bit bus alias silently | M | exec |
 | [L15](#l15) | On-chip memory is only 512 + 512 words; out-of-range GPU accesses read 0 / are dropped | M | exec (chip TB) |
 | [L16](#l16) | Host cannot touch memory while running; re-running needs a soft reset | M | exec (chip TB) |
-| [L17](#l17) | SRAM macro timing is TT-only in every STA corner | M | static |
+| [L17](#l17) | SRAM macro output nets exceed the macro's own cap limit (27.6 fF); slow-corner slew up to 6 ns | M | static |
 
 ---
 ## L1
-**No join-point reconvergence → `SYNC` is unsafe after divergence.**
+**No join-point reconvergence → a `SYNC` reached while the warp is diverged is a fault.**
+- **Now (enforced).** `core.sv` raises exception cause **3** when `SYNC` executes while the warp's divergence stack is
+  non-empty (`ex_has_sync_div`, from the scheduler's `warp_diverged` output). The warp stops, the kernel still reaches
+  `done`, and the host sees `STATUS[4]` / `FAULT_INFO` ([L12](#l12)). So the wrong-result case below can no longer happen
+  silently; such a kernel is rejected instead. `make limits` case `L1` checks both: a uniform loop + `SYNC` gives the
+  correct shared-memory result with no fault, the divergent version faults with cause 3 at the `SYNC`.
+  The text below describes the underlying limitation (what used to happen, and why such kernels still cannot run).
 - **Symptom.** After a divergent branch the lanes of a warp finish the remaining program one *group* at a time. A `SYNC`
   placed after the divergent region (even at the top level of the source) executes once per group and the first group to
   arrive counts as "this warp arrived", so it can pass the barrier before other lanes/warps have done their work.
-- **Root cause.** `scheduler.sv` pushes the not-taken group on a 4-entry stack at a divergent branch (`scheduler.sv:238-241`) and only
-  pops it when (a) `EXIT` executes (`scheduler.sv:229-234`) or (b) a later non-divergent branch targets exactly the stacked PC
-  (`is_reconverge`, `scheduler.sv:247-254`). There is no reconvergence at the join/post-dominator, so merging almost never happens.
-  `SYNC` only counts *warps* (`barrier_count >= num_active_warps_comb`, `scheduler.sv:272`), not lanes.
+- **Root cause.** `scheduler.sv` pushes the not-taken group on a 4-entry stack at a divergent branch (`scheduler.sv:245-248`) and only
+  pops it when (a) `EXIT` executes (`scheduler.sv:236-241`) or (b) a later non-divergent branch targets exactly the stacked PC
+  (`is_reconverge`, `scheduler.sv:254-261`). There is no reconvergence at the join/post-dominator, so merging almost never happens.
+  `SYNC` only counts *warps* (`barrier_count >= num_active_warps_comb`, `scheduler.sv:279`), not lanes.
   The same logic is in `src/rtl/scheduler.sv` (checked by diff, only trace prints differ).
 - **Evidence.** Random-regression seed 76 (shared-memory program): the final readout executed lane by lane — lane 0 finished
   at t≈24,900 ns, lane 1 ≈45,700, lane 2 ≈67,600, lane 3 ≈90,300 — while other lanes' stores were still pending; 18/240
-  seeds failed before the generator was made warp-uniform. Reproduced by `make limits` (case `L1`).
-- **Impact.** Any kernel using `SYNC` (reductions, shared-memory tiling) with data-dependent control flow before it can
-  read stale shared memory. Also an efficiency issue: the program tail runs once per lane group.
+  seeds failed before the generator was made warp-uniform. (Before the fault was added, `make limits` case `L1` reproduced
+  the stale reads.)
+- **Impact.** A kernel using `SYNC` (reductions, shared-memory tiling) with data-dependent control flow before it
+  faults (previously: read stale shared memory). Also an efficiency issue: the program tail runs once per lane group.
 - **Workaround.** Make all control flow before every `SYNC` warp-uniform (conditions/loop counts derived from block/warp
   constants). The random generator does this in "uniform mode" (`scripts/gen.py`). Divergence *without* barriers is fine
   (covered by unit, system and random tests).
 - **Fix options.** Reconverge at the immediate post-dominator (compiler-inserted join point or hardware stack
-  with a join PC); or make `SYNC` wait for an all-lanes mask. Not started.
+  with a join PC); or make `SYNC` wait for an all-lanes mask. Not started; the fault is the stop-gap.
 
 ## L2
-**`DIV`/`MOD` return 0 unless built with `USE_COMB_DIV`** (`alu.sv:78-95`; comment: "division stubbed or delegated to
-software" for area/timing). `rt==0` still raises the fault flag. Kernels needing integer division (e.g. `matmul`) must be
-simulated with `-DUSE_COMB_DIV=1` (`make verify-matmul` does). Not part of the synthesized default.
-Check: `make unit-alu` (with) and `make unit-alu-stub` (without) assert both behaviours. Gate-level confirmation: the synthesized netlist returns 0 for DIV/MOD (`make gls` needs `MAHI_NO_DIV=1` in the golden model; without it 28 of the first 40 seeds mismatch).
+**RESOLVED — `DIV`/`MOD` compute real results.** They used to return 0 in every synthesized build (the ALU's divider is only
+compiled with `USE_COMB_DIV`, too big and slow for the ASIC). Now `core.sv` sends them to `divider.sv`: **one** radix-2
+restoring divider per core, shared by the lanes (one subtract per cycle, leading-zero skip, lanes one after another).
+Measured standalone on the sky130 typical library: 309 flops / 14,409 um2 on the mini profile (2 lanes), 506 flops / 21,861 um2 on
+the full profile (4 lanes); most flops are the per-lane operand and result buffers. In the routed mini design the synthesized area
+grew 3.6% (+342 flops). A combinational `/` and `%` would be 22,549 um2 per lane with a ~93 ns path at the typical corner. It uses the FMA's long-latency path: the warp parks (`WAITING_FP`), `rd` is scoreboarded, the result comes back
+on the long-latency register write port; the other warp keeps issuing. A second `DIV`/`MOD` waits in ID while the unit is
+busy. Cost: up to `DATA_BITS - clz(dividend)` + 1 cycles per active lane (worst case 4 lanes × 33 = 132 + 3), 1 cycle for a
+zero dividend. Division by zero still faults in EX (cause 1) and never reaches the divider.
+`USE_COMB_DIV` remains only for the simulation-profile ALU (`make verify-matmul`, `unit-alu`); `unit-alu-stub` still checks
+that the ALU's own DIV/MOD output is 0 without it (the core no longer uses that output for DIV/MOD in ASIC builds).
+Checks: `make unit-divider` (4,001 random/corner operations, SVA `div_sva`), `make limits` case `L2`, and the random
+regressions, which now emit DIV/MOD and compare against the plain golden model (`MAHI_NO_DIV` is gone).
 
 ## L3
 **RESOLVED — `gpu_asic_top` now has memory.** It used to tie off every memory port (no program could be loaded; synthesis kept
@@ -77,7 +93,7 @@ The 9th nested `CALL` overwrites the oldest return address; unwinding then retur
 `RET` on an empty stack reads a stale entry. Exec check: `make limits` case `L6`. No assertion covers it (open item).
 
 ## L7
-**Divergence stack is 4 deep** (`scheduler.sv:57`). With 4 lanes per warp the maximum nesting is 3, so it cannot overflow in the
+**Divergence stack is 4 deep** (`scheduler.sv:59`). With 4 lanes per warp the maximum nesting is 3, so it cannot overflow in the
 ASIC profile; a profile with `THREADS_PER_BLOCK` ≥ 6 can (the sim profile used by `tb_matmul` has 8 lanes and was not seen to
 overflow). SVA `sched_sva.a_depth` flags `stack_ptr > 4`.
 
@@ -107,10 +123,17 @@ not part of `verify`. Testbenches in `src/tb/{AXI4,compute,fault,infant,memory,p
 Verilator pitfalls are listed in [06-verification](06-verification.md).
 
 ## L12
-**Faults are invisible outside the core.** Division by zero and out-of-range addresses set `ex_exception_valid`; the scheduler
-marks the warp `FAULTED` and flushes it (`scheduler.sv:205-209`), and `FAULTED` counts as finished for `done`
-(`scheduler.sv:285`). `core.sv` exposes `exception_*` outputs but `gpu.sv` never connects them. A faulting kernel therefore **completes
-with `done` high and silently missing results**. Exec check: `make limits` case `L12`.
+**RESOLVED — faults are reported to the host.** Division by zero (cause 1), an out-of-range address (cause 2) and `SYNC`
+while diverged (cause 3, [L1](#l1)) still stop only the faulting warp: the scheduler marks it `FAULTED` and flushes it
+(`scheduler.sv:212-216`), and `FAULTED` counts as finished for `done` (`scheduler.sv:292`), so the kernel completes.
+What changed: `gpu.sv` now exports the first fault of the lowest faulting core (`fault`, `fault_cause`, `fault_warp`,
+`fault_pc`), and `gpu_asic_top.sv` latches it, because the core clears its report at the next block reset:
+`STATUS[4]` (sticky, write 1 to clear), `FAULT_INFO` at `0x3000_0008` = `{pc[15:0], warp[7:0], 4'd0, cause[3:0]}` (first fault
+since `STATUS[4]` was clear) and the new pin `gpu_fault_pin` (= `STATUS[4]`, meant for a Caravel `user_irq`).
+Remaining gaps: with several cores only the lowest-numbered faulting core is reported, and only the first fault is kept.
+Checks: `make limits` case `L12` (cause and pc for div0 and bad address); `tb_asic_top` runs a div-by-zero kernel over
+Wishbone and checks `STATUS[4]`, `FAULT_INFO`, the pin, the suppressed store and the W1C clear; every random kernel must
+finish with `STATUS[4]` = 0 (`rand_regress.py` reports a `FAULT` otherwise).
 
 ## L13
 **PMU/DCR registers are unreachable from the chip pins.** `gpu_asic_top` always drives `device_control_address = 0`
@@ -139,6 +162,19 @@ are flushed but **not invalidated**, so a second kernel (or new data) would read
 programs per seed with a soft reset in between and matches the model for both.
 
 ## L17
-**Macro timing is typical-corner only.** OpenRAM produced a single `TT_1p8V_25C` liberty file; `config.yaml` maps it to all nine
-STA corners (`lib: "*"`). SS/FF slack involving the SRAM pins is therefore not trustworthy; the SRAM clock-to-Q is also only
-modelled at one corner. Re-characterise (OpenRAM `-c corners`) before sign-off.
+**Per-corner SRAM timing exists now; the macro output nets still break the macro's own limits.** The shipped liberty (typical corner only) was
+about 4.7x too fast: 0.38 ns clock-to-output against 1.81 ns re-characterised. The three corners were re-characterised with OpenRAM
+(`scripts/openram_corners.sh`, `flow/openram/libs/`) and `config.yaml` maps them per STA corner (`*_tt_025C_1v80`, `*_ss_100C_1v60`, `*_ff_n40C_1v95`).
+
+| Corner | clk to dout (typical row) | minimum period | address setup |
+|---|---|---|---|
+| FF 1.95 V, -40 C | 1.19 ns | 3.30 ns | 0.066 ns |
+| TT 1.80 V, 25 C | 1.81 ns | 5.31 ns | 0.090 ns |
+| SS 1.60 V, 100 C | 3.06 ns | 10.0 ns | 0.188 ns |
+
+Setup and hold are still met in all nine corners with the real libraries (`place_1029_1604`: setup >= +3.27 ns at max_ss, hold >= +0.27 ns at max_ff).
+What remains: the `dout1` read-port pins of the three macros drive 40-70 fF after routing, but the OpenRAM liberty declares `max_capacitance` 27.6 fF on them (2.05 ns output slew at that load,
+extrapolated to about 6 ns at 70 fF). 36-39 macro pins violate the cap limit and about 128 pins sit above 2 ns at the slow corner. The post-global-route repair buffered the nets, but the buffers
+are not the problem: the pin plus buffer load is 6 fF, the routed wire is 33-63 fF, because the detailed router detours (e.g. `d_dout1[10]` runs about 90 um west of its loads). The repair works from the global-route estimate and nothing repairs after detailed routing.
+Timing already includes the slow edges, so this is a library-validity and electrical-rule item on read-only pins, not a timing failure. Candidate fixes (not tried): an explicit buffer at each `dout1` pin in the SRAM wrapper, a macro placement halo, a repair step after detailed routing.
+Transistor-level LVS of the macro passes (`make macro-lvs`, [06](06-verification.md)).

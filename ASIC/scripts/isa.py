@@ -7,6 +7,7 @@ valid for programs without inter-thread communication (no shared mem, atomics,
 SYNC, or overlapping stores), which is what the random generator emits.
 """
 import os
+from profile_cfg import THREADS, SHARED
 M = 0xFFFFFFFF
 
 OP = dict(NOP=0, BR=1, CMP=2, ADD=3, SUB=4, MUL=5, DIV=6, LDR=7, STR=8, CONST=9, SYNC=10,
@@ -59,15 +60,13 @@ def enc_LUI(rd, imm20):
 
 
 # ---- ALU ----------------------------------------------------------------------
-# MAHI_NO_DIV=1: DIV/MOD return 0 like the synthesized ASIC ALU (alu.sv without USE_COMB_DIV, limitation L2).
-NO_DIV = os.environ.get('MAHI_NO_DIV') == '1'
 
 def alu(op, a, b, rdv=0):
     if op == 'ADD': return (a + b) & M
     if op == 'SUB': return (a - b) & M
     if op == 'MUL': return (s32(a) * s32(b)) & M
-    if op == 'DIV': return 0 if NO_DIV else (a // b) & M     # unsigned; generator guarantees b != 0
-    if op == 'MOD': return 0 if NO_DIV else (a % b) & M
+    if op == 'DIV': return (a // b) & M     # unsigned; generator guarantees b != 0
+    if op == 'MOD': return (a % b) & M
     if op == 'AND': return a & b
     if op == 'OR': return a | b
     if op == 'XOR': return a ^ b
@@ -140,9 +139,9 @@ class Machine:
     barrier phases are modelled exactly; between barriers threads run one after another,
     which is valid because the generator keeps phases race-free."""
 
-    SHARED_WORDS = 64
+    SHARED_WORDS = SHARED
 
-    def __init__(self, words, mem, nthreads=8, block_id=0, max_steps=200000):
+    def __init__(self, words, mem, nthreads=THREADS, block_id=0, max_steps=200000):
         self.w, self.mem, self.n, self.bid, self.max_steps = words, mem, nthreads, block_id, max_steps
         self.shared = {}
 

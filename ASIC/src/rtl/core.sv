@@ -163,7 +163,9 @@ decoder #(
 
 reg [31:0] fp_scoreboard [NUM_WARPS];
 
-assign fp_raw_stall = (|id_active_mask) && (
+// Long-latency (FMA + divider) RAW stall: a source register still owed by an in-flight FP/DIV op.
+// The scoreboard is shared by both units (fp_scoreboard). div_busy_stall (below) is the other term.
+wire fp_sb_stall = (|id_active_mask) && (
                       (id_rs_re && fp_scoreboard[id_warp_id][id_rs]) |
                       (id_rt_re && fp_scoreboard[id_warp_id][id_rt]) |
                       (id_rd_re && fp_scoreboard[id_warp_id][id_rd]) );
@@ -225,7 +227,8 @@ end
 
 wire ex_has_div0;
 wire ex_has_mem_fault;
-wire ex_exception_valid = ex_has_div0 | ex_has_mem_fault;
+wire ex_has_sync_div;
+wire ex_exception_valid = ex_has_div0 | ex_has_mem_fault | ex_has_sync_div;
 
 reg [4:0] fp_pipe_valid;
 reg [$clog2(NUM_WARPS)-1:0] fp_pipe_warp [5];
@@ -255,12 +258,41 @@ wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id = fp_pipe_warp[4];
 wire [4:0] fp_wb_rd_warp = fp_pipe_rd[4];
 wire [THREADS_PER_BLOCK-1:0] fp_wb_mask = fp_pipe_mask[4];
 
+// --- Shared iterative divider (DIV/MOD) on the long-latency path -------------------------------------------
+// In the ASIC build DIV/MOD go to one divider shared by all lanes (src/rtl/divider.sv). The warp is parked like
+// an FP op (scheduler fp_req), rd is scoreboarded, the ALU writeback is suppressed, and the result returns through
+// the long-latency register write port (FMA results have priority). USE_COMB_DIV keeps the old single-cycle ALU
+// divide for the fast simulation profile.
+`ifdef USE_COMB_DIV
+localparam LL_DIV = 0;
+`else
+localparam LL_DIV = 1;
+`endif
+localparam [4:0] ALU_OP_DIV = 5'd3, ALU_OP_MOD = 5'd9;
+wire ex_is_div   = (LL_DIV != 0) && !ex_is_fp && ex_reg_we && (ex_alu_arith_mux == ALU_OP_DIV || ex_alu_arith_mux == ALU_OP_MOD);
+wire ex_div_fire = (|ex_active_mask) && ex_is_div && !ex_exception_valid;
+wire id_is_div   = (LL_DIV != 0) && !id_is_fp && id_reg_we && (id_alu_arith_mux == ALU_OP_DIV || id_alu_arith_mux == ALU_OP_MOD);
+wire div_busy, div_done;
+wire [DATA_BITS-1:0] div_result [THREADS_PER_BLOCK];
+wire [THREADS_PER_BLOCK-1:0] div_mask;
+wire [$clog2(NUM_WARPS)-1:0] div_warp;
+wire [4:0] div_rd;
+// one divide at a time: a second DIV waits in ID while the unit is busy or a DIV sits in EX
+wire div_busy_stall = (|id_active_mask) && id_is_div && (div_busy || ((|ex_active_mask) && ex_is_div));
+assign fp_raw_stall = fp_sb_stall | div_busy_stall;
+
+wire div_wb_go = div_done && !fp_wb_valid_warp;
+wire ll_wb_valid = fp_wb_valid_warp | div_wb_go;
+wire [$clog2(NUM_WARPS)-1:0] ll_wb_warp_id = fp_wb_valid_warp ? fp_wb_warp_id : div_warp;
+wire [4:0] ll_wb_rd = fp_wb_valid_warp ? fp_wb_rd_warp : div_rd;
+wire [THREADS_PER_BLOCK-1:0] ll_wb_mask = fp_wb_valid_warp ? fp_wb_mask : div_mask;
+
 always @(posedge clk) begin
     if (reset) begin
         for (int w=0; w<NUM_WARPS; w++) fp_scoreboard[w] <= 0;
     end else begin
-        if (fp_wb_valid_warp && fp_wb_rd_warp < 29) fp_scoreboard[fp_wb_warp_id][fp_wb_rd_warp] <= 1'b0;
-        if (ex_fp_fire && ex_rd < 29) fp_scoreboard[ex_warp_id][ex_rd] <= 1'b1;
+        if (ll_wb_valid && ll_wb_rd < 29) fp_scoreboard[ll_wb_warp_id][ll_wb_rd] <= 1'b0;
+        if ((ex_fp_fire || ex_div_fire) && ex_rd < 29) fp_scoreboard[ex_warp_id][ex_rd] <= 1'b1;
     end
 end
 
@@ -284,6 +316,15 @@ wire [THREADS_PER_BLOCK-1:0] thread_mem_fault;
 
 wire is_global_mem_op = ex_mem_re | ex_mem_we | (|ex_atomic);
 wire is_shared_mem_op = ex_shared_re | ex_shared_we;
+
+divider #(
+    .LANES(THREADS_PER_BLOCK), .DATA_BITS(DATA_BITS), .WARP_BITS($clog2(NUM_WARPS))
+) divider_inst (
+    .clk(clk), .reset(reset), .start(ex_div_fire), .is_mod(ex_alu_arith_mux == ALU_OP_MOD),
+    .mask(ex_active_mask), .warp(ex_warp_id), .rd(ex_rd), .a(fwd_ex_rs_data), .b(fwd_ex_rt_data),
+    .busy(div_busy), .done(div_done), .ack(div_wb_go),
+    .result(div_result), .out_mask(div_mask), .out_warp(div_warp), .out_rd(div_rd)
+);
 
 reg [THREADS_PER_BLOCK-1:0]   wb_active_mask;
 reg [$clog2(NUM_WARPS)-1:0]   wb_warp_id;
@@ -388,10 +429,10 @@ generate
             .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), 
             .decoded_reg_input_mux(wb_reg_mux), .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(0),
             .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i]),
-            .fp_wb_valid(fp_wb_valid_warp && fp_wb_mask[i]),
-            .fp_wb_warp_id(fp_wb_warp_id),
-            .fp_wb_rd(fp_wb_rd_warp),
-            .fp_wb_data(fp_result_t)
+            .fp_wb_valid(ll_wb_valid && ll_wb_mask[i]),
+            .fp_wb_warp_id(ll_wb_warp_id),
+            .fp_wb_rd(ll_wb_rd),
+            .fp_wb_data(fp_wb_valid_warp ? fp_result_t : div_result[i])
         );
 
 `ifndef SYNTHESIS
@@ -411,7 +452,11 @@ endgenerate
 
 assign ex_has_div0 = |(ex_active_mask & alu_div_by_zero);
 assign ex_has_mem_fault = |(ex_active_mask & thread_mem_fault);
-wire [3:0] ex_exception_cause = ex_has_div0 ? 4'd1 : (ex_has_mem_fault ? 4'd2 : 4'd0);
+// SYNC inside a divergent region would release the barrier with lanes still parked on the divergence stack
+// (limitation L1); it is a fault instead of a silent early release.
+wire [NUM_WARPS-1:0] warp_diverged;
+assign ex_has_sync_div = ex_sync && (|ex_active_mask) && warp_diverged[ex_warp_id];
+wire [3:0] ex_exception_cause = ex_has_div0 ? 4'd1 : (ex_has_mem_fault ? 4'd2 : (ex_has_sync_div ? 4'd3 : 4'd0));
 
 always @(posedge clk) begin
     if (reset) exception_raised <= 0;
@@ -446,7 +491,7 @@ always @(posedge clk) begin
         // =====================================================================
         // FIX 2: Clear mem_reg_we when ex_is_fp is set to prevent integer ALU 0-writeback
         // =====================================================================
-        mem_reg_we <= ex_reg_we && !ex_is_fp; 
+        mem_reg_we <= ex_reg_we && !ex_is_fp && !ex_is_div; 
         mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
         mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we; mem_reg_mux <= ex_reg_mux;
         mem_use_mem_offset <= ex_use_mem_offset; mem_mem_addr_offset <= ex_mem_addr_offset;
@@ -547,11 +592,11 @@ scheduler #(
 ) scheduler_instance (
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready), .mem_in_progress(mem_in_progress), 
-    .fp_req_valid(ex_fp_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(fp_wb_valid_warp), .fp_wb_warp_id(fp_wb_warp_id),
+    .fp_req_valid(ex_fp_fire | ex_div_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(ll_wb_valid), .fp_wb_warp_id(ll_wb_warp_id),
     .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .found_var_comb(found_var_comb), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 
-    .ex_exception_valid(ex_exception_valid), .done(done),
+    .ex_exception_valid(ex_exception_valid), .done(done), .warp_diverged(warp_diverged),
     .ev_scheduler_idle(sched_ev_idle), .ev_warp_switch(sched_ev_warp_switch), .ev_diverge(sched_ev_diverge),
     .ev_stall_mem(sched_ev_stall_mem), .ev_stall_barrier(sched_ev_stall_barrier), .ev_stall_noready(sched_ev_stall_noready)
 );
@@ -562,7 +607,7 @@ wire ev_issue       = core_running && valid_issue;
 wire ev_fetch_stall = core_running && fetch_stall;
 wire ev_flush       = core_running && (|flush_warp_mask);
 wire ev_mem         = core_running && (|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id];
-wire fp_wb_collision = (|wb_active_mask) && wb_reg_we && fp_wb_valid_warp && (wb_warp_id == fp_wb_warp_id) && (wb_rd == fp_wb_rd_warp);
+wire fp_wb_collision = (|wb_active_mask) && wb_reg_we && ll_wb_valid && (wb_warp_id == ll_wb_warp_id) && (wb_rd == ll_wb_rd);
 
 wire [31:0] event_bus;
 assign event_bus[31:28] = 4'd0; assign event_bus[27] = fp_wb_collision; assign event_bus[26] = fp_raw_stall;

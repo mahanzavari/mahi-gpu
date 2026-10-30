@@ -20,7 +20,9 @@ module gpu_asic_top (
     output reg         wb_ack_o,
 
     // Hardware status interrupt / pin
-    output wire        gpu_done_pin
+    output wire        gpu_done_pin,
+    // STATUS[4]: a warp faulted (high until the host clears it)
+    output wire        gpu_fault_pin
 );
 
     // =========================================================================
@@ -29,7 +31,11 @@ module gpu_asic_top (
     //                         [15:8] thread_count
     //                      R: {16'd0, thread_count, 7'd0, start}
     //   0x3000_0004 STATUS R: [0] done  [1] busy  [2] gpu_oob (sticky)  [3] host_blocked (sticky)
-    //                      W: writing 1 to [2] / [3] clears that flag
+    //                         [4] fault (sticky)
+    //                      W: writing 1 to [2] / [3] / [4] clears that flag
+    //   0x3000_0008 FAULT_INFO R: {pc[15:0], warp[7:0], 4'd0, cause[3:0]} of the first fault since STATUS[4]
+    //                         was last clear; cause 1 = divide by zero, 2 = memory fault, 3 = SYNC while diverged.
+    //                         A faulted warp stops; the others run on and the kernel still reaches done.
     //   0x3000_1000 - 0x3000_17FF  PMEM: 512 words, GPU instruction words 0..511
     //   0x3000_1800 - 0x3000_1FFF  DMEM: 512 words, GPU data words 0..511
     //   anything else: acked, reads return 0, writes ignored
@@ -48,6 +54,12 @@ module gpu_asic_top (
     reg        dcr_we;
     reg  [3:0] rst_cnt;                     // soft reset: gpu_reset held while non-zero
     reg        flag_oob, flag_blocked;
+    reg        flag_fault, gpu_fault_d;
+    reg [31:0] fault_info;
+    wire       gpu_fault;
+    wire [3:0] gpu_fault_cause;
+    wire [7:0] gpu_fault_warp;
+    wire [15:0] gpu_fault_pc;
 
     wire       gpu_reset  = reset || (rst_cnt != 4'd0);
     wire       gpu_start  = start_d2;
@@ -55,7 +67,8 @@ module gpu_asic_top (
     wire       mem_busy;                    // GPU transaction in flight in gpu_mem_subsys
     wire       oob_pulse;
 
-    assign gpu_done_pin = gpu_done;
+    assign gpu_done_pin  = gpu_done;
+    assign gpu_fault_pin = flag_fault;
 
     // ---- host-side memory request registers
     localparam H_IDLE = 2'd0, H_ISSUE = 2'd1, H_WAIT = 2'd2;
@@ -83,6 +96,9 @@ module gpu_asic_top (
             rst_cnt      <= 4'd0;
             flag_oob     <= 1'b0;
             flag_blocked <= 1'b0;
+            flag_fault   <= 1'b0;
+            gpu_fault_d  <= 1'b0;
+            fault_info   <= 32'd0;
             h_state      <= H_IDLE;
             h_bank       <= 1'b0;
             h_we         <= 1'b0;
@@ -97,6 +113,12 @@ module gpu_asic_top (
             start_d2 <= start_d1;
             if (rst_cnt != 4'd0) rst_cnt <= rst_cnt - 4'd1;
             if (oob_pulse) flag_oob <= 1'b1;
+            // the core's fault report is cleared by its per-block reset: latch the rising edge here
+            gpu_fault_d <= gpu_fault;
+            if (gpu_fault && !gpu_fault_d) begin
+                flag_fault <= 1'b1;
+                if (!flag_fault) fault_info <= {gpu_fault_pc, gpu_fault_warp, 4'd0, gpu_fault_cause};
+            end
 
             case (h_state)
                 H_IDLE: if (wb_valid && !wb_ack_o) begin
@@ -121,9 +143,12 @@ module gpu_asic_top (
                             if (wb_we_i) begin
                                 if (wb_dat_i[2]) flag_oob     <= 1'b0;
                                 if (wb_dat_i[3]) flag_blocked <= 1'b0;
+                                if (wb_dat_i[4]) flag_fault   <= 1'b0;
                             end else begin
-                                wb_dat_o <= {28'd0, flag_blocked, flag_oob, run_active, gpu_done};
+                                wb_dat_o <= {27'd0, flag_fault, flag_blocked, flag_oob, run_active, gpu_done};
                             end
+                        end else if (wb_adr_i[7:0] == 8'h08) begin
+                            if (!wb_we_i) wb_dat_o <= fault_info;
                         end else if (!wb_we_i) begin
                             wb_dat_o <= 32'd0;
                         end
@@ -214,7 +239,12 @@ module gpu_asic_top (
         .pmu_snap_0(),
         .pmu_snap_1(),
         .pmu_snap_2(),
-        .pmu_snap_3()
+        .pmu_snap_3(),
+
+        .fault(gpu_fault),
+        .fault_cause(gpu_fault_cause),
+        .fault_warp(gpu_fault_warp),
+        .fault_pc(gpu_fault_pc)
     );
 
 endmodule

@@ -12,11 +12,11 @@
 module tb_asic_top;
     reg clk = 0, reset = 1;
     reg wb_cyc = 0, wb_stb = 0, wb_we = 0; reg [3:0] wb_sel = 4'hF;
-    reg [31:0] wb_adr = 0, wb_dati = 0; wire [31:0] wb_dato; wire wb_ack; wire done_pin;
+    reg [31:0] wb_adr = 0, wb_dati = 0; wire [31:0] wb_dato; wire wb_ack; wire done_pin; wire fault_pin;
 
     gpu_asic_top dut (.clk(clk), .reset(reset), .wb_cyc_i(wb_cyc), .wb_stb_i(wb_stb), .wb_we_i(wb_we),
         .wb_sel_i(wb_sel), .wb_adr_i(wb_adr), .wb_dat_i(wb_dati), .wb_dat_o(wb_dato), .wb_ack_o(wb_ack),
-        .gpu_done_pin(done_pin));
+        .gpu_done_pin(done_pin), .gpu_fault_pin(fault_pin));
 
     always #5 clk = ~clk;
 
@@ -40,7 +40,7 @@ module tb_asic_top;
     task wb_wr(input [31:0] adr, input [31:0] dat); begin wb_xfer(1, 4'hF, adr, dat, rd); end endtask
     task wb_rd(input [31:0] adr, output [31:0] q); begin wb_xfer(0, 4'hF, adr, 0, q); end endtask
 
-    localparam [31:0] CTRL = 32'h3000_0000, STAT = 32'h3000_0004, PMEM = 32'h3000_1000, DMEM = 32'h3000_1800;
+    localparam [31:0] CTRL = 32'h3000_0000, STAT = 32'h3000_0004, FINFO = 32'h3000_0008, PMEM = 32'h3000_1000, DMEM = 32'h3000_1800;
     reg [31:0] prog [0:511], dmem [0:511], img [0:511];
     string pf, df, of; integer nthr, maxcyc, i, cyc, fd, ok;
     reg [31:0] v;
@@ -71,6 +71,7 @@ module tb_asic_top;
             if (!v[0]) begin $display("TB_TIMEOUT after %0d polls", cyc); $finish(2); end
             expect_eq("busy clear when done", v[1], 0);
             expect_eq("gpu_oob", v[2], 0);
+            expect_eq("no fault", v[4], 0);
             wb_wr(CTRL, 0);                                            // drop start
             wb_rd(STAT, v);
             fd = $fopen(ofile, "w");
@@ -147,6 +148,29 @@ module tb_asic_top;
             repeat (12) @(posedge clk);
             run_kernel(pf, df, of, 0);
         end
+
+        // ---- directed fault: DIV by zero at pc 2 -> STATUS[4], FAULT_INFO, fault pin; W1C clears
+        wb_wr(CTRL, 32'h2); repeat (12) @(posedge clk);
+        for (i = 0; i < 512; i = i + 1) wb_wr(PMEM + 4*i, 32'h0);
+        wb_wr(PMEM + 0,  32'h24200005);                               // CONST R1, 5
+        wb_wr(PMEM + 4,  32'h24400000);                               // CONST R2, 0
+        wb_wr(PMEM + 8,  32'h18611000);                               // DIV R3, R1, R2  (faults)
+        wb_wr(PMEM + 12, 32'h2480004d);                               // CONST R4, 77
+        wb_wr(PMEM + 16, 32'h209f012c);                               // STR R4, [R31 + 300]
+        wb_wr(PMEM + 20, 32'h3c000000);                               // EXIT
+        wb_wr(DMEM + 4*300, 32'h0);
+        wb_rd(STAT, v); expect_eq("no fault before run", v[4], 1'b0);
+        wb_wr(CTRL, (nthr << 8) | 1);
+        cyc = 0; v = 0;
+        while (!v[0] && cyc < maxcyc) begin wb_rd(STAT, v); cyc = cyc + 1; end
+        expect_eq("faulting kernel reaches done", v[0], 1'b1);
+        expect_eq("STATUS[4] fault", v[4], 1'b1);
+        expect_eq("fault pin", fault_pin, 1'b1);
+        wb_rd(FINFO, v); expect_eq("FAULT_INFO cause/pc", {v[31:16], v[3:0]}, {16'd2, 4'd1});
+        wb_wr(CTRL, 0);
+        wb_rd(DMEM + 4*300, v); expect_eq("post-fault store suppressed", v, 32'h0);
+        wb_wr(STAT, 32'h10); wb_rd(STAT, v); expect_eq("fault W1C", v[4], 1'b0);
+        expect_eq("fault pin cleared", fault_pin, 1'b0);
 
         if (errors == 0) begin $display("TOP_TB_PASS"); $finish; end
         else begin $display("TOP_TB_FAILED errors=%0d", errors); $finish(1); end

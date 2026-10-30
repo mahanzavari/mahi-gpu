@@ -21,9 +21,13 @@ def read(p): return open(p, encoding='utf-8', errors='replace').read()
 def err(m): errors.append(m)
 
 # ------------------------------------------------------------ generated blocks
+def full_profile_pkg(text):
+    """gpu_pkg.sv without the TARGET_ASIC_MINI overlay (the docs describe the full ASIC profile)."""
+    return re.sub(r'`ifdef TARGET_ASIC_MINI\n.*?`else\n(.*?)`endif\n', r'\1', text, flags=re.S)
+
 def profile_table():
     prof, vals, order = None, {'asic': {}, 'fpga': {}, 'sim': {}}, []
-    for line in read(f'{ASIC}/src/rtl/include/gpu_pkg.sv').splitlines():
+    for line in full_profile_pkg(read(f'{ASIC}/src/rtl/include/gpu_pkg.sv')).splitlines():
         s = line.strip()
         if s.startswith('`ifdef TARGET_ASIC'): prof = 'asic'
         elif s.startswith('`elsif TARGET_FPGA'): prof = 'fpga'
@@ -51,18 +55,30 @@ def opcode_line():
     return ' '.join(f'{n}={v}' for n, v in pairs)
 
 def flow_table():
-    cfg = {}
+    cfg, in_vf = {}, False
     for l in read(f'{ASIC}/flow/config.yaml').splitlines():
-        m = re.match(r'^([A-Z_]+):\s*"?([^"#]*)"?', l)
-        if m and m.group(2).strip(): cfg[m.group(1)] = m.group(2).strip()
+        m = re.match(r'^([A-Z_0-9]+):\s*"?([^"#]*)"?', l)
+        if m:
+            in_vf = (m.group(1) == 'VERILOG_FILES')
+            if m.group(2).strip(): cfg[m.group(1)] = m.group(2).strip()
+            continue
         m2 = re.match(r'^\s*-\s*"(.*)"', l)
-        if m2: cfg['VERILOG_FILES'] = m2.group(1)
+        if m2 and in_vf: cfg['VERILOG_FILES'] = m2.group(1)
+        elif not m2 and l.strip() and not l.lstrip().startswith('#'): in_vf = False
     g = lambda k: cfg.get(k, '?')
     rows = ['| Key | Value |', '|---|---|',
             f"| `DESIGN_NAME` | `{g('DESIGN_NAME')}` |", f"| `VERILOG_FILES` | `{g('VERILOG_FILES')}` |",
             f"| `CLOCK_PORT` / `CLOCK_PERIOD` | `{g('CLOCK_PORT')}` / {g('CLOCK_PERIOD')} ns |",
-            f"| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | {g('FP_SIZING')} / {g('DIE_AREA')} / {g('CORE_AREA')} |",
-            f"| `PL_TARGET_DENSITY_PCT` | {g('PL_TARGET_DENSITY_PCT')} |", f"| `PDK` | `{g('PDK')}` |"]
+            f"| `FP_SIZING` / `DIE_AREA` / `CORE_AREA` | {g('FP_SIZING')} / {g('DIE_AREA')} / {g('CORE_AREA')} (the mini profile uses a 2.4 mm die) |",
+            f"| `PL_TARGET_DENSITY_PCT` | {g('PL_TARGET_DENSITY_PCT')} |", f"| `PDK` | `{g('PDK')}` |",
+            f"| `SYNTH_STRATEGY` | `{g('SYNTH_STRATEGY')}` |",
+            f"| `SYNTH_CLK_DRIVING_CELL` | `{g('SYNTH_CLK_DRIVING_CELL')}` |",
+            f"| `RUN_POST_GRT_DESIGN_REPAIR` / slew % / cap % / max wire | {g('RUN_POST_GRT_DESIGN_REPAIR')} / {g('GRT_DESIGN_REPAIR_MAX_SLEW_PCT')} / {g('GRT_DESIGN_REPAIR_MAX_CAP_PCT')} / {g('GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH')} um |",
+            f"| `PL_RESIZER_HOLD_SLACK_MARGIN` | {g('PL_RESIZER_HOLD_SLACK_MARGIN')} ns |",
+            f"| `RUN_POST_GRT_RESIZER_TIMING` / `GRT_RESIZER_HOLD_SLACK_MARGIN` | {g('RUN_POST_GRT_RESIZER_TIMING')} / {g('GRT_RESIZER_HOLD_SLACK_MARGIN')} ns |",
+            f"| `DRT_ANTENNA_REPAIR_ITERS` / `…_MARGIN` | {g('DRT_ANTENNA_REPAIR_ITERS')} / {g('DRT_ANTENNA_REPAIR_MARGIN')} % |",
+            f"| `KLAYOUT_CONFLICT_RESOLUTION` | `{g('KLAYOUT_CONFLICT_RESOLUTION')}` |",
+            f"| `ERROR_ON_MAGIC_DRC` | {g('ERROR_ON_MAGIC_DRC')} |"]
     return '\n'.join(rows)
 
 BLOCKS = {('02-architecture.md', 'profile'): profile_table, ('03-isa.md', 'opcodes'): opcode_line,
@@ -123,7 +139,10 @@ def check_static():
     has(f'{R}/pc.sv', r"localparam STACK_DEPTH = 8", why='L6'); has(f'{R}/pc.sv', r"reg \[\$clog2\(STACK_DEPTH\)-1:0\]\s+stack_ptr", why='L6')
     has(f'{R}/scheduler.sv', r"localparam STACK_DEPTH = 4", why='L7')
     has(f'{R}/scheduler.sv', r"is_reconverge = ", why='L1'); has(f'{R}/scheduler.sv', r"barrier_count >= num_active_warps_comb", why='L1')
-    has(f'{R}/gpu.sv', r"exception", want=False, why='L12 exceptions not exported')
+    has(f'{R}/gpu.sv', r"\.exception_raised\(core_exc\[i\]\)", why='L12 resolved: faults exported')
+    has(f'{R}/gpu_asic_top.sv', r"wb_adr_i\[7:0\] == 8'h08", why='L12 resolved: FAULT_INFO')
+    has(f'{R}/core.sv', r"assign ex_has_sync_div = ex_sync", why='L1: SYNC while diverged faults')
+    has(f'{R}/core.sv', r"divider #\(", why='L2 resolved: shared divider')
     has(f'{R}/lsu.sv', r"rs\[i\]\[ADDR_BITS-1:0\] \+ ext_addr_offset", why='L14 address truncation')
     has(f'{R}/core.sv', r"MAX_MEM_ADDR\s*=\s*32'h0000_FFFF", why='L14')
     # fixes present in ASIC
@@ -178,7 +197,7 @@ def check_datasheet():
     p = f'{DOCS}/datasheet/mahi-gpu-datasheet.tex'
     if not os.path.isfile(p): err('datasheet .tex missing'); return
     t = read(p)
-    pkg = read(f'{ASIC}/src/rtl/include/gpu_pkg.sv')
+    pkg = full_profile_pkg(read(f'{ASIC}/src/rtl/include/gpu_pkg.sv'))
     asic = pkg[pkg.index('`ifdef TARGET_ASIC'):pkg.index('`elsif TARGET_FPGA')]
     def cfg(k): return int(re.search(rf'{k}\s*=\s*(\d+)', asic).group(1))
     facts = {  # (description, value that must appear in the datasheet text)

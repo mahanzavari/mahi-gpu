@@ -95,9 +95,9 @@
 \vfill
 \begin{statbox}{Status of this document}
 This manual describes the RTL \emph{as implemented}. It deliberately states what is \textbf{not} yet true of the chip:
-the top level now carries a 4\,KB SRAM window, but no routed, DRC-clean layout exists yet (detailed routing has not converged; see Chapter~\ref{ch:phys}),
-the physical numbers are preliminary, and barriers are only correct under warp-uniform control flow. See Chapter~\ref{ch:errata} (Errata)
-before relying on any number in Chapter~\ref{ch:phys}.
+the \textbf{mini profile} has a routed layout that passes the checks available in the repository, but the full-size profile has never been routed (Chapter~\ref{ch:phys}),
+the SRAM macros are timed at the typical corner only and are black boxes in LVS, nothing has been simulated on the gate-level netlist of this design, and barriers require warp-uniform control flow
+(a \ins{SYNC} while diverged faults). See Chapter~\ref{ch:errata} (Errata) before relying on any number in Chapter~\ref{ch:phys}.
 \end{statbox}
 \end{titlepage}
 
@@ -138,7 +138,7 @@ Global data memory & 16\,K words (14-bit word address), external, 128-bit block 
 Shared memory & \textbf{64 words} (256\,B), 4 banks $\times$ 16 words\\
 L1 I-cache / L1 D-cache & 16 lines each; 16-byte lines (4 words); I: direct-mapped, D: 2-way, write-through\\
 L2 cache & 64 lines (16 sets $\times$ 4 ways), 16-byte lines, 4 sectors/line with dirty bits, PLRU, write-back; 4-entry victim write buffer\\
-Host interface & 32-bit Wishbone slave, single-cycle ack; \textbf{107 signal pins} (excl.\ power)\\
+Host interface & 32-bit Wishbone slave, single-cycle ack; \textbf{108 signal pins} (excl.\ power)\\
 Synthesised logic (current RTL) & 151\,502 instances, 24\,269 flip-flops; 1.80\,mm\textsuperscript{2} cells + 0.85\,mm\textsuperscript{2} for three SRAM macros (\S\ref{sec:flow})\\
 Die size (floorplan) & 3.0\,mm $\times$ 3.0\,mm (9\,mm\textsuperscript{2}) in the current config; 2.5\,mm in the earlier runs\\
 \end{longtable}
@@ -194,12 +194,13 @@ Both memory interfaces use a native 128-bit block protocol (valid/ready/address/
 \sig{wb_dat_o} & out & 32 & read data (registered)\\
 \sig{wb_ack_o} & out & 1 & acknowledge\\
 \sig{gpu_done_pin} & out & 1 & mirrors the \sig{done} status bit\\
+\sig{gpu_fault_pin} & out & 1 & mirrors STATUS[4] (a warp faulted; sticky until cleared), intended for an interrupt line\\
 \bottomrule
 \end{tabular}
-\caption{Pins of \sig{gpu_asic_top}: 107 signal pins in total (73 inputs, 34 outputs), excluding power.}
+\caption{Pins of \sig{gpu_asic_top}: 108 signal pins in total (73 inputs, 35 outputs), excluding power.}
 \end{table}
 
-\subsection{Register map}
+\subsection{Register map}\label{sec:regs}
 The base address is \texttt{0x3000\_0000}. \sig{wb_adr_i[31:12]} selects the page: \texttt{0x30000} is the control/status page, \texttt{0x30001} the memory window; every
 other address is acknowledged, reads as 0 and ignores writes. Every access is acknowledged (a window access that is refused still returns an ack).
 While the GPU runs, window accesses are refused: reads return \texttt{0xBAD0\_BAD0}, writes are dropped and STATUS[3] is set (erratum L16).
@@ -209,7 +210,8 @@ While the GPU runs, window accesses are refused: reads return \texttt{0xBAD0\_BA
 \tblhead{Address} & \tblhead{Access} & \tblhead{Name} & \tblhead{Description}\\
 \texttt{0x3000\_0000} & W & CTRL & \texttt{[0]} START (level; stays set until written 0); \texttt{[1]} SOFT\_RESET (8 cycles; clears DCR, scheduler and all caches, keeps SRAM contents; drops START; other bits ignored); \texttt{[15:8]} THREAD\_COUNT (written to internal DCR 0x00)\\
 \texttt{0x3000\_0000} & R & CTRL & \texttt{\{16'b0, THREAD\_COUNT[7:0], 7'b0, START\}}\\
-\texttt{0x3000\_0004} & R/W1C & STATUS & \texttt{[0]} DONE; \texttt{[1]} BUSY; \texttt{[2]} GPU\_OOB (sticky: data access outside the 512 words); \texttt{[3]} HOST\_BLOCKED (sticky); write 1 to clear [2]/[3]\\
+\texttt{0x3000\_0004} & R/W1C & STATUS & \texttt{[0]} DONE; \texttt{[1]} BUSY; \texttt{[2]} GPU\_OOB (sticky: data access outside the 512 words); \texttt{[3]} HOST\_BLOCKED (sticky); \texttt{[4]} FAULT (sticky: a warp faulted); write 1 to clear [2]/[3]/[4]\\
+\texttt{0x3000\_0008} & R & FAULT\_INFO & \texttt{\{PC[15:0], WARP[7:0], 4'b0, CAUSE[3:0]\}} of the first fault since STATUS[4] was last clear; CAUSE 1 = division by zero, 2 = bad address, 3 = \ins{SYNC} while diverged\\
 \texttt{0x3000\_1000}--\texttt{17FF} & R/W & PMEM & 512 words = GPU instruction words 0..511, byte strobes honoured\\
 \texttt{0x3000\_1800}--\texttt{1FFF} & R/W & DMEM & 512 words = GPU data words 0..511, byte strobes honoured\\
 \bottomrule
@@ -322,7 +324,7 @@ Branch, call, divergence and exception outcomes are resolved in EX and redirect 
 per-warp pulse \sig{flush_warp_mask}; the squashed instructions are those between fetch and EX for that warp.
 
 \subsection{Divergence handling (SIMT stack)}
-Each warp has a 4-entry stack of \texttt{(PC, active\_mask)} (\sig{scheduler.sv:57-65}). In EX, the next PC of every active
+Each warp has a 4-entry stack of \texttt{(PC, active\_mask)} (\sig{scheduler.sv:59-67}). In EX, the next PC of every active
 lane is computed. If all lanes agree, the warp continues. If they disagree, the lanes are split into two groups: group~A
 (the group containing the lowest active lane) continues, and group~B's \texttt{(target, mask)} is pushed.
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt]
@@ -330,7 +332,7 @@ lane is computed. If all lanes agree, the warp continues. If they disagree, the 
  the entry is popped and the masks are merged.
 \item At \texttt{EXIT}, a non-empty stack is popped and the saved group resumes at its saved PC.
 \item There is \textbf{no} reconvergence at a join point or post-dominator. In practice lane groups run the remainder of the program serially
- until \texttt{EXIT}. Results are correct; barriers are not (\S\ref{sec:restrictions}, erratum L1).
+ until \texttt{EXIT}. Results are correct; a \ins{SYNC} reached while the stack is non-empty faults (\S\ref{sec:restrictions}, erratum L1).
 \end{itemize}
 Maximum nesting is lane-count minus one (3 for four lanes), which fits the 4-entry stack. A profile with more than five lanes could overflow it (L7).
 
@@ -366,7 +368,7 @@ Pipeline stages: (1) mantissa multiply and exponent add, (2a) alignment, (2b) ad
 clears when the result reaches write-back (fifth cycle). The ID stage compares the instruction's \texttt{rs}, \texttt{rt} and
 (when read) \texttt{rd} with the scoreboard; a hit raises \sig{fp_raw_stall}, which stalls the front end and squashes the EX
 latch for that cycle. In addition, when an FP instruction reaches EX the \emph{warp} is parked in \texttt{WAITING\_FP} and its
-younger instructions are flushed (\sig{scheduler.sv:193-197}); it resumes when its FP result is written back. Other warps keep issuing.
+younger instructions are flushed (\sig{scheduler.sv:200-204}); it resumes when its FP result is written back. Other warps keep issuing.
 
 \subsection{Register-file write arbitration}
 Priority 1 FP write-back, priority 2 LSU return, priority 3 integer ALU (\sig{registers.sv}); lower priorities are suppressed when the
@@ -420,9 +422,10 @@ The L2 must not push to a full buffer: a push is attempted only when the buffer 
 At the end of a launch the D-cache is invalidated and the L2 flushed, after which external memory holds all results.
 
 \section{Exceptions}
-Division by zero and out-of-range addresses (global $>$\texttt{0xFFFF}, shared $\ge$64) mark the offending warp \texttt{FAULTED} and flush it.
-A faulted warp counts as finished for DONE. The core latches \sig{exception_raised/warp/pc/cause}, but \textbf{these signals are not
-connected above the core}, so a fault is invisible to the host (erratum L12).
+Division by zero (cause 1), out-of-range addresses (global $>$\texttt{0xFFFF}, shared $\ge$64; cause 2) and a \ins{SYNC} executed while the
+warp's divergence stack is non-empty (cause 3) mark the offending warp \texttt{FAULTED} and flush it. The other warps continue and a faulted warp
+counts as finished for DONE. The first fault is reported to the host: STATUS[4] and \sig{gpu_fault_pin} go high and FAULT\_INFO holds its
+cause, warp and PC (\S\ref{sec:regs}); write 1 to STATUS[4] to clear. With several cores only the lowest-numbered faulting core is reported.
 
 \section{Performance monitoring unit}
 Four 32-bit counters, each selecting one of 32 event lines (Appendix~\ref{app:pmu}) through DCR 0x10--0x13, with reset and snapshot pulses.
@@ -514,7 +517,7 @@ Integer values are 32-bit two's complement unless stated.
 \ins{ADD}  & 3  & rd, rs, rt & $rd = rs + rt$ (wraps)\\
 \ins{SUB}  & 4  & rd, rs, rt & $rd = rs - rt$ (wraps)\\
 \ins{MUL}  & 5  & rd, rs, rt & low 32 bits of the signed product\\
-\ins{DIV}  & 6  & rd, rs, rt & unsigned quotient; \texttt{rt=0} faults. \textbf{Returns 0 unless built with \texttt{USE\_COMB\_DIV}} (L2)\\
+\ins{DIV}  & 6  & rd, rs, rt & unsigned quotient; \texttt{rt=0} faults. Multi-cycle: shared iterative divider, up to 33 cycles per active lane (R6)\\
 \ins{MOD}  & 22 & rd, rs, rt & unsigned remainder; same caveats as \ins{DIV}\\
 \ins{AND}  & 17 & rd, rs, rt & bitwise AND\\
 \ins{OR}   & 18 & rd, rs, rt & bitwise OR\\
@@ -599,9 +602,10 @@ The following program is the instruction sequence of a branch/call test; the enc
 \section{Architectural restrictions and hazards}\label{sec:restrictions}
 \begin{warnbox}{R1 --- \ins{SYNC} requires warp-uniform control flow}
 The barrier is tracked at \textbf{warp} granularity: when a lane group executes \ins{SYNC}, the warp enters \texttt{WAITING\_BARRIER} and is counted once
-(\sig{barrier_count >= num_active_warps_comb}, \sig{scheduler.sv:272}). Because divergent lane groups are serialised until \ins{EXIT} (no join-point reconvergence),
+(\sig{barrier_count >= num_active_warps_comb}, \sig{scheduler.sv:279}). Because divergent lane groups are serialised until \ins{EXIT} (no join-point reconvergence),
 a \ins{SYNC} that follows divergent code is executed once \emph{per group}, and the first group to arrive releases the barrier while other lanes have not yet
-performed their stores. Result: threads can read stale shared memory (observed: 4 of 8 threads in the directed test, and in 18 of 240 early random programs).
+performed their stores. This used to let threads read stale shared memory (observed: 4 of 8 threads in the directed test, and in 18 of 240 early random programs);
+the hardware now detects it and faults the warp with cause 3 instead (the kernel is rejected, not silently wrong).
 \textbf{Rule:} every branch and loop bound that precedes a \ins{SYNC} must be uniform across the warp (derived from constants, \reg{29}, \reg{30}, or the warp id); it may differ \emph{between} warps.
 Divergence without barriers is fully supported. A \ins{SYNC} executed after some lanes have already executed \ins{EXIT} is likewise unsupported.
 \end{warnbox}
@@ -611,7 +615,7 @@ Nesting deeper than 8 \ins{CALL}s wraps the 3-bit stack pointer silently and cor
 \end{warnbox}
 \begin{notebox}{Other rules}
 \textbf{R3} \ins{CMP} is unsigned. \textbf{R4} A conditional/unconditional \ins{BRnzp} needs a preceding \ins{CMP} (NZP resets to 0); an ``always'' jump is \ins{CMP} of a register with itself followed by \texttt{BR 111}.
-\textbf{R5} Do not write \reg{29}--\reg{31}. \textbf{R6} \ins{DIV}/\ins{MOD} need \texttt{USE\_COMB\_DIV} and a non-zero divisor. \textbf{R7} Division by zero and bad addresses kill the warp silently.
+\textbf{R5} Do not write \reg{29}--\reg{31}. \textbf{R6} \ins{DIV}/\ins{MOD} are slow (shared iterative divider: up to 33 cycles per active lane, the warp waits) and need a non-zero divisor. \textbf{R7} Division by zero, bad addresses and \ins{SYNC} while diverged stop the warp; check STATUS[4] after DONE.
 \textbf{R8} Results are guaranteed in external memory only after DONE. \textbf{R9} Do not rely on the old value returned by \ins{ATOM_ADD} being a particular order across lanes.
 \end{notebox}
 
@@ -687,68 +691,74 @@ B4 & \texttt{e086fc4} & L2 pushed to a full victim write buffer (stale ready); t
 \end{table}
 
 \section{Physical implementation}\label{sec:flow}
-\begin{statbox}{Read this first --- there is no routed layout yet}
-The design now synthesises with its memory attached (151\,502 instances, 24\,269 flip-flops), places, builds a clock tree and globally routes with zero overflow.
-\textbf{Detailed routing has not converged}: on the 2.5\,mm die the first two passes left 223\,731 and 139\,474 violations (61--72\,\% of them metal-1 shorts from local
-pin access in dense logic, not from the SRAM macros), at about 35 minutes per pass; the router was also killed by the kernel twice for memory (about 11\,GB resident).
-No GDS, DRC, LVS or final metrics exist. The table of results below is the \emph{earlier, memory-less} run and is kept only as history. A 3.0\,mm die (placement density 0.30)
-is the current attempt. Antenna repair in global routing is disabled (an OpenROAD crash), and SRAM timing is typical-corner only (erratum L17).
+\begin{statbox}{Status --- the mini profile is routed with per-corner SRAM timing; the full profile is not}
+The \textbf{mini profile} (\texttt{MINI=1}: 2 lanes $\times$ 2 warps, 32 words of shared memory) has a routed layout at the 40\,ns clock (\texttt{flow/runs/place\_1029\_1604}) with:
+routing DRC 0, antenna 0, LVS 0 (macros compared at their pins), KLayout DRC 0, and a full-chip Magic DRC with 0 integration errors (the OpenRAM macros' own 12\,984\,239 violation boxes are
+waived, see below). Setup is met with $\geq$ +3.27\,ns and hold with $\geq$ +0.27\,ns in all nine corners, using SRAM liberty files characterised with OpenRAM at the TT, SS and FF corners.
+The Magic-versus-KLayout XOR shows 20 differences, all on the cell-boundary marker layer 235/4 (not a mask layer).
+\textbf{Not done:} the full-size profile has never been routed (it needs a rectangular die inside the 2.92\,mm $\times$ 3.52\,mm Caravel user area and probably more than 16\,GB of memory);
+the macros are black boxes in LVS; the SRAM read-port (\texttt{dout1}) nets exceed the macro\textquotesingle s own 27.6\,fF capacitance limit (36--39 pins; slow-corner slew up to 6\,ns, extrapolated; waiver recorded; erratum L17), and 642 capacitance and 524 fanout violations remain;
+there is no simulation with SDF delays, no formal RTL-to-netlist proof, and no Caravel wrapper. The routed netlist passes zero-delay gate-level simulation and is formally equivalent to the synthesized netlist, and the SRAM macro passes transistor-level LVS.
 \end{statbox}
 \subsection{Flow and configuration}
-\texttt{run\_asic.sh} converts the SystemVerilog to Verilog with \texttt{sv2v} (\texttt{-DSYNTHESIS -DTARGET\_ASIC=1}), runs a Yosys elaboration/latch audit (zero latches required),
-then runs LibreLane (OpenROAD-based) in a container with \texttt{flow/config.yaml}:
+\texttt{run\_asic.sh} converts the SystemVerilog to Verilog with \texttt{sv2v} (\texttt{-DSYNTHESIS -DTARGET\_ASIC=1}, plus \texttt{-DTARGET\_ASIC\_MINI=1} for the mini profile), runs a Yosys elaboration/latch audit (zero latches required),
+then runs LibreLane 3.0.16 (OpenROAD-based) in a container with \texttt{flow/config.yaml} (\texttt{MINI=1 ./run\_asic.sh} reproduces the reference result: 85 of 85 compared metrics identical to the hand-assembled first run):
 \begin{table}[ht]\centering\rowcol
-\begin{tabular}{@{}ll@{}}
+\begin{tabular}{@{}lp{10.4cm}@{}}
 \tblhead{Parameter} & \tblhead{Value}\\
 Design / top & \texttt{gpu\_asic\_top}\\
-Clock & port \texttt{clk}, 40.0\,ns\\
-Die / core area & [0,0,3000,3000] \textmu m / [50,50,2950,2950] \textmu m, absolute sizing (2.5\,mm in earlier runs)\\
-Placement density target & 30\,\% (the placer silently raised 40\,\% to 44\,\% on the 2.5\,mm die)\\
-PDK / library & \texttt{sky130A} / \texttt{sky130\_fd\_sc\_hd}\\
-Other & CTS enabled; three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} macros (typical-corner liberty for all corners); global-route adjustment 0.15, antenna repair off, 16 detailed-route passes max; no SDC file\\
+Clock & port \texttt{clk}, 40.0\,ns, 0.25\,ns uncertainty, 5\,\% OCV derate; clock source modelled as \texttt{clkbuf\_16}\\
+Die / core area (mini) & [0,0,2400,2400] \textmu m / [50,50,2350,2350] \textmu m, absolute sizing; placement density target 30\,\%\\
+PDK / library & \texttt{sky130A} (version pinned in the Makefile) / \texttt{sky130\_fd\_sc\_hd}\\
+Synthesis & \texttt{SYNTH\_STRATEGY "DELAY 4"} (the only strategy whose netlist met 40\,ns before placement; +7.8\,\% area)\\
+Macros & three \texttt{sky130\_sram\_2kbyte\_1rw1r\_32x512\_8} (PMEM window, DMEM window, L2 data array), per-corner liberty (TT, SS, FF, characterised with OpenRAM); power connections \texttt{VPWR VGND vccd1 vssd1}; 12\,\textmu m metal-4 keep-out bands at the macro pin edges while the power grid is generated\\
+Repair and timing & post-routing slew/cap repair (margins 70\,\%/70\,\%, 1\,200\,\textmu m wire-length cap); post-CTS hold margin 0.4\,ns; timing repair again after the slew repair (hold margin 0.4\,ns); antenna repair up to 8 rounds at 25\,\%\\
+Stream-out and DRC & KLayout GDS is the deliverable (one top cell, \texttt{KLAYOUT\_CONFLICT\_RESOLUTION OverwriteCell}); flow Magic DRC non-fatal, verdict by \texttt{make signoff-drc}\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Results of the earlier memory-less run (history only)}
+\subsection{Results of the final mini layout (\texttt{flow/runs/place\_1029\_1604})}
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lp{9cm}@{}}
 \tblhead{Metric} & \tblhead{Value}\\
-Yosys cells / area & 3\,162 cells, 38\,657\,\textmu m\textsuperscript{2}; of which 854 \texttt{dfxtp\_2} flip-flops, 269 \texttt{mux2\_1}, 45 \texttt{mux4\_2}\\
-Standard cells after PnR & 86\,537 (154\,364\,\textmu m\textsuperscript{2}), of which 82\,119 tap cells, 2\,102 multi-input combinational, 854 sequential, 1\,101 timing-repair buffers, 142 clock buffers\\
-Fill cells & 1\,545\,744 (die utilisation of logic $\approx$2.5\,\%)\\
-Die / floorplan & 2.5\,mm $\times$ 2.5\,mm = 6.25\,mm\textsuperscript{2}\\
-Routing DRC (TritonRoute) & 0 errors (iterations: 4, 0, 120, 5, 0); antenna violations 0\\
-KLayout XOR (Magic vs KLayout stream-out) & clear\\
-Magic DRC / KLayout DRC / LVS & \textbf{not completed}\\
-IR drop (worst / average) & 0.15\,mV / 0.61\,\textmu V\\
-Power (vectorless estimate) & 1.78\,mW (not meaningful)\\
+Instances & 987\,884 in total: 205\,333 standard cells (1.61\,mm\textsuperscript{2}), 62\,490 tap cells, 782\,548 fill cells, 3 macros (0.85\,mm\textsuperscript{2}); of the standard cells 14\,732 flip-flops, 7\,187 antenna diodes, 3\,069 clock buffers\\
+Die / utilisation & 2.4\,mm $\times$ 2.4\,mm; standard-cell utilisation 36\,\%\\
+Routing & 9.36\,m of wire, 1\,050\,777 vias, 0 DRC errors, 0 antenna violations\\
+LVS / XOR / KLayout DRC & 0 / 20 (layer 235/4 boundary marker only) / 0\\
+Magic DRC, full chip & 12\,984\,239 boxes, all inside the three macros and in rules that also fire on the standalone OpenRAM macro; \textbf{0 integration errors} (\texttt{make signoff-drc})\\
+Slew, slow corner & 6\,300 pins above the flow's 0.75\,ns target, 278 above the library's 1.5\,ns range, 128 above 2\,ns (worst 6.0\,ns, on SRAM \texttt{dout1} outputs at loads beyond the library table); clock-root input about 1\,ns\\
+Capacitance / fanout violations & 642 / 524 (open); 36--39 are SRAM \texttt{dout1} pins above the macro\textquotesingle s 27.6\,fF limit (waived)\\
+IR drop (worst / average) & 0.9\,mV / 19\,\textmu V\\
+Power (vectorless estimate) & 39.9\,mW\\
 \bottomrule
 \end{tabular}
 \end{table}
+The OpenRAM macros are not clean under Magic's sky130 rules (5\,579\,171 boxes in 31 rule types on one macro alone). A box is waived only if its rule also fires on the standalone macro and it lies inside a macro outline;
+whether a shuttle accepts these macros is the operator's decision (erratum L17 and the project's open-problems list). KLayout's deck reports no violation on the macro.
 
 \subsection{Static timing across PVT corners}
-Worst slack from OpenSTA on the routed design (clock 40\,ns). Corner names: \texttt{max/nom/min} = parasitic extraction corner, \texttt{ss/tt/ff} = process/voltage/temperature.
+Worst slack from OpenSTA on the routed design (clock 40\,ns, 0.25\,ns uncertainty, 5\,\% derate). Corner names: \texttt{max/nom/min} = parasitic extraction corner, \texttt{ss/tt/ff} = process/voltage/temperature.
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lllrr@{}}
 \tblhead{Corner} & \tblhead{Process} & \tblhead{V / T} & \tblhead{Setup WS (ns)} & \tblhead{Hold WS (ns)}\\
-\texttt{max\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & \textbf{19.169} (worst setup) & 0.834\\
-\texttt{nom\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 19.568 & 0.829\\
-\texttt{min\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 19.976 & 0.824\\
-\texttt{max\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 26.651 & 0.306\\
-\texttt{nom\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 26.713 & 0.305\\
-\texttt{min\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 26.782 & 0.303\\
-\texttt{max\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.621 & 0.106\\
-\texttt{nom\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.664 & 0.106\\
-\texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 28.709 & \textbf{0.105} (worst hold)\\
+\texttt{max\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & \textbf{3.274} (worst setup) & 1.462\\
+\texttt{nom\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 3.932 & 1.486\\
+\texttt{min\_ss\_100C\_1v60} & slow & 1.60\,V, 100\,\textdegree C & 4.554 & 1.509\\
+\texttt{max\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 13.624 & 0.565\\
+\texttt{nom\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 13.693 & 0.593\\
+\texttt{min\_tt\_025C\_1v80} & typical & 1.80\,V, 25\,\textdegree C & 13.829 & 0.604\\
+\texttt{max\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 15.753 & \textbf{0.271} (worst hold)\\
+\texttt{nom\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 15.830 & 0.297\\
+\texttt{min\_ff\_n40C\_1v95} & fast & 1.95\,V, $-$40\,\textdegree C & 15.940 & 0.309\\
 \bottomrule
 \end{tabular}
-\caption{Slack by corner of the earlier memory-less run. All slacks are positive; however that netlist was nearly empty (854 flip-flops), so these numbers say nothing about the real critical path.}
+\caption{Slack by corner of the final mini layout. The SRAM macros are timed with liberty files characterised per corner (TT, SS, FF) with OpenRAM; the earlier typical-only library was 4.7 times too fast (erratum L17).}
 \end{table}
 
 \subsection{Outstanding sign-off items}
-Obtain a converged, DRC-clean detailed route (then Magic/KLayout DRC and LVS); gate-level simulation of the post-route netlist with SDF (the zero-delay post-synthesis run already passes 200 seeds); RTL-to-netlist equivalence;
-IO constraint (SDC) review and multi-corner timing sign-off on the real design, with SRAM liberty files for all corners.
+The shuttle's decision on the macro DRC waiver; the SRAM \texttt{dout1} output nets above the macro's capacitance limit, and the other capacitance and fanout violations;
+gate-level simulation with the SDF files the flow writes, a formal RTL-to-netlist proof; a routed full-size profile; the Caravel wrapper, harness simulation and precheck.
 
 % =============================================================================
 \chapter{Errata and known limitations}\label{ch:errata}
@@ -758,8 +768,8 @@ Severity: \textbf{H} may give silently wrong results or blocks use, \textbf{M} s
 \rowcol
 \begin{longtable}{@{}llp{3.7cm}p{9.2cm}@{}}
 \tblhead{ID} & \tblhead{Sev} & \tblhead{Title} & \tblhead{Description / workaround}\\\endhead
-L1 & H & No join-point reconvergence & Lane groups run the rest of the program serially; \ins{SYNC} after divergence releases early. Use warp-uniform control flow before every barrier (R1).\\
-L2 & M & \ins{DIV}/\ins{MOD} stubbed & Return 0 unless \texttt{USE\_COMB\_DIV} is defined.\\
+L1 & M & No join-point reconvergence & Lane groups run the rest of the program serially; a \ins{SYNC} after divergence faults (cause 3) instead of releasing early. Use warp-uniform control flow before every barrier (R1).\\
+L2 & -- & \ins{DIV}/\ins{MOD} stubbed & \textbf{Resolved:} computed by a shared iterative divider (R6).\\
 L3 & -- & Memory at the chip top (resolved) & Previously tied off. The window at \texttt{0x3000\_1000} is implemented on two OpenRAM macros; see L15--L17 for what remains.\\
 L4 & L & L2 PMU events zero & L2 hit/miss/evict event outputs are constants.\\
 L5 & M & \ins{CMP} unsigned; NZP resets to 0 & See rules R3, R4.\\
@@ -769,15 +779,15 @@ L8 & M & FP is not IEEE-754 & Truncation, flush-to-zero, no NaN/Inf, zero-operan
 L9 & M & Atomics coverage & \ins{ATOM_CAS}, ordered old values and multi-core coherence untested by random tests.\\
 L10 & M & Fixes only in ASIC copy & B2--B4 are not applied to the generic \texttt{src/rtl}.\\
 L11 & L & Test debt & Legacy testbenches do not build against the current block interface; \texttt{tb\_matmul} times out under iverilog (passes under Verilator).\\
-L12 & H & Faults invisible & Division by zero / bad address kills the warp; DONE still asserts and results are missing; \sig{exception_*} outputs are unconnected.\\
+L12 & -- & Faults invisible & \textbf{Resolved:} STATUS[4], FAULT\_INFO and \sig{gpu_fault_pin} report the first fault. The faulted warp's later results are still missing; check STATUS[4] after DONE.\\
 L13 & L & PMU/DCR unreachable & Only DCR address 0 is driven by the Wishbone wrapper.\\
 L14 & M & Address aliasing & The fault limit (\texttt{0xFFFF}) exceeds the 14-bit bus: accesses in \texttt{0x4000}--\texttt{0xFFFF} wrap onto \texttt{addr \& 0x3FFF} without a fault. Keep global addresses below \texttt{0x4000}.\\
 L15 & M & Only 512+512 words on chip & GPU program and data words $\ge$512 read as 0 (instruction fetch) or read 0 / drop stores and set STATUS[2] (data). Programs must fit 512 words; the random generator uses a 32-word private region per thread.\\
 L16 & M & Host access exclusive; soft reset to re-run & Window accesses are refused while BUSY. Caches are flushed but not invalidated after a run, so write CTRL[1] (soft reset) before loading a new kernel.\\
-L17 & M & Macro timing is typical corner only & OpenRAM supplies one liberty corner (TT\_1p8V\_25C); it is used for all nine STA corners, so SS/FF slack on the SRAM pins is not trustworthy.\\
+L17 & M & SRAM read-port outputs exceed the macro's capacitance limit & Per-corner liberty files now exist (the shipped typical-only file was 4.7 times too fast, clock to output 0.38 ns against 1.81 ns), and timing is met in all nine corners. After routing, 36--39 \texttt{dout1} pins carry 40--70\,fF against the macro's 27.6\,fF limit; the slow-corner slew there reaches about 6\,ns (extrapolated). Waiver recorded, not fixed.\\
 \bottomrule
 \end{longtable}
-\textit{Pin count:} the wrapper has 107 signal pins; meeting a smaller GPIO budget (for example a 38-pin user area) would require a narrower address/data interface.
+\textit{Pin count:} the wrapper has 108 signal pins; meeting a smaller GPIO budget (for example a 38-pin user area) would require a narrower address/data interface.
 
 % =============================================================================
 \appendix

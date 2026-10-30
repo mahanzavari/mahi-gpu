@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+# LibreLane --dockerized talks to the system Docker daemon. Pin the CLI context so a switched default
+# context (e.g. Docker Desktop, not running) cannot break the flow. Override by exporting DOCKER_CONTEXT.
+export DOCKER_CONTEXT="${DOCKER_CONTEXT:-default}"
+
 # ==============================================================================
 # Configuration & Paths
 # ==============================================================================
@@ -10,7 +14,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_PATH="$HOME/eda/librelane/.venv"
 SRC_DIR="$SCRIPT_DIR/src/rtl"
 INCLUDE_DIR="$SRC_DIR/include"
-BUILD_DIR="$REPO_ROOT/build/test"
+# MINI=1 ./run_asic.sh ...  -> "physical bring-up" profile (gpu_pkg.sv TARGET_ASIC_MINI: 2 lanes, smaller L1/VWB/shared mem).
+# It converts into build/test_mini, uses a generated flow/config_mini.yaml and its own run-dir prefix.
+if [ "${MINI:-0}" = "1" ]; then
+    PROFILE_DEFS="-DTARGET_ASIC=1 -DTARGET_ASIC_MINI=1"
+    BUILD_DIR="$REPO_ROOT/build/test_mini"
+    RUN_PREFIX="mini"
+else
+    PROFILE_DEFS="-DTARGET_ASIC=1"
+    BUILD_DIR="$REPO_ROOT/build/test"
+    RUN_PREFIX="full"
+fi
 OUT_VERILOG="$BUILD_DIR/gpu_asic_converted.v"
 CONFIG_FILE="$SCRIPT_DIR/flow/config.yaml"
 
@@ -49,6 +63,12 @@ while [[ "$#" -gt 0 ]]; do
             FP_SRC="$(cd "$2" && pwd)"; shift
             [ -f "$FP_SRC/12-openroad-staprepnr/state_out.json" ] || { echo "no 12-openroad-staprepnr state in $FP_SRC"; exit 1; }
             STAGE_TARGET="--from OpenROAD.Floorplan --with-initial-state $FP_SRC/12-openroad-staprepnr/state_out.json --run-tag floor_$(date +%m%d_%H%M)" ;;
+        -T|--resume-sta)
+            # Re-run post-PnR STA and the checks after it (new macro libs, SDC) from RUN_DIR's post-RCX state, into a NEW run dir.
+            STA_SRC="$(cd "$2" && pwd)"; shift
+            [ -f "$STA_SRC/28-openroad-rcx/state_out.json" ] || { echo "no 28-openroad-rcx state in $STA_SRC"; exit 1; }
+            STAGE_TARGET="--from OpenROAD.STAPostPNR --to Checker.HoldViolations --with-initial-state $STA_SRC/28-openroad-rcx/state_out.json --run-tag sta_$(date +%m%d_%H%M)" ;;
+        -S|--resume-signoff) STAGE_TARGET="--last-run --from Magic.WriteLEF" ;;   # after KLayout.Render (its PNG fails on the OpenRAM GDS's extra top cells)
         -D|--resume-drt) STAGE_TARGET="--last-run --from OpenROAD.DetailedRouting" ;;
         -R|--resume-route) STAGE_TARGET="--last-run --from OpenROAD.GlobalRouting" ;;
         --clean)
@@ -68,6 +88,8 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -R, --resume-route  Re-run from Global Routing in the most recent run dir"
             echo "  -P, --resume-place RUN_DIR  Re-run from Global Placement onward (into a new run dir) using RUN_DIR's pre-placement state"
             echo "  -F, --resume-floorplan RUN_DIR  Re-run from Floorplan onward (new run dir), reusing RUN_DIR's synthesis"
+            echo "  -T, --resume-sta RUN_DIR  Re-run post-PnR STA + slew/cap/setup/hold checks (new run dir) from RUN_DIR's post-RCX state"
+            echo "  -S, --resume-signoff  Re-run from Magic.WriteLEF (XOR, DRC, LVS, final checks) in the most recent run dir"
             echo "  -D, --resume-drt    Re-run from Detailed Routing in the most recent run dir"
             echo "  --clean         Remove build/ and runs/ directories"
             echo "  -h, --help      Show this help message"
@@ -109,16 +131,15 @@ for ext in gds lef; do
         cp "$SRC" "$MACRO_DST/"
     fi
 done
-if [ ! -f "$MACRO_DST/${SRAM_NAME}_TT_1p8V_25C.lib" ]; then
-    cp "$SRAM_MACRO_DIR/$SRAM_NAME/${SRAM_NAME}_TT_1p8V_25C.lib" "$MACRO_DST/"
-fi
+# Per-corner liberties characterised with OpenRAM (scripts/openram_corners.sh); tracked in flow/openram/libs/.
+cp "$SCRIPT_DIR"/flow/openram/libs/${SRAM_NAME}_*.lib "$MACRO_DST/"
 
 # ==============================================================================
 # 2. Step 1: SystemVerilog to Verilog (sv2v)
 # ==============================================================================
 echo -e "\n${YELLOW}>>> [1/3] Running sv2v conversion (Profile: TARGET_ASIC, SRAM macros)...${NC}"
 
-sv2v -DSYNTHESIS -DTARGET_ASIC=1 -DMAHI_SRAM_MACRO=1 \
+sv2v -DSYNTHESIS $PROFILE_DEFS -DMAHI_SRAM_MACRO=1 \
   -I "$INCLUDE_DIR" \
   "$INCLUDE_DIR/gpu_pkg.sv" \
   "$SRC_DIR"/*.sv \
@@ -153,10 +174,20 @@ fi
 # ==============================================================================
 echo -e "\n${YELLOW}>>> [3/3] Activating LibreLane virtual environment & starting flow...${NC}"
 
+# MINI: derive a config that points at the mini netlist (same macros / die unless overridden in flow/config.yaml)
+if [ "${MINI:-0}" = "1" ]; then
+    CONFIG_FILE="$SCRIPT_DIR/flow/config_mini.yaml"
+    sed -e 's|build/test/gpu_asic_converted.v|build/test_mini/gpu_asic_converted.v|' \
+        -e 's|^DIE_AREA: .*|DIE_AREA: [0, 0, 2400, 2400]|' \
+        -e 's|^CORE_AREA: .*|CORE_AREA: [50, 50, 2350, 2350]|' "$SCRIPT_DIR/flow/config.yaml" > "$CONFIG_FILE"
+    case "$STAGE_TARGET" in *--run-tag*|*--last-run*) ;; *) STAGE_TARGET="$STAGE_TARGET --run-tag mini_$(date +%m%d_%H%M)" ;; esac
+fi
+
 # Source the virtualenv
 # shellcheck source=/dev/null
 source "$VENV_PATH/bin/activate"
 
+[ -n "${TO_STEP:-}" ] && STAGE_TARGET="$STAGE_TARGET --to $TO_STEP"
 LIBRELANE_CMD="librelane --dockerized $STAGE_TARGET $CONFIG_FILE"
 echo -e "${CYAN}Executing:${NC} $LIBRELANE_CMD\n"
 

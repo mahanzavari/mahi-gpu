@@ -18,8 +18,8 @@ PL_TARGET_DENSITY_PCT: 30   # DRT was dominated by met1 pin-access shorts (61-72
 PDK: "sky130A"
 
 # --- On-chip memory: 3 x OpenRAM sky130_sram_2kbyte_1rw1r_32x512_8 (PMEM + DMEM windows) ---
-# Copied here by run_asic.sh. Only a TT lib exists, so every STA corner uses it (approximation:
-# macro timing is not re-characterised at SS/FF; see docs/07-physical-flow.md).
+# Copied here by run_asic.sh from flow/openram/libs/. Characterised per corner with OpenRAM
+# (scripts/openram_corners.sh): the TT/SS/FF libs below are the three PVT points of the 9 STA corners.
 MACROS:
   sky130_sram_2kbyte_1rw1r_32x512_8:
     gds:
@@ -29,8 +29,12 @@ MACROS:
     vh:
       - "dir::macro_stubs/sky130_sram_2kbyte_1rw1r_32x512_8.v"
     lib:
-      "*":
+      "*_tt_025C_1v80":
         - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8_TT_1p8V_25C.lib"
+      "*_ss_100C_1v60":
+        - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8_SS_1p6V_100C.lib"
+      "*_ff_n40C_1v95":
+        - "dir::macros/sky130_sram_2kbyte_1rw1r_32x512_8_FF_1p95V_-40C.lib"
     instances:
       mem_inst.pmem.macro:
         location: [80, 80]
@@ -42,10 +46,12 @@ MACROS:
         location: [80, 1120]
         orientation: N
 
+# Format: <instance> <design power net> <design ground net> <macro power pin> <macro ground pin>. The design nets are VPWR/VGND;
+# naming them vccd1/vssd1 (as before) left all three macros unconnected (PDN-0231) and made LVS fail on their power pins.
 PDN_MACRO_CONNECTIONS:
-  - "mem_inst.pmem.macro vccd1 vssd1 vccd1 vssd1"
-  - "mem_inst.dmem.macro vccd1 vssd1 vccd1 vssd1"
-  - "gpu_inst.unified_cache.data_eng.g_sram.sram.macro vccd1 vssd1 vccd1 vssd1"
+  - "mem_inst.pmem.macro VPWR VGND vccd1 vssd1"
+  - "mem_inst.dmem.macro VPWR VGND vccd1 vssd1"
+  - "gpu_inst.unified_cache.data_eng.g_sram.sram.macro VPWR VGND vccd1 vssd1"
 
 # --- Routing (attempt 2) -----------------------------------------------------
 # Attempt 1 (GRT_ADJUSTMENT 0.3, 50 extra iterations) ended with 71,864 overflow after ~7 h
@@ -68,3 +74,73 @@ DRT_THREADS: 16
 
 # Detailed-routing effort cap: ~35 min/pass here; 64 passes would be >35 h.
 DRT_OPT_ITERS: 16
+
+# Keep the vertical met4 power straps off the macro pin edges. The macros' signal pins are 0.38 um met4 rectangles on the
+# top/bottom edges (5.44 um pitch) and the router reaches them with ~7 um stubs; the VPWR/VGND strap pairs (1.6 um wide,
+# every 153.6 um) ran right up to the edge and sat 0.12 um from some stubs (met4 needs 0.30) -> 53 router DRC errors.
+# Obstructions exist only while the PDN is generated. Bands: 12 um above/below each macro, across the macro width.
+# macros at (80,80), (80,600), (80,1120); size 683.1 x 416.54
+PDN_OBSTRUCTIONS:
+  - [met4, 80, 68, 763.1, 80]            # pmem, below
+  - [met4, 80, 496.54, 763.1, 508.54]    # pmem, above
+  - [met4, 80, 588, 763.1, 600]          # dmem, below
+  - [met4, 80, 1016.54, 763.1, 1028.54]  # dmem, above
+  - [met4, 80, 1108, 763.1, 1120]        # l2 data, below
+  - [met4, 80, 1536.54, 763.1, 1548.54]  # l2 data, above
+
+# --- Attempt: timing, LVS and GDS handling (2026-10-23) ---------------------------------------------------------------
+# Worst slow-corner path (-9.27 ns @ 40 ns) was a ~58-stage fanout buffer chain from the register-file warp_id flop made of
+# clkdlybuf/dlymetal DELAY cells that the resizer was free to use as buffers. Exclude delay cells from buffering.
+# EXTRA_EXCLUDED_CELLS (delay cells) was tried and REVERTED: slow-corner setup got worse (-9.27 -> -10.82 ns) and hold broke (45 violations).
+# LVS: include the macros' (blackbox) Verilog header so Netgen knows the OpenRAM subcircuit; macro internals are not LVS-checked here.
+LVS_INCLUDE_MARCO_NETLISTS: true
+# Magic's stream-out writes 13 extra unreferenced top cells (the OpenRAM GDS itself has one) which breaks KLayout DRC/render.
+# Use KLayout's GDS (single top cell) as the primary one for DRC/render; the Magic GDS is still produced for the XOR.
+PRIMARY_GDSII_STREAMOUT_TOOL: klayout
+# The KLayout GDS used to have EMPTY macro cells: stream_out.py clears every cell, then re-reads the GDS files, and with the
+# default RenameCell the re-read OpenRAM macro lands under a renamed cell that the top never references and that is dropped.
+# OverwriteCell puts the real content back under the original name (verified: macro 23,029 shapes / 7,357 children, one top cell).
+KLAYOUT_CONFLICT_RESOLUTION: OverwriteCell
+# The primary GDS now contains the OpenRAM macro, so the flow's Magic DRC reports its ~13M macro-internal boxes (OpenRAM is not
+# sky130 DRC-clean under Magic). Do not stop the flow on them; the DRC verdict is `make signoff-drc RUN=<run>`, which fails on any
+# box that is not inside a macro and not a rule the standalone macro already violates (flow/waivers/).
+# KLayout's sky130 DRC deck (sky130A_mr.drc, same options as the flow) reports 0 violations on both the standalone macro and the
+# full chip GDS with the macro (checked 2026-10-27), so ERROR_ON_KLAYOUT_DRC stays at its default (fatal).
+ERROR_ON_MAGIC_DRC: false
+
+# --- Synthesis strategy (2026-10-23) -----------------------------------------------------------------------------
+# AREA 0 (default) maps deep, unbuffered logic: slow-corner setup was -9.3..-10.8 ns at 40 ns after place and route.
+# DELAY 4 is the only strategy whose netlist is timing-clean before placement (+12.4 ns at the slow corner, TNS 0; the other
+# DELAY strategies and AREA 0 were -170..-240 ns / -63 ns unbuffered) for +7.8% area, +14.6% cells. With it the routed
+# mini profile closes setup (>= +4.07 ns) and hold (>= +0.025 ns) in all 9 corners at the original 40 ns clock.
+SYNTH_STRATEGY: "DELAY 4"
+
+# --- Phase 2 batch (2026-10-27): clock root, slew/cap, hold margin, antennas -------------------------------------
+# Clock root: the SDC drove `clk` with the same weak inv_2 as every data input into 0.384 pF (limit 0.2), giving a 2.8 ns slew at
+# the slow-corner clock root. Model the clock source as a strong clock buffer instead (the Caravel clock comes from the
+# management SoC through its own clock tree). This changes only the STA/synthesis input-drive assumption, not the period.
+SYNTH_CLK_DRIVING_CELL: "sky130_fd_sc_hd__clkbuf_16/X"
+# Slew/cap: experiment A (re-repair after global routing with real route estimates) with tighter margins than the 55/40 tried.
+RUN_POST_GRT_DESIGN_REPAIR: true
+GRT_DESIGN_REPAIR_MAX_SLEW_PCT: 70
+GRT_DESIGN_REPAIR_MAX_CAP_PCT: 70
+# Batch run 1 (mini_1027_0945): slow-corner slew violations 30,058 -> 6,576, but cap 618 -> 717 and fanout 369 -> 577; most of them sit on
+# the repair's own wire/max_cap buffers, i.e. post-route wires came out much longer than the post-GRT estimate. Cap the wire length the
+# repair may leave (longest routed net: 2,456 um) and give cap more headroom.
+GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH: 1200
+# Hold: post-CTS repair runs at the typical corner and leaves only +0.025 ns at max_ff_n40C_1v95 with the default 0.1 ns margin.
+# (GRT_RESIZER_HOLD_SLACK_MARGIN is moot: the post-GRT resizer step is off by default.) A bigger typical-corner margin
+# carries over to the fast corner.
+# Batch run 1 with 0.25: fast-corner hold stayed at +0.027 ns. Per endpoint the fast corner is 0.15-0.39 ns (median 0.30) below the typical
+# corner the repair works at, and hold buffers add ~0.2 ns per step at typical but ~0.14 at fast. Aim for 0.4.
+PL_RESIZER_HOLD_SLACK_MARGIN: 0.4
+# Antennas: 2 nets remained with the defaults (3 iterations, 10% margin).
+DRT_ANTENNA_REPAIR_ITERS: 8   # batch 2 ended at the 5-round cap with one antenna net and a 1-box met1 short from the last diode
+DRT_ANTENNA_REPAIR_MARGIN: 25
+
+# Hold after the slew repair (batch 2, place_1027_1754): the post-CTS hold repair placed 21,102 dlygate4sd3_1 delay cells, then the post-GRT
+# design repair resized ~960 of them to buf_1/buf_2/buf_4 to fix slew on their nets, wiping out their hold delay; nothing repairs hold after
+# that, which is why fast-corner hold stayed at +0.03 ns whatever the post-CTS margin was. Run the timing repair again after the slew repair.
+# (Experimental LibreLane step: may be slow or hang.)
+RUN_POST_GRT_RESIZER_TIMING: true
+GRT_RESIZER_HOLD_SLACK_MARGIN: 0.4

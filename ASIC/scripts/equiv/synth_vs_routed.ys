@@ -1,0 +1,32 @@
+# Synthesized netlist vs final routed netlist, Yosys equiv flow (run from the work dir by `make equiv`).
+# Nets that exist only in the routed netlist are private (scripts/hide_new_nets.py), so every named net of the
+# synthesized netlist is matched and proven equal (combinationally, then by induction over the registers).
+read_verilog -lib cells.v
+read_verilog synth.v sram_equiv_standin.v
+hierarchy -top gpu_asic_top
+techmap -autoproc -map cells.v
+proc
+flatten
+rename -hide w:*.HI w:*.LO w:*.Q w:*.X w:*.Y
+opt_clean
+rename gpu_asic_top gold
+design -stash gold
+read_verilog -lib cells.v
+read_verilog final_hidden.v sram_equiv_standin.v
+hierarchy -top gpu_asic_top
+rename -hide w:$h_*
+techmap -autoproc -map cells.v
+proc
+flatten
+rename -hide w:*.HI w:*.LO w:*.Q w:*.X w:*.Y
+opt_clean
+rename gpu_asic_top gate
+design -stash gate
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+equiv_make gold gate equiv
+hierarchy -top equiv
+async2sync
+equiv_simple -seq 2
+equiv_induct -seq 2
+equiv_status -assert

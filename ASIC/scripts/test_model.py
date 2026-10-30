@@ -19,7 +19,7 @@ p[30] = enc_I('CONST', 8, 0, 10); p[31] = enc_R('ADD', 4, 4, 8); p[32] = enc_CAL
 p[40] = enc_I('CONST', 9, 0, 1); p[41] = enc_R('ADD', 4, 4, 9); p[42] = enc_RET()
 words = [p.get(i, 0) for i in range(max(p) + 1)]
 mem = {}
-Machine(words, mem).run()
+Machine(words, mem, nthreads=8).run()
 got = [mem.get(t, 0) for t in range(8)]
 assert got == [111, 111, 111, 111, 211, 311, 311, 311], got
 
@@ -50,14 +50,14 @@ c = [enc_I('CONST', 5, 0, 7), enc_I('CONST', 6, 0, 3), enc_R('MUL', 1, 31, 6), e
      enc_I('STSH', 1, 31, 0), OP['SYNC'] << 26,
      enc_I('CONST', 3, 0, 1), enc_R('ADD', 3, 31, 3), enc_I('CONST', 4, 0, 7), enc_R('AND', 3, 3, 4),
      enc_R('LDSH', 2, 3, 0), enc_I('CONST', 7, 0, 300), enc_R('ADD', 7, 7, 31), enc_I('STR', 2, 7, 0), enc_EXIT()]
-m = {}; Machine(c, m).run()
+m = {}; Machine(c, m, nthreads=8).run()
 assert [m[300 + t] for t in range(8)] == [10, 13, 16, 19, 22, 25, 28, 7]
 # barrier with a thread that exits early must be rejected
 try:
-    Machine([enc_I('CMP', 0, 0, 0) if False else enc_R('CMP', 0, 31, 27), enc_BR(1, 3), enc_EXIT(), OP['SYNC'] << 26, enc_EXIT()], {}).run()
+    Machine([enc_I('CMP', 0, 0, 0) if False else enc_R('CMP', 0, 31, 27), enc_BR(1, 3), enc_EXIT(), OP['SYNC'] << 26, enc_EXIT()], {}, nthreads=8).run()
     raise SystemExit('expected barrier fault')
 except Fault: pass
 # atomics: 8 threads each add (tid+1) to word 128
 a = [enc_I('CONST', 4, 0, 128), enc_I('CONST', 5, 0, 1), enc_R('ADD', 5, 5, 31), enc_R('ATOM_ADD', 6, 4, 5), enc_EXIT()]
-m = {}; Machine(a, m).run(); assert m[128] == 36
+m = {}; Machine(a, m, nthreads=8).run(); assert m[128] == 36
 print('test_model: PASSED')

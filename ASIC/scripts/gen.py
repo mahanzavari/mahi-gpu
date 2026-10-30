@@ -30,6 +30,7 @@ Inter-thread features (kept race-free so a per-thread interpreter is exact):
 """
 import os, random
 from isa import *
+from profile_cfg import THREADS, LANE_BITS, THREAD_BITS, SHARED
 
 POOL = list(range(0, 18))
 SRC = POOL + [30, 31, 27, 21, 22]
@@ -136,9 +137,11 @@ class Gen:
         self.emit(enc_R('ATOM_ADD', TMP, TMP, self.rs()))        # old value -> dead TMP
 
     def own_slot(self):
-        """TMP = tid + 8*(x & 7): an address only this thread ever writes."""
+        """TMP = tid + THREADS*(x & 7): an address only this thread ever writes."""
         self.emit(enc_R('AND', TMP, self.rs(), C7))
-        self.emit(enc_R('SHL', TMP, TMP, C3))
+        if THREAD_BITS == 3: self.emit(enc_R('SHL', TMP, TMP, C3))
+        else:
+            for _ in range(THREAD_BITS): self.emit(enc_R('SHL', TMP, TMP, C1))      # x * THREADS
         self.emit(enc_R('ADD', TMP, TMP, 31))
 
     def stmt_shared(self):
@@ -148,6 +151,7 @@ class Gen:
             else: self.emit(enc_R('LDSH', self.rd(), TMP, 0))     # read back own slot
         elif self.phase == 'R':
             self.emit(enc_R('AND', TMP, self.rs(), C63))          # any location
+            if SHARED == 32: self.emit(enc_R('SHR', TMP, TMP, C1))  # keep inside 32 words
             self.emit(enc_R('LDSH', self.rd(), TMP, 0))
 
     def stmt_if(self, depth, in_func, loop_depth=0):
@@ -229,8 +233,8 @@ class Gen:
                 self.emit(enc_I('CONST', reg, 0, r.randint(-32768, 32767)))
             if r.random() < 0.6: self.emit(enc_R('ADD', reg, reg, 31))
         if self.uniform:                                     # U regs: constants and the warp id
-            self.emit(enc_I('CONST', TMP, 0, 2))
-            self.emit(enc_R('SHR', U[0], 31, TMP))                         # warp id = tid >> 2
+            self.emit(enc_I('CONST', TMP, 0, LANE_BITS))
+            self.emit(enc_R('SHR', U[0], 31, TMP))                         # warp id = tid >> log2(lanes)
             for u in U[1:]:
                 self.emit(enc_I('CONST', u, 0, r.randint(-100, 100)))
                 if r.random() < 0.5: self.emit(enc_R('ADD', u, u, U[0]))
