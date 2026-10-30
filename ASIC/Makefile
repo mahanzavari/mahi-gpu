@@ -84,7 +84,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-caravel top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -96,7 +96,8 @@ lint:
 	  verilator --lint-only -Wall $(LINT_WAIVE) $$d --top-module gpu $(RTL_SOURCES) || exit 1; \
 	done
 	verilator --lint-only -Wall $(LINT_WAIVE) $(ASIC_DEF) --top-module gpu_asic_top $(TOP_SOURCES) || exit 1
-	@echo "lint OK (sim/asic/fpga + gpu_asic_top)"
+	verilator --lint-only -Wall $(LINT_WAIVE) $(ASIC_DEF) --top-module gpu_caravel_top $(TOP_SOURCES) src/rtl/gpu_caravel_top.sv || exit 1
+	@echo "lint OK (sim/asic/fpga + gpu_asic_top + gpu_caravel_top)"
 
 # --- Unit tests: src/tb/unit/tb_<name>.sv -> `make unit-<name>` ---------------
 # Each test lists its DUT sources in UNIT_SRC_<name> (default: rtl/<name>.sv).
@@ -170,6 +171,15 @@ top-build:
 top-quick: top-build
 	python3 scripts/top_regress.py --bin $(B)/top/top_tb --seeds 0 24 --gap 0
 	python3 scripts/top_regress.py --bin $(B)/top/top_tb --seeds 24 40 --gap 3
+
+# Same chip test through the Caravel-facing top (src/rtl/gpu_caravel_top.sv): wbs_* names, done/fault on
+# user_irq, tie-offs checked every cycle.
+top-caravel:
+	mkdir -p $(B)/top_caravel
+	verilator $(VL_SIM) $(ASIC_DEF) -DSYNTHESIS=1 -DTB_CARAVEL_TOP=1 --top-module tb_asic_top -Mdir $(B)/top_caravel \
+	  $(TOP_SOURCES) src/rtl/gpu_caravel_top.sv $(SVA_ALL) $(TOP_SVA) src/tb/top/tb_asic_top.sv -o top_tb >/dev/null
+	python3 scripts/top_regress.py --bin $(B)/top_caravel/top_tb --seeds 0 24 --gap 0
+	python3 scripts/top_regress.py --bin $(B)/top_caravel/top_tb --seeds 24 40 --gap 3
 
 # Same chip test, but with the real OpenRAM macro model (3 ns read delay, negedge write)
 # instead of the behavioural array. Needs the pre-built macro (SRAM_MACRO_DIR).

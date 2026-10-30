@@ -35,3 +35,4 @@ build_mini/
 ASIC/build_mini/
 ASIC/flow/config_syn_d*.yaml
 ASIC/flow/config_slew_*.yaml
+ASIC/flow/config_caravel.yaml

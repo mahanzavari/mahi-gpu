@@ -183,6 +183,14 @@ if [ "${MINI:-0}" = "1" ]; then
     case "$STAGE_TARGET" in *--run-tag*|*--last-run*) ;; *) STAGE_TARGET="$STAGE_TARGET --run-tag mini_$(date +%m%d_%H%M)" ;; esac
 fi
 
+# CARAVEL=1 (with MINI=1): harden the whole chip as Caravel's user_project_wrapper (caravel/, scripts/caravel_config.py).
+if [ "${CARAVEL:-0}" = "1" ]; then
+    [ "${MINI:-0}" = "1" ] || { echo -e "${RED}[ERROR] CARAVEL=1 needs MINI=1${NC}"; exit 1; }
+    python3 "$SCRIPT_DIR/scripts/caravel_config.py" "$CONFIG_FILE" "$SCRIPT_DIR/flow/config_caravel.yaml"
+    CONFIG_FILE="$SCRIPT_DIR/flow/config_caravel.yaml"
+    STAGE_TARGET="${STAGE_TARGET//--run-tag mini_/--run-tag caravel_}"
+fi
+
 # Source the virtualenv
 # shellcheck source=/dev/null
 source "$VENV_PATH/bin/activate"

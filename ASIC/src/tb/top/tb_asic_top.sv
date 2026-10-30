@@ -14,9 +14,25 @@ module tb_asic_top;
     reg wb_cyc = 0, wb_stb = 0, wb_we = 0; reg [3:0] wb_sel = 4'hF;
     reg [31:0] wb_adr = 0, wb_dati = 0; wire [31:0] wb_dato; wire wb_ack; wire done_pin; wire fault_pin;
 
+`ifdef TB_CARAVEL_TOP
+    // Same test through the Caravel-facing top (make top-caravel): Wishbone on the wbs_* names, done/fault on
+    // user_irq, and the tie-offs checked on every cycle.
+    wire [127:0] la_out; wire [37:0] io_out, io_oeb; wire [2:0] irq;
+    gpu_caravel_top dut (.wb_clk_i(clk), .wb_rst_i(reset), .wbs_cyc_i(wb_cyc), .wbs_stb_i(wb_stb), .wbs_we_i(wb_we),
+        .wbs_sel_i(wb_sel), .wbs_adr_i(wb_adr), .wbs_dat_i(wb_dati), .wbs_dat_o(wb_dato), .wbs_ack_o(wb_ack),
+        .la_data_out(la_out), .io_out(io_out), .io_oeb(io_oeb), .user_irq(irq));
+    assign done_pin = irq[0];
+    assign fault_pin = irq[1];
+    always @(posedge clk)
+        if (la_out !== 128'd0 || io_out !== 38'd0 || io_oeb !== {38{1'b1}} || irq[2] !== 1'b0) begin
+            $display("TB_FAIL caravel tie-off: la=%h io_out=%h io_oeb=%h irq=%b", la_out, io_out, io_oeb, irq);
+            $finish;
+        end
+`else
     gpu_asic_top dut (.clk(clk), .reset(reset), .wb_cyc_i(wb_cyc), .wb_stb_i(wb_stb), .wb_we_i(wb_we),
         .wb_sel_i(wb_sel), .wb_adr_i(wb_adr), .wb_dat_i(wb_dati), .wb_dat_o(wb_dato), .wb_ack_o(wb_ack),
         .gpu_done_pin(done_pin), .gpu_fault_pin(fault_pin));
+`endif
 
     always #5 clk = ~clk;
 
