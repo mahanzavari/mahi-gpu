@@ -18,6 +18,9 @@ def main(lib_path, net_path, out_path):
            '`timescale 1ns/1ps', '`default_nettype none']
     for cell in used:
         m = re.search(r'cell \("%s"\)\s*\{' % re.escape(cell), lib)
+        if not m and re.fullmatch(r'sky130_fd_sc_hd__(fill|tapvpwrvgnd)_\d+', cell):
+            out.append(f'module {cell}(); endmodule')       # physical-only (routed netlists): no pins, no logic
+            continue
         if not m: sys.exit(f'cell {cell} not in liberty')
         nxt = re.search(r'\n\s*cell \("', lib[m.end():])
         body = lib[m.end(): m.end() + (nxt.start() if nxt else len(lib))]

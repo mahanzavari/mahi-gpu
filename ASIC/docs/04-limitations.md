@@ -177,4 +177,4 @@ What remains: the `dout1` read-port pins of the three macros drive 40-70 fF afte
 extrapolated to about 6 ns at 70 fF). 36-39 macro pins violate the cap limit and about 128 pins sit above 2 ns at the slow corner. The post-global-route repair buffered the nets, but the buffers
 are not the problem: the pin plus buffer load is 6 fF, the routed wire is 33-63 fF, because the detailed router detours (e.g. `d_dout1[10]` runs about 90 um west of its loads). The repair works from the global-route estimate and nothing repairs after detailed routing.
 Timing already includes the slow edges, so this is a library-validity and electrical-rule item on read-only pins, not a timing failure. Candidate fixes (not tried): an explicit buffer at each `dout1` pin in the SRAM wrapper, a macro placement halo, a repair step after detailed routing.
-Also not done: transistor-level LVS of the macro.
+Transistor-level LVS of the macro passes (`make macro-lvs`, [06](06-verification.md)).

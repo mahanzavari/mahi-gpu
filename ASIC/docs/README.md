@@ -34,7 +34,7 @@ cover what is *different or specific* in the ASIC variant and link there instead
 | **Barrier (`SYNC`) after divergence** | **Not supported** (no join-point reconvergence); executing `SYNC` while diverged now faults (cause 3) instead of releasing early | [L1](04-limitations.md#l1) |
 | **Chip top (`gpu_asic_top`)** | Wishbone-loadable 2×2 KB SRAM window; random kernels run end-to-end over the pins (`make top-quick`) | [L15](04-limitations.md#l15), [L16](04-limitations.md#l16) |
 | Physical flow (LibreLane → GDS), **mini profile** | Routed at 40 ns with per-corner SRAM timing (`flow/runs/place_1029_1604`): routing DRC 0, antenna 0, LVS 0, KLayout DRC 0, full-chip Magic DRC 0 integration errors (SRAM-internal boxes waived), setup ≥ +3.27 ns, hold ≥ +0.27 ns in 9 corners. Open: SRAM `dout1` nets above the macro's 27.6 fF limit (waived, not fixed), cap/fanout violations, black-box macro LVS. **Full-size profile never routed** | [07-physical-flow](07-physical-flow.md) |
-| Gate-level sim (new netlist) / SDF sim / equivalence | **Not done** (the old zero-delay GLS predates the divider) | [08-todo](08-todo-and-open-questions.md) |
+| Gate-level sim (routed netlist) / SDF sim / equivalence | Zero-delay GLS of the routed netlist 24/24; synthesized ↔ routed netlist formally equivalent; macro transistor-level LVS passes. **Not done:** SDF sim, formal RTL ↔ netlist | [08-todo](08-todo-and-open-questions.md) |
 
 ## Quick start
 ```bash

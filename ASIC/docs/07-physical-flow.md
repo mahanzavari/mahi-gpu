@@ -267,9 +267,9 @@ are 21.5% of cell area (32k cells) and taps 5.4%.
 | Flow completion on the mini profile (DRC, LVS, XOR, final metrics) | done (`place_1029_1604`; `place_1027_2317` before the SRAM libraries) |
 | Cap / fanout violations (642 / 524), SRAM `dout1` pins above the macro's 27.6 fF limit, 128 slow-corner pins above 2 ns | open; waiver in `flow/waivers/sram_dout_cap_slew.md`; fixes untried (see "SRAM per-corner timing") |
 | SRAM timing at SS/FF | done 2026-10-29 (OpenRAM TT/SS/FF, `flow/openram/libs/`) |
-| Transistor-level LVS of the macro | not done: the macros are compared at their pins; the PDK has `libs.ref/sky130_sram_macros/spice/sky130_sram_2kbyte_1rw1r_32x512_8.spice` to use |
+| Transistor-level LVS of the macro | done 2026-10-30 (`make macro-lvs`): circuits match uniquely, 173,119 devices; see [06](06-verification.md) |
 | Whether a shuttle accepts the OpenRAM macro DRC waiver | not decided; evidence is `make macro-drc`, `make signoff-drc`, `flow/waivers/openram_2kb_macro_drc_rules.txt` |
-| Gate-level simulation of this netlist (zero delay, then with SDF; SDFs are in `28-openroad-stapostpnr/*/*.sdf`), RTL <-> netlist equivalence | not done (the old zero-delay GLS predates the divider, see [06](06-verification.md)) |
+| Gate-level simulation of this netlist, equivalence | zero-delay GLS of the routed netlist 24/24; synthesized vs routed netlist formally equivalent (92,836 nets); see [06](06-verification.md). Not done: SDF simulation, formal RTL vs netlist |
 | Full-size (non-mini) profile | never routed; needs a rectangular die that fits a 2.92 x 3.52 mm Caravel user area and probably more than 16 GB |
 | Caravel wrapper, harness-level simulation, precheck | not started |
 See [08-todo](08-todo-and-open-questions.md).

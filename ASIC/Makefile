@@ -84,7 +84,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build macro-drc drc-waiver signoff-drc die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -222,6 +222,38 @@ macro-drc:
 	  -e MACRO_GDS=$(CURDIR)/flow/macros/$(MACRO_NAME).gds -e MACRO_CELL=$(MACRO_NAME) -e OUT=$(CURDIR)/$(B)/macro_drc/macro_drc.rpt \
 	  ghcr.io/librelane/librelane:3.0.16 magic -dnull -noconsole -rcfile $(MAGIC_RC) $(CURDIR)/scripts/macro_drc.tcl | grep MACRO_DRC_COUNT
 	python3 scripts/drc_waiver.py --make-list --report $(B)/macro_drc/macro_drc.rpt --pdk $(PDK_VER)
+
+# Formal equivalence: synthesized netlist vs final routed netlist (proves placement, CTS, repair, hold fixing
+# and antenna insertion changed no logic). Cells become logic via the zero-delay models; nets that exist only in
+# the routed netlist are made private (scripts/hide_new_nets.py); the SRAM is the same stand-in on both sides.
+#   make MINI=1 equiv EQ_SYNTH=<run>/06-yosys-synthesis/gpu_asic_top.nl.v EQ_ROUTED=<run>/final/nl/gpu_asic_top.nl.v
+#   (~65 min, ~9 GB RAM; run alone)
+equiv:
+	@test -f "$(EQ_SYNTH)" -a -f "$(EQ_ROUTED)" || { echo "set EQ_SYNTH and EQ_ROUTED"; exit 1; }
+	mkdir -p $(B)/equiv
+	cat $(EQ_SYNTH) $(EQ_ROUTED) > $(B)/equiv/both.v
+	python3 scripts/gen_cell_models.py $(GLS_LIB) $(B)/equiv/both.v $(B)/equiv/cells.v && rm $(B)/equiv/both.v
+	cp $(EQ_SYNTH) $(B)/equiv/synth.v
+	python3 scripts/hide_new_nets.py $(EQ_SYNTH) $(EQ_ROUTED) $(B)/equiv/final_hidden.v
+	cp scripts/equiv/sram_equiv_standin.v scripts/equiv/synth_vs_routed.ys $(B)/equiv/
+	cd $(B)/equiv && DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $$PWD -e HOME=$(HOME) \
+	  ghcr.io/librelane/librelane:3.0.16 yosys -q -l equiv.log synth_vs_routed.ys
+	grep -A1 "Of those cells" $(B)/equiv/equiv.log
+
+# Transistor-level LVS of the OpenRAM macro: Magic extraction of the macro GDS vs the PDK's reference netlist
+# (libs.ref/sky130_sram_macros/spice), Netgen with the sky130A setup. Closes the black-box gap of the in-flow LVS.
+#   make macro-lvs            (report in $(B)/macro_lvs/; memory-heavy, run alone)
+MACRO_REF_SPICE ?= $(PDK_DIR)/libs.ref/sky130_sram_macros/spice/$(MACRO_NAME).spice
+macro-lvs:
+	mkdir -p $(B)/macro_lvs
+	DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e PDK_ROOT=$(dir $(PDK_DIR)) -e PDK=sky130A -e HOME=$(HOME) \
+	  -e MACRO_GDS=$(CURDIR)/flow/macros/$(MACRO_NAME).gds -e MACRO_CELL=$(MACRO_NAME) -e OUT_DIR=$(CURDIR)/$(B)/macro_lvs \
+	  ghcr.io/librelane/librelane:3.0.16 magic -dnull -noconsole -rcfile $(MAGIC_RC) $(CURDIR)/scripts/macro_lvs_ext.tcl > $(B)/macro_lvs/ext.log 2>&1
+	grep -q MACRO_EXT_DONE $(B)/macro_lvs/ext.log
+	DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e HOME=$(HOME) \
+	  ghcr.io/librelane/librelane:3.0.16 netgen -batch lvs "$(CURDIR)/$(B)/macro_lvs/$(MACRO_NAME).spice $(MACRO_NAME)" "$(MACRO_REF_SPICE) $(MACRO_NAME)" \
+	  $(PDK_DIR)/libs.tech/netgen/sky130A_setup.tcl $(CURDIR)/$(B)/macro_lvs/lvs.rpt -full -json > $(B)/macro_lvs/netgen.log 2>&1
+	tail -n 4 $(B)/macro_lvs/lvs.rpt
 
 # Full-GDS Magic DRC of a finished run (the GDS that contains the macros) + macro waiver split.
 #   make signoff-drc RUN=flow/runs/<run>      (~30 min; report in <run>/signoff_drc/)

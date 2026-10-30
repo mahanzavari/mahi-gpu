@@ -698,7 +698,7 @@ waived, see below). Setup is met with $\geq$ +3.27\,ns and hold with $\geq$ +0.2
 The Magic-versus-KLayout XOR shows 20 differences, all on the cell-boundary marker layer 235/4 (not a mask layer).
 \textbf{Not done:} the full-size profile has never been routed (it needs a rectangular die inside the 2.92\,mm $\times$ 3.52\,mm Caravel user area and probably more than 16\,GB of memory);
 the macros are black boxes in LVS; the SRAM read-port (\texttt{dout1}) nets exceed the macro\textquotesingle s own 27.6\,fF capacitance limit (36--39 pins; slow-corner slew up to 6\,ns, extrapolated; waiver recorded; erratum L17), and 642 capacitance and 524 fanout violations remain;
-there is no gate-level simulation of this netlist, no equivalence check, and no Caravel wrapper.
+there is no simulation with SDF delays, no formal RTL-to-netlist proof, and no Caravel wrapper. The routed netlist passes zero-delay gate-level simulation and is formally equivalent to the synthesized netlist, and the SRAM macro passes transistor-level LVS.
 \end{statbox}
 \subsection{Flow and configuration}
 \texttt{run\_asic.sh} converts the SystemVerilog to Verilog with \texttt{sv2v} (\texttt{-DSYNTHESIS -DTARGET\_ASIC=1}, plus \texttt{-DTARGET\_ASIC\_MINI=1} for the mini profile), runs a Yosys elaboration/latch audit (zero latches required),
@@ -757,8 +757,8 @@ Worst slack from OpenSTA on the routed design (clock 40\,ns, 0.25\,ns uncertaint
 \end{table}
 
 \subsection{Outstanding sign-off items}
-A transistor-level LVS of the macro; the shuttle's decision on the macro DRC waiver; the SRAM \texttt{dout1} output nets above the macro's capacitance limit, and the other capacitance and fanout violations;
-gate-level simulation of the final netlist (zero-delay, then with the SDF files the flow writes), RTL-to-netlist equivalence; a routed full-size profile; the Caravel wrapper, harness simulation and precheck.
+The shuttle's decision on the macro DRC waiver; the SRAM \texttt{dout1} output nets above the macro's capacitance limit, and the other capacitance and fanout violations;
+gate-level simulation with the SDF files the flow writes, a formal RTL-to-netlist proof; a routed full-size profile; the Caravel wrapper, harness simulation and precheck.
 
 % =============================================================================
 \chapter{Errata and known limitations}\label{ch:errata}

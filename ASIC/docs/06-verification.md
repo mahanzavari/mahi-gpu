@@ -43,8 +43,21 @@ Faults injected into copies of the RTL; all of these are *killed* unless noted.
 | barrier released after first warp | random 18/200 (needed warp-imbalance loops; 0/100 before) |
 | **Survivors** | FMA alignment threshold 72→40 (effect below the 24-bit truncation, unobservable); `>=`→`>` in FMA cancel (equivalent); register-file FP-collision guard removal (0/100 — scoreboard likely prevents the collision; unverified) |
 
+## Final-layout checks (mini profile, `flow/runs/place_1029_1604`, 2026-10-30)
+| Check | Command | Result |
+|---|---|---|
+| Zero-delay gate-level simulation of the **routed** netlist (`final/nl`, 205k cells; fill/tap cells get empty models) | `make MINI=1 gls GLS_NETLIST=<run>/final/nl/gpu_asic_top.nl.v` | 24/24 random seeds match the golden model (two programs each, soft reset between) |
+| Formal equivalence, synthesized netlist (`mini_1027_0945`) vs routed netlist | `make MINI=1 equiv EQ_SYNTH=... EQ_ROUTED=...` | **92,836 of 92,836 matched nets proven equal**, 0 unproven (Yosys `equiv_make`/`equiv_simple`/`equiv_induct`; 65 min, 8.7 GB) |
+| Transistor-level LVS of the OpenRAM macro (Magic extraction of the GDS vs the PDK's `sky130_sram_macros` SPICE) | `make MINI=1 macro-lvs` | **circuits match uniquely**: 173,119 devices and 36,613 nets on both sides |
+
+How to read them:
+- The equivalence check proves that placement, clock-tree synthesis, resizing, hold fixing and antenna insertion changed no logic. Nets that exist only in the routed netlist (38,818 of 134,585) are made private by `scripts/hide_new_nets.py`, so every net of the synthesized netlist is matched. The SRAM macro is the same deterministic stand-in on both sides (`scripts/equiv/sram_equiv_standin.v`), so the check covers the logic around it, not the macro. eqy was tried first; its partitioner did not converge at this size.
+- RTL to synthesized netlist is **not** proven formally. It is covered by simulation: the gate-level runs above and the earlier 200/200 on the synthesized netlist.
+- Macro LVS: 5 leaf cells (write driver, sense amplifier and others) mismatch on their own because a supply is split inside the cell and joined only in the parent; Netgen flattens them and the macro matches. Netgen also lists 345,096 "property errors"; every one is the same value in metres (extracted) vs microns (reference), checked by script, so device sizes match too.
+- Not done: gate-level simulation with SDF delays.
+
 ## Blind spots (what is *not* verified)
-Gate-level behaviour and synthesis equivalence; timing; `ATOM_CAS`; multi-core random; barriers after divergence ([L1](04-limitations.md#l1));
+RTL-to-netlist formal equivalence (simulation only, see above); gate-level simulation with SDF delays; timing; `ATOM_CAS`; multi-core random; barriers after divergence ([L1](04-limitations.md#l1));
 fault reporting ([L12](04-limitations.md#l12)); AXI wrapper (`gpu_axi4_adaptor`, `axi4_adaptor` — not in the ASIC top); `gpu_asic_top` Wishbone corner cases beyond the directed checks in `tb_asic_top.sv` (back-to-back masters, aborted cycles);
 PMU counters; programs larger than 4 K words; the FP model is a *port of the RTL* so arithmetic design errors are only caught by `tb_fp32_fma` (tolerance check).
 
