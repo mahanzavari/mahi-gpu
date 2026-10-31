@@ -112,7 +112,9 @@ the SRAM macros are timed at the typical corner only and are black boxes in LVS,
 \textbf{mahi-gpu} is a compact general-purpose GPU core built around the SIMT execution model. One \emph{core} runs
 \textbf{2 warps} of \textbf{4 lanes} each (8 hardware threads); every lane has its own integer ALU, single-precision FMA
 unit, 32-entry register file, program counter and return stack. Warps are interleaved by a round-robin scheduler on a
-classic five-stage in-order pipeline (IF, ID, EX, MEM, WB). A 5-stage pipelined IEEE-754-style FMA unit executes
+classic five-stage in-order pipeline (IF, ID, EX, MEM, WB) with single-cycle instruction fetch. As in production GPUs, there
+is no operand-forwarding network: an issue-time scoreboard holds back an instruction whose source register is still being
+produced, and another warp issues instead. A 5-stage pipelined IEEE-754-style FMA unit executes
 \ins{FADD}, \ins{FSUB}, \ins{FMUL} and \ins{FMA} under a per-warp register scoreboard.
 Memory is reached through a banked shared memory, an instruction cache, a 2-way write-through L1 data cache, and a
 4-way write-back L2 cache with sector dirty bits and a victim write buffer. The host controls the device through a
@@ -130,7 +132,7 @@ Supply corners analysed & 1.60\,V/100\,\textdegree C (ss), 1.80\,V/25\,\textdegr
 Flow & Yosys (via sv2v) $\rightarrow$ OpenROAD (floorplan, place, CTS, route) $\rightarrow$ Magic/KLayout, driven by LibreLane (\S\ref{sec:flow})\\
 Clock constraint (target) & 25\,MHz (40\,ns period), single clock \sig{clk}, synchronous reset \sig{reset}\\
 Cores / warps / lanes & 1 core / 2 warps / 4 lanes = \textbf{8 threads}\\
-Pipeline & 5-stage in-order (IF, ID, EX, MEM, WB); FPU: 5-stage, fixed latency\\
+Pipeline & 5-stage in-order (IF, ID, EX, MEM, WB); single-cycle fetch on I-cache hits; no forwarding (issue-time scoreboard); FPU: 5-stage, fixed latency\\
 Register file & 32 $\times$ 32-bit per thread; \reg{0}--\reg{28} general, \reg{29}--\reg{31} read-only\\
 Instruction word & 32 bit, fixed width; 37 opcodes defined (0--36)\\
 Program memory & 4\,K words (12-bit word address), external, 128-bit block interface\\
@@ -139,8 +141,9 @@ Shared memory & \textbf{64 words} (256\,B), 4 banks $\times$ 16 words\\
 L1 I-cache / L1 D-cache & 16 lines each; 16-byte lines (4 words); I: direct-mapped, D: 2-way, write-through\\
 L2 cache & 64 lines (16 sets $\times$ 4 ways), 16-byte lines, 4 sectors/line with dirty bits, PLRU, write-back; 4-entry victim write buffer\\
 Host interface & 32-bit Wishbone slave, single-cycle ack; \textbf{108 signal pins} (excl.\ power)\\
-Synthesised logic (current RTL) & 151\,502 instances, 24\,269 flip-flops; 1.80\,mm\textsuperscript{2} cells + 0.85\,mm\textsuperscript{2} for three SRAM macros (\S\ref{sec:flow})\\
-Die size (floorplan) & 3.0\,mm $\times$ 3.0\,mm (9\,mm\textsuperscript{2}) in the current config; 2.5\,mm in the earlier runs\\
+Synthesised logic (current RTL) & mini profile (LibreLane synthesis): 95\,652 cells, 14\,634 flip-flops, 1.07\,mm\textsuperscript{2} before placement; full profile (Yosys/ABC sizing script, \texttt{sky130\_fd\_sc\_hd}): 226\,744 cells, 23\,964 flip-flops, 1.43\,mm\textsuperscript{2}; plus 0.85\,mm\textsuperscript{2} for three SRAM macros (\S\ref{sec:flow})\\
+Die size & mini: 2.4\,mm $\times$ 2.4\,mm (routed); full: 3.0\,mm $\times$ 3.0\,mm configured, never routed\\
+Package & none of its own: intended as a Caravel user project (\S\ref{sec:caravel}); the harness ships as QFN-64 (9\,mm $\times$ 9\,mm), 60-ball WCSP or bare die\\
 \end{longtable}
 
 \section{Conventions}
@@ -235,6 +238,40 @@ integration and simulation.
 \end{tabular}
 \end{table}
 
+\section{Pinout, packaging and Caravel integration}\label{sec:caravel}
+\subsection{Pinout}
+The power pins are \sig{vccd1} (1.8\,V) and \sig{vssd1} (present with \texttt{USE\_POWER\_PINS}). In the routed mini layout
+(\S\ref{sec:flow}) the 108 signal pins are placed by the flow along the die edges; there is no fixed pin order, so a different
+run may move them. A fixed placement comes from the integration target: the Caravel user area fixes every pin position.
+
+\subsection{Packaging}
+The GPU is not a packaged part on its own. It is built to be a \textbf{Caravel user project}: the Caravel harness (management RISC-V
+SoC, padframe, housekeeping) provides the package and the pads. Efabless listed Caravel as a 64-pin QFN (9\,mm $\times$ 9\,mm,
+0.5\,mm pitch), a 60-ball WCSP, or bare die; ChipFoundry now runs these shuttles, so the current offer must be confirmed with the operator.
+No GPIO pad is driven by the GPU (\sig{io_oeb} = 1), so the package pinout is entirely Caravel's.
+
+\subsection{Caravel user-project wrapper}
+\sig{gpu_caravel_top} (\texttt{src/rtl/gpu\_caravel\_top.sv}) wraps \sig{gpu_asic_top} with the port names of Caravel's
+\sig{user_project_wrapper} (2920\,\textmu m $\times$ 3520\,\textmu m user area), which instantiates it (\texttt{caravel/verilog/rtl/user\_project\_wrapper.v}):
+\begin{table}[ht]\centering\rowcol
+\begin{tabular}{@{}lp{10.6cm}@{}}
+\tblhead{Wrapper signal} & \tblhead{Connection}\\
+\sig{wb_clk_i}, \sig{wb_rst_i} & GPU clock and reset: one clock domain with the management SoC's Wishbone. Timing is closed at 40\,ns, so the Caravel core clock must stay at or below 25\,MHz.\\
+\sig{wbs_cyc_i} \ldots\ \sig{wbs_ack_o} & the GPU's Wishbone slave; register and memory map as in \S\ref{sec:regs}, at \texttt{0x3000\_0000}, the user-project address window\\
+\sig{user_irq[0]} / \sig{[1]} / \sig{[2]} & done / fault (STATUS[4]) / 0\\
+\sig{io_oeb} / \sig{io_out} / \sig{la_data_out} & tied to 1 / 0 / 0 inside \sig{gpu_caravel_top}\\
+\sig{la_data_in}, \sig{la_oenb}, \sig{io_in}, \sig{analog_io}, \sig{user_clock2} & unused\\
+\bottomrule
+\end{tabular}
+\caption{Caravel user-project connections.}
+\end{table}
+\textbf{Status: integration is paused, not complete.} The chip-level regression passes through \sig{gpu_caravel_top} with the tie-offs
+checked every cycle (\texttt{make MINI=1 top-caravel}). Hardening the wrapper did not finish: the template's macro-first method cannot
+reach the SRAM macros' metal-4 power pins inside a metal-1--4 sub-macro, and the flat wrapper run (\texttt{MINI=1 CARAVEL=1 ./run\_asic.sh})
+needed more than the 16\,GB of the build machine. No Caravel-level simulation or shuttle precheck has been run. Caravel's own timing
+constraints also expose a hold requirement of about 3\,ns on the Wishbone inputs (the management clock reaches the user area 4.65--5.57\,ns
+late), which the flow can repair.
+
 \section{Address spaces}
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}p{2.8cm}p{3.1cm}p{2.2cm}p{7.6cm}@{}}
@@ -266,9 +303,9 @@ Host MMIO & 2 registers + 4\,KB window & Wishbone & \S2.2\\
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}lp{3.3cm}p{10.4cm}@{}}
 \tblhead{Stage} & \tblhead{Module(s)} & \tblhead{Function}\\
-IF & \sig{fetcher}, \sig{icache} & 3-state FSM (IDLE, FETCHING, DONE) fetching one instruction at a time for the warp chosen by the scheduler. The held instruction is tagged with the PC it was fetched for (\sig{fetched_pc}); it is accepted only if that PC equals the PC of the warp being issued, otherwise the fetcher drops it and refetches.\\
+IF & \sig{fetcher}, \sig{icache} & Single-cycle fetch: the I-cache answers a hit combinationally for the PC of the warp the scheduler selects, and the instruction loads into the ID latch at the same clock edge (up to one instruction per cycle). A miss starts a line fill and issue waits. The fetcher holds nothing between cycles (until this revision it was a 3-state FSM taking 4 cycles per instruction).\\
 ID & \sig{decoder}, ID latch & Combinational decode; the \sig{id_*} latch registers instruction, PC, warp id and active mask. Register-file read with write-through bypass. A flush of the previous occupant's warp squashes the latch only if no fresh instruction is loading in the same cycle.\\
-EX & \sig{alu}, \sig{fp32_fma}, \sig{pc} (per lane) & Per-lane integer ALU and FMA, forwarding network (MEM, WB and LSU-return sources), NZP update, next-PC computation, branch/divergence/exception detection.\\
+EX & \sig{alu}, \sig{fp32_fma}, \sig{pc} (per lane) & Per-lane integer ALU and FMA on the operands latched in ID (no forwarding network), NZP update, next-PC computation, branch/divergence/exception detection.\\
 MEM & \sig{lsu}, \sig{shared_mem} & Memory instructions engage the LSU; the issuing warp parks in \texttt{WAITING\_MEM} until its lanes complete. Other instructions pass through.\\
 WB & \sig{registers} & Three writers with fixed priority: FP writeback $>$ LSU return $>$ integer ALU.\\
 \bottomrule
@@ -322,9 +359,21 @@ active mask, round-robin from \sig{rr_ptr}, excluding warps that are being flush
 Warp states: \texttt{IDLE, READY, WAITING\_MEM, WAITING\_BARRIER, WAITING\_FP, DONE\_STATE, FAULTED}.
 Branch, call, divergence and exception outcomes are resolved in EX and redirect the front end through a one-cycle
 per-warp pulse \sig{flush_warp_mask}; the squashed instructions are those between fetch and EX for that warp.
+Two issue rules keep a warp's instructions correct without forwarding (\sig{core.sv}: \sig{warp_in_flight}, \sig{issue_hazard}):
+\begin{itemize}
+\item \textbf{Serializing instructions.} Branch, call, return, exit, \ins{SYNC}, memory, shared-memory and atomic, FP and
+\ins{DIV}/\ins{MOD} instructions redirect or replay their warp. While one is in ID or EX its warp does not issue, so no
+wrong-path instruction is ever in flight. Plain ALU and constant instructions do not block.
+\item \textbf{Issue-time scoreboard.} A second decoder reads the source registers of the instruction fetched for the selected warp.
+If a same-warp instruction in ID or EX will still write one of them, the warp waits this cycle and the round-robin pointer moves to
+the next warp. A producer in MEM is written back while the consumer is in ID, which the register file's write-through covers.
+\end{itemize}
+NZP and ALU flags are written at the end of EX and read in EX, so \ins{CMP} directly followed by \ins{BRnzp} needs no wait.
+Measured on the mini profile (random programs, memory latency 6 cycles), this front end needs 1.23--1.32 times fewer cycles than the
+previous one; the remaining time is dominated by warps waiting on memory (40--50\,\% of cycles) and I-cache misses (19--26\,\%).
 
 \subsection{Divergence handling (SIMT stack)}
-Each warp has a 4-entry stack of \texttt{(PC, active\_mask)} (\sig{scheduler.sv:59-67}). In EX, the next PC of every active
+Each warp has a 4-entry stack of \texttt{(PC, active\_mask)} (\sig{scheduler.sv:66-74}). In EX, the next PC of every active
 lane is computed. If all lanes agree, the warp continues. If they disagree, the lanes are split into two groups: group~A
 (the group containing the lowest active lane) continues, and group~B's \texttt{(target, mask)} is pushed.
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt]
@@ -368,7 +417,10 @@ Pipeline stages: (1) mantissa multiply and exponent add, (2a) alignment, (2b) ad
 clears when the result reaches write-back (fifth cycle). The ID stage compares the instruction's \texttt{rs}, \texttt{rt} and
 (when read) \texttt{rd} with the scoreboard; a hit raises \sig{fp_raw_stall}, which stalls the front end and squashes the EX
 latch for that cycle. In addition, when an FP instruction reaches EX the \emph{warp} is parked in \texttt{WAITING\_FP} and its
-younger instructions are flushed (\sig{scheduler.sv:200-204}); it resumes when its FP result is written back. Other warps keep issuing.
+younger instructions are flushed (\sig{scheduler.sv:208-212}); it resumes when its FP result is written back. Other warps keep issuing.
+Integer results are covered by the issue-time scoreboard of the warp scheduler, loads by \texttt{WAITING\_MEM}. In every simulation
+(\texttt{MAHI\_SIM\_CHECKS}) an assertion checks each cycle that no instruction in EX reads a register a MEM, WB or LSU result
+is still producing; with the scoreboard disabled every random program trips it.
 
 \subsection{Register-file write arbitration}
 Priority 1 FP write-back, priority 2 LSU return, priority 3 integer ALU (\sig{registers.sv}); lower priorities are suppressed when the
@@ -602,7 +654,7 @@ The following program is the instruction sequence of a branch/call test; the enc
 \section{Architectural restrictions and hazards}\label{sec:restrictions}
 \begin{warnbox}{R1 --- \ins{SYNC} requires warp-uniform control flow}
 The barrier is tracked at \textbf{warp} granularity: when a lane group executes \ins{SYNC}, the warp enters \texttt{WAITING\_BARRIER} and is counted once
-(\sig{barrier_count >= num_active_warps_comb}, \sig{scheduler.sv:279}). Because divergent lane groups are serialised until \ins{EXIT} (no join-point reconvergence),
+(\sig{barrier_count >= num_active_warps_comb}, \sig{scheduler.sv:287}). Because divergent lane groups are serialised until \ins{EXIT} (no join-point reconvergence),
 a \ins{SYNC} that follows divergent code is executed once \emph{per group}, and the first group to arrive releases the barrier while other lanes have not yet
 performed their stores. This used to let threads read stale shared memory (observed: 4 of 8 threads in the directed test, and in 18 of 240 early random programs);
 the hardware now detects it and faults the warp with cause 3 instead (the kernel is rejected, not silently wrong).
@@ -692,6 +744,9 @@ B4 & \texttt{e086fc4} & L2 pushed to a full victim write buffer (stale ready); t
 
 \section{Physical implementation}\label{sec:flow}
 \begin{statbox}{Status --- the mini profile is routed with per-corner SRAM timing; the full profile is not}
+\textbf{RTL revision.} The layout below was built from the RTL before the single-cycle fetch and the removal of operand forwarding
+(\S\ref{ch:core}); a layout of the current RTL is in progress. Pre-placement timing of the current RTL no longer has core-datapath
+paths among the worst families (the SRAM half-cycle reads lead).\par
 The \textbf{mini profile} (\texttt{MINI=1}: 2 lanes $\times$ 2 warps, 32 words of shared memory) has a routed layout at the 40\,ns clock (\texttt{flow/runs/place\_1029\_1604}) with:
 routing DRC 0, antenna 0, LVS 0 (macros compared at their pins), KLayout DRC 0, and a full-chip Magic DRC with 0 integration errors (the OpenRAM macros' own 12\,984\,239 violation boxes are
 waived, see below). Setup is met with $\geq$ +3.27\,ns and hold with $\geq$ +0.27\,ns in all nine corners, using SRAM liberty files characterised with OpenRAM at the TT, SS and FF corners.

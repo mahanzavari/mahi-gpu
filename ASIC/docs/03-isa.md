@@ -58,7 +58,7 @@ Write-port priority when several results target the same register: FP > LSU > AL
 instructions that read an FP result still in flight.
 
 ## Condition flags
-The ALU also produces C/V/Z/N/SAT flags (`alu.sv`), stored per warp/lane in `core.sv:386-390`, but **no instruction reads them**;
+The ALU also produces C/V/Z/N/SAT flags (`alu.sv`), stored per warp/lane in `core.sv:390-394`, but **no instruction reads them**;
 branches use only NZP.
 
 ## Faults

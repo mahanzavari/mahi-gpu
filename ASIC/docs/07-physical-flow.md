@@ -286,7 +286,7 @@ launches at about 23.4 ns and must arrive by 40 ns. On the worst one clock-to-`d
 the overloaded `dout1` nets of L17 cost about 4 ns here.
 
 **What RTL changes would buy (estimates, not measured):**
-1. Compute the forwarding select one stage earlier and register it (`wb_rd` is `mem_rd` one cycle later, `core.sv:523`), with
+1. Compute the forwarding select one stage earlier and register it (`wb_rd` is `mem_rd` one cycle later, `core.sv:527`), with
    per-lane copies. It removes about 10 ns of compare and decode, the shared hold cell and most of the fan-out tree, and lifts all 12 `wb_rd` families.
 2. Register the FMA inputs (one more FP cycle; the scoreboard already handles variable FP latency): the 17.7 ns multiply leaves the operand path.
 3. Buffer each SRAM `dout1` at the macro: fixes the L17 cap violation and recovers about 4 ns of the half-cycle read.

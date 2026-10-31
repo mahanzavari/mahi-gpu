@@ -83,7 +83,7 @@ instance, so NZP flags and the return stack are per lane per warp.
 | State | Where | Depth | Behaviour on overflow |
 |---|---|---|---|
 | Return (call) stack, per lane | `pc.sv:29` | 8, 3-bit pointer | wraps silently — [L6](04-limitations.md#l6) |
-| Divergence stack, per warp | `scheduler.sv:59` | 4 | `stack_ptr` would exceed 4; SVA `sched_sva` flags it — [L7](04-limitations.md#l7) |
+| Divergence stack, per warp | `scheduler.sv:66` | 4 | `stack_ptr` would exceed 4; SVA `sched_sva` flags it — [L7](04-limitations.md#l7) |
 | NZP flags | `pc.sv` `nzp[warp]`, per lane | 3 bits | reset to 0 — [L5](04-limitations.md#l5) |
 
 Divergence/reconvergence is described in [04-limitations L1](04-limitations.md#l1): groups are only merged when a

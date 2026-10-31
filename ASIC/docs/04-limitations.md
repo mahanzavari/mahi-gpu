@@ -39,10 +39,10 @@
 - **Symptom.** After a divergent branch the lanes of a warp finish the remaining program one *group* at a time. A `SYNC`
   placed after the divergent region (even at the top level of the source) executes once per group and the first group to
   arrive counts as "this warp arrived", so it can pass the barrier before other lanes/warps have done their work.
-- **Root cause.** `scheduler.sv` pushes the not-taken group on a 4-entry stack at a divergent branch (`scheduler.sv:245-248`) and only
-  pops it when (a) `EXIT` executes (`scheduler.sv:236-241`) or (b) a later non-divergent branch targets exactly the stacked PC
-  (`is_reconverge`, `scheduler.sv:254-261`). There is no reconvergence at the join/post-dominator, so merging almost never happens.
-  `SYNC` only counts *warps* (`barrier_count >= num_active_warps_comb`, `scheduler.sv:279`), not lanes.
+- **Root cause.** `scheduler.sv` pushes the not-taken group on a 4-entry stack at a divergent branch (`scheduler.sv:253-256`) and only
+  pops it when (a) `EXIT` executes (`scheduler.sv:244-249`) or (b) a later non-divergent branch targets exactly the stacked PC
+  (`is_reconverge`, `scheduler.sv:262-269`). There is no reconvergence at the join/post-dominator, so merging almost never happens.
+  `SYNC` only counts *warps* (`barrier_count >= num_active_warps_comb`, `scheduler.sv:287`), not lanes.
   The same logic is in `src/rtl/scheduler.sv` (checked by diff, only trace prints differ).
 - **Evidence.** Random-regression seed 76 (shared-memory program): the final readout executed lane by lane — lane 0 finished
   at t≈24,900 ns, lane 1 ≈45,700, lane 2 ≈67,600, lane 3 ≈90,300 — while other lanes' stores were still pending; 18/240
@@ -93,7 +93,7 @@ The 9th nested `CALL` overwrites the oldest return address; unwinding then retur
 `RET` on an empty stack reads a stale entry. Exec check: `make limits` case `L6`. No assertion covers it (open item).
 
 ## L7
-**Divergence stack is 4 deep** (`scheduler.sv:59`). With 4 lanes per warp the maximum nesting is 3, so it cannot overflow in the
+**Divergence stack is 4 deep** (`scheduler.sv:66`). With 4 lanes per warp the maximum nesting is 3, so it cannot overflow in the
 ASIC profile; a profile with `THREADS_PER_BLOCK` ≥ 6 can (the sim profile used by `tb_matmul` has 8 lanes and was not seen to
 overflow). SVA `sched_sva.a_depth` flags `stack_ptr > 4`.
 
@@ -125,7 +125,7 @@ Verilator pitfalls are listed in [06-verification](06-verification.md).
 ## L12
 **RESOLVED — faults are reported to the host.** Division by zero (cause 1), an out-of-range address (cause 2) and `SYNC`
 while diverged (cause 3, [L1](#l1)) still stop only the faulting warp: the scheduler marks it `FAULTED` and flushes it
-(`scheduler.sv:212-216`), and `FAULTED` counts as finished for `done` (`scheduler.sv:292`), so the kernel completes.
+(`scheduler.sv:220-224`), and `FAULTED` counts as finished for `done` (`scheduler.sv:302`), so the kernel completes.
 What changed: `gpu.sv` now exports the first fault of the lowest faulting core (`fault`, `fault_cause`, `fault_warp`,
 `fault_pc`), and `gpu_asic_top.sv` latches it, because the core clears its report at the next block reset:
 `STATUS[4]` (sticky, write 1 to clear), `FAULT_INFO` at `0x3000_0008` = `{pc[15:0], warp[7:0], 4'd0, cause[3:0]}` (first fault
@@ -142,7 +142,7 @@ finish with `STATUS[4]` = 0 (`rand_regress.py` reports a `FAULT` otherwise).
 
 ## L14
 **Global addresses above the 14-bit data bus alias silently.** The core's fault check compares the full 32-bit effective address with
-`MAX_MEM_ADDR = 0xFFFF` (`core.sv:13,365`), but the LSU truncates the address to `DATA_MEM_ADDR_BITS` = 14 (`lsu.sv:82`).
+`MAX_MEM_ADDR = 0xFFFF` (`core.sv:13,410`), but the LSU truncates the address to `DATA_MEM_ADDR_BITS` = 14 (`lsu.sv:82`).
 An access to `0x4000…0xFFFF` is therefore neither faulted nor reaching that address: it wraps onto `addr & 0x3FFF`
 (e.g. a store to `0x412C` lands at word 300). Exec check: `make limits` case `L14`. Fix: set `MAX_MEM_ADDR` from the profile
 (`(1<<DATA_MEM_ADDR_BITS)-1`).
