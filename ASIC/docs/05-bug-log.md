@@ -37,8 +37,8 @@
 moved while a fetch was in flight (or while the result was held), the held instruction was issued for the wrong warp.
 - *Symptom.* `tb_matmul`, core 1: PC `0x1d` issued word `0x07800012` (the loop-back branch fetched for PC `0x21`); four MUL/ADD/CONST/ADD
   instructions skipped; elements 16–19 of the result were 0.
-- *Fix.* `fetcher.sv` exports `fetched_pc` (`fetcher.sv:31`, `fetcher.sv:38`) and refetches from `DONE` when the selected PC changed (`fetcher.sv:74`); `core.sv:107`
-  accepts the instruction only when `if_fetched_pc == if_pc`.
+- *Fix.* `fetcher.sv` exports `fetched_pc` (`fetcher.sv:31`) and, in the original fetcher, refetched from `DONE` when the selected PC changed; `core.sv:107`
+  accepts the instruction only when `if_fetched_pc == if_pc`. Since the single-cycle fetch (branch `rtl/fwd-precompute`) the fetcher holds nothing, so the skew cannot arise.
 - *Evidence.* SVA `a_issue_pc_match` fires at t=2765 ("issuing PC 1c but fetched for 1d"); random: 98–100 / 100 fail without the fix;
   `verify-matmul` passes 25/25 elements.
 

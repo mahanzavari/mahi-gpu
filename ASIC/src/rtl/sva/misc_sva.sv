@@ -56,9 +56,10 @@ module fetcher_sva (
     input wire clk, input wire reset, input wire flush,
     input wire mem_read_valid, input wire instruction_valid, input wire consume
 );
-    // A fetch is never in flight while a completed instruction is being held.
-    a_no_overlap: assert property (@(posedge clk) disable iff (reset || flush) !(mem_read_valid && instruction_valid))
-        else $error("SVA fetcher: fetch outstanding while instruction held");
+    // Single-cycle fetch: an instruction is only presented for a request made in the same cycle
+    // (nothing is held across cycles any more).
+    a_valid_needs_request: assert property (@(posedge clk) disable iff (reset) instruction_valid |-> mem_read_valid)
+        else $error("SVA fetcher: instruction presented without a request this cycle");
 endmodule
 
 module vwb_sva (

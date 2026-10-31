@@ -148,7 +148,7 @@ def check_static():
     # fixes present in ASIC
     has(f'{R}/l2_cache.sv', r"vwb_can_push = vwb_push_ready && !vwb_push_valid", why='B4')
     has(f'{R}/core.sv', r"if_instruction_valid = if_instruction_valid_raw && \(if_fetched_pc == if_pc\)", why='B3')
-    has(f'{R}/fetcher.sv', r"current_pc != fetch_pc", why='B3')
+    has(f'{R}/fetcher.sv', r"assign fetched_pc        = current_pc;", why='B3 (single-cycle fetch holds nothing)')
     has(f'{R}/core.sv', r"flush_warp_mask\[id_warp_id\] && !\(valid_issue && if_instruction_valid\)", why='B2')
     has(f'{R}/pc.sv', r"nzp\[warp_id\] <= alu_out\[2:0\]", why='B1')
     # L10: generic design still lacks the fixes

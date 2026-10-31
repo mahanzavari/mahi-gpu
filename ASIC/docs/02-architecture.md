@@ -60,10 +60,13 @@ per-core `icache_inst`/`dcache_inst`) and `core.sv`.
 `MEM` (LSU, shared memory) → `WB`. The FPU has a fixed 5-stage latency with a per-warp **RAW scoreboard**
 (`core.sv`, `fp_pipe_*`, `fp_scoreboard`). Forwarding sources into EX: MEM-stage, WB-stage, LSU completion
 (`core.sv:fwd_*`). Each lane has its **own** `pc` instance, so NZP flags and the return stack are per lane per warp.
-- Fetch granularity: one instruction at a time, shared by both warps; the scheduler picks the warp
-  combinationally each cycle (`scheduler.sv`, `found_var_comb` / `next_rr_var_comb`).
-  **The fetched instruction must match the selected warp's PC** — enforced by `if_fetched_pc == if_pc`
-  (`core.sv:107`) and the fetcher refetch (`fetcher.sv:74`); see [B3](05-bug-log.md#b3).
+- Fetch: single-cycle on an instruction-cache hit (the cache answers hits combinationally, `icache.sv`, and
+  `fetcher.sv` is a pass-through), so up to one instruction per cycle; a miss stalls issue until the line is
+  filled. The scheduler picks the warp combinationally each cycle (`scheduler.sv`, `found_var_comb` /
+  `next_rr_var_comb`) and skips a warp that still has an instruction in ID or EX (`warp_in_flight`), so a
+  warp never has a wrong-path instruction in flight and its next instruction reads its results through the
+  register file's write-through. The other warp overlaps. The old fetcher (4 cycles per instruction) held
+  instructions, which is what made [B3](05-bug-log.md#b3) possible; `if_fetched_pc == if_pc` (`core.sv:107`) now always holds.
 - Branch/call/divergence resolve in EX and flush the front end through the one-cycle pulse
   `flush_warp_mask` (`scheduler.sv`). The ID latch squash rule is subtle — see [B2](05-bug-log.md#b2).
 

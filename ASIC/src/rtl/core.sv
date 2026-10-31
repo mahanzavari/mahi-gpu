@@ -622,6 +622,18 @@ lsu #(
 
 wire sched_ev_idle, sched_ev_warp_switch, sched_ev_diverge, sched_ev_stall_mem, sched_ev_stall_barrier, sched_ev_stall_noready;
 
+// Warps with an instruction in ID or EX (see scheduler.warp_in_flight). Everything an instruction does to its
+// warp's scheduling state (branch flush, WAITING_FP/WAITING_MEM, fault, barrier) is registered by the time it
+// leaves EX, and its register result reaches the next same-warp instruction through the register file's
+// write-through (WB -> ID), so the next issue of that warp may happen while it is in MEM.
+wire [NUM_WARPS-1:0] warp_in_flight;
+generate
+    for (genvar w = 0; w < NUM_WARPS; w++) begin : g_inflight
+        assign warp_in_flight[w] = ((|id_active_mask)  && id_warp_id  == w) ||
+                                   ((|ex_active_mask)  && ex_warp_id  == w);
+    end
+endgenerate
+
 scheduler #(
     .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
     .NUM_WARPS(NUM_WARPS),
@@ -630,7 +642,7 @@ scheduler #(
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready), .mem_in_progress(mem_in_progress), 
     .fp_req_valid(ex_fp_fire | ex_div_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(ll_wb_valid), .fp_wb_warp_id(ll_wb_warp_id),
-    .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
+    .frontend_stall(frontend_stall), .warp_in_flight(warp_in_flight), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .found_var_comb(found_var_comb), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 
     .ex_exception_valid(ex_exception_valid), .done(done), .warp_diverged(warp_diverged),
