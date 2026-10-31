@@ -24,9 +24,13 @@ module scheduler #(
     input wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id,
     
     input wire frontend_stall,
-    // A warp with an instruction still in ID or EX may not issue (core.sv explains why MEM is enough): no
-    // wrong-path instructions, no same-warp forwarding inside EX, while the other warps overlap with it.
+    // A warp with a serializing instruction (branch, call/return/exit, SYNC, memory, FP, DIV) still in ID or EX
+    // may not issue: those redirect or replay the warp, so nothing younger of that warp may be in flight.
     input wire [NUM_WARPS-1:0] warp_in_flight,
+    // The instruction fetched for the selected warp (cand_warp_id) reads a register that a same-warp instruction
+    // in ID or EX will still write (core.sv: issue-time scoreboard). No forwarding exists, so it must wait.
+    input wire issue_hazard,
+    output logic [$clog2(NUM_WARPS)-1:0] cand_warp_id,
     output reg [NUM_WARPS-1:0] flush_warp_mask,
     
     // --- Now Combinational Outputs ---
@@ -148,9 +152,10 @@ module scheduler #(
 
     // Point the memory fetch directly to the target PC combinationally
     assign if_pc = found_var_comb ? current_pc[next_rr_var_comb] : 0;
+    assign cand_warp_id = next_rr_var_comb;
 
     always_comb begin
-        if (found_var_comb && !frontend_stall) begin
+        if (found_var_comb && !frontend_stall && !issue_hazard) begin
             valid_issue = 1'b1;
             sched_active_mask = current_mask[next_rr_var_comb];
             sched_warp_id = next_rr_var_comb;
@@ -288,6 +293,8 @@ module scheduler #(
             if (valid_issue) begin
                 current_pc[next_rr_var_comb] <= current_pc[next_rr_var_comb] + 1;
                 rr_ptr <= (next_rr_var_comb + 1) % NUM_WARPS;
+            end else if (found_var_comb && issue_hazard) begin
+                rr_ptr <= (next_rr_var_comb + 1) % NUM_WARPS;   // let the other warps try while this one waits
             end
 
             all_warps_done = 1;

@@ -334,64 +334,31 @@ reg [DATA_BITS-1:0]           wb_alu_out [THREADS_PER_BLOCK];
 reg                           wb_reg_we;
 reg [1:0]                     wb_reg_mux;
 
-// EX-stage forwarding compares, registered one cycle early 
-// MEM and WB never hold a valid instruction: they load from the stage before or clear active_mask/reg_we.
-// So whenever a MEM/WB forward can fire, mem_rd/mem_warp_id were ex_rd/ex_warp_id one cycle ago and
-// wb_rd/wb_warp_id were mem_rd/mem_warp_id. The EX side's next value is id_* on an advance and unchanged on
-// a bubble. The comparators (register number, < 29, warp) therefore move out of EX; EX keeps only the ANDs
-// with the valid bits. The original expressions are checked against these every cycle in simulation (MAHI_SIM_CHECKS).
-wire                         ex_hold    = flush_warp_mask[id_warp_id] || fp_raw_stall;   // ID->EX bubble
-wire [4:0]                   ex_rs_nx   = ex_hold ? ex_rs : id_rs;
-wire [4:0]                   ex_rt_nx   = ex_hold ? ex_rt : id_rt;
-wire [4:0]                   ex_rd_nx   = ex_hold ? ex_rd : id_rd;
-wire [$clog2(NUM_WARPS)-1:0] ex_warp_nx = ex_hold ? ex_warp_id : id_warp_id;
-reg eq_mem_rs, eq_mem_rt, eq_mem_rd, eq_wb_rs, eq_wb_rt, eq_wb_rd;
-always @(posedge clk) begin
-    eq_mem_rs <= (ex_rd  == ex_rs_nx) && (ex_rd  < 29) && (ex_warp_id  == ex_warp_nx);
-    eq_mem_rt <= (ex_rd  == ex_rt_nx) && (ex_rd  < 29) && (ex_warp_id  == ex_warp_nx);
-    eq_mem_rd <= (ex_rd  == ex_rd_nx) && (ex_rd  < 29) && (ex_warp_id  == ex_warp_nx);
-    eq_wb_rs  <= (mem_rd == ex_rs_nx) && (mem_rd < 29) && (mem_warp_id == ex_warp_nx);
-    eq_wb_rt  <= (mem_rd == ex_rt_nx) && (mem_rd < 29) && (mem_warp_id == ex_warp_nx);
-    eq_wb_rd  <= (mem_rd == ex_rd_nx) && (mem_rd < 29) && (mem_warp_id == ex_warp_nx);
-end
-
+// No operand forwarding into EX. A same-warp instruction never reads a register that an instruction ahead of it in
+// ID or EX will still write: the issue-time scoreboard (issue_hazard, below) holds it back, as GPUs do instead of a
+// bypass network. A producer in MEM is written back while the consumer is in ID, and the register file's
+// write-through (registers.sv) covers that cycle; loads write through the LSU while their warp waits (WAITING_MEM);
+// FMA/DIV results are covered by fp_scoreboard. So EX reads the operands latched in ID. The names fwd_ex_* stay for
+// the consumers. MAHI_SIM_CHECKS checks every cycle that no case the old forwarding network handled can occur.
 genvar i;
 generate
     for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
-        wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && ex_rs_re && eq_mem_rs;
-        wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && ex_rt_re && eq_mem_rt;
-        wire fwd_mem_rd_i = mem_active_mask[i] && mem_reg_we && ex_rd_re && eq_mem_rd;
-
-        wire fwd_wb_rs_i  = wb_active_mask[i] && wb_reg_we && ex_rs_re && !fwd_mem_rs_i && eq_wb_rs;
-        wire fwd_wb_rt_i  = wb_active_mask[i] && wb_reg_we && ex_rt_re && !fwd_mem_rt_i && eq_wb_rt;
-        wire fwd_wb_rd_i  = wb_active_mask[i] && wb_reg_we && ex_rd_re && !fwd_mem_rd_i && eq_wb_rd;
+        assign fwd_ex_rs_data[i] = ex_rs_data[i];
+        assign fwd_ex_rt_data[i] = ex_rt_data[i];
+        assign fwd_ex_rd_data[i] = ex_rd_data[i];
 `ifdef MAHI_SIM_CHECKS
-        // The original, combinational compares: the registered ones must agree on every cycle (simulation only;
-        // MAHI_SIM_CHECKS is set by the Makefile's Verilator builds, which also define SYNTHESIS).
-        wire ref_mem_rs = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 29) && ex_rs_re && (mem_warp_id == ex_warp_id);
-        wire ref_mem_rt = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 29) && ex_rt_re && (mem_warp_id == ex_warp_id);
-        wire ref_mem_rd = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rd) && (mem_rd < 29) && ex_rd_re && (mem_warp_id == ex_warp_id);
-        wire ref_wb_rs  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 29) && ex_rs_re && !ref_mem_rs && (wb_warp_id == ex_warp_id);
-        wire ref_wb_rt  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 29) && ex_rt_re && !ref_mem_rt && (wb_warp_id == ex_warp_id);
-        wire ref_wb_rd  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rd) && (wb_rd < 29) && ex_rd_re && !ref_mem_rd && (wb_warp_id == ex_warp_id);
+        // The conditions under which the removed MEM/WB/LSU -> EX forwarding would have fired.
+        wire need_mem = mem_active_mask[i] && mem_reg_we && (mem_rd < 29) && (mem_warp_id == ex_warp_id) && ex_active_mask[i] &&
+                        ((ex_rs_re && mem_rd == ex_rs) || (ex_rt_re && mem_rd == ex_rt) || (ex_rd_re && mem_rd == ex_rd));
+        wire need_wb  = wb_active_mask[i] && wb_reg_we && (wb_rd < 29) && (wb_warp_id == ex_warp_id) && ex_active_mask[i] &&
+                        ((ex_rs_re && wb_rd == ex_rs) || (ex_rt_re && wb_rd == ex_rt) || (ex_rd_re && wb_rd == ex_rd));
+        wire need_lsu = lsu_we_array[i] && (lsu_rd_array < 29) && (lsu_warp_id_array[0] == ex_warp_id) && ex_active_mask[i] &&
+                        ((ex_rs_re && lsu_rd_array == ex_rs) || (ex_rt_re && lsu_rd_array == ex_rt) || (ex_rd_re && lsu_rd_array == ex_rd));
         always @(posedge clk)
-            if (!reset && {fwd_mem_rs_i, fwd_mem_rt_i, fwd_mem_rd_i, fwd_wb_rs_i, fwd_wb_rt_i, fwd_wb_rd_i}
-                       !== {ref_mem_rs, ref_mem_rt, ref_mem_rd, ref_wb_rs, ref_wb_rt, ref_wb_rd})
-                $error("core: registered forwarding flags differ from the combinational ones (lane %0d): %b vs %b", i,
-                       {fwd_mem_rs_i, fwd_mem_rt_i, fwd_mem_rd_i, fwd_wb_rs_i, fwd_wb_rt_i, fwd_wb_rd_i},
-                       {ref_mem_rs, ref_mem_rt, ref_mem_rd, ref_wb_rs, ref_wb_rt, ref_wb_rd});
+            if (!reset && (need_mem || need_wb || need_lsu))
+                $error("core: lane %0d warp %0d pc %0h reads a register still in flight (mem=%0d wb=%0d lsu=%0d): no forwarding exists",
+                       i, ex_warp_id, ex_pc, need_mem, need_wb, need_lsu);
 `endif
-
-        wire fwd_lsu_rs_i = lsu_we_array[i] && (lsu_rd_array == ex_rs) && (lsu_rd_array < 29) && ex_rs_re && !fwd_mem_rs_i && !fwd_wb_rs_i && (lsu_warp_id_array[0] == ex_warp_id);
-        wire fwd_lsu_rt_i = lsu_we_array[i] && (lsu_rd_array == ex_rt) && (lsu_rd_array < 29) && ex_rt_re && !fwd_mem_rt_i && !fwd_wb_rt_i && (lsu_warp_id_array[0] == ex_warp_id);
-        wire fwd_lsu_rd_i = lsu_we_array[i] && (lsu_rd_array == ex_rd) && (lsu_rd_array < 29) && ex_rd_re && !fwd_mem_rd_i && !fwd_wb_rd_i && (lsu_warp_id_array[0] == ex_warp_id);
-        
-        wire [DATA_BITS-1:0] fwd_mem_data_i = (mem_reg_mux == 2'b10) ? mem_imm : mem_alu_out[i];
-        wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux  == 2'b10) ? wb_imm  : wb_alu_out[i];
-
-        assign fwd_ex_rs_data[i] = fwd_mem_rs_i ? fwd_mem_data_i : fwd_wb_rs_i  ? fwd_wb_data_i  : fwd_lsu_rs_i ? lsu_data_array[i] : ex_rs_data[i];
-        assign fwd_ex_rt_data[i] = fwd_mem_rt_i ? fwd_mem_data_i : fwd_wb_rt_i  ? fwd_wb_data_i  : fwd_lsu_rt_i ? lsu_data_array[i] : ex_rt_data[i];
-        assign fwd_ex_rd_data[i] = fwd_mem_rd_i ? fwd_mem_data_i : fwd_wb_rd_i  ? fwd_wb_data_i  : fwd_lsu_rd_i ? lsu_data_array[i] : ex_rd_data[i];
 
         wire alu_flag_c, alu_flag_v, alu_flag_z, alu_flag_n, alu_flag_sat;
         
@@ -622,17 +589,45 @@ lsu #(
 
 wire sched_ev_idle, sched_ev_warp_switch, sched_ev_diverge, sched_ev_stall_mem, sched_ev_stall_barrier, sched_ev_stall_noready;
 
-// Warps with an instruction in ID or EX (see scheduler.warp_in_flight). Everything an instruction does to its
-// warp's scheduling state (branch flush, WAITING_FP/WAITING_MEM, fault, barrier) is registered by the time it
-// leaves EX, and its register result reaches the next same-warp instruction through the register file's
-// write-through (WB -> ID), so the next issue of that warp may happen while it is in MEM.
+// Serializing instructions redirect or replay their warp (branch/call/return/exit, SYNC, memory and atomics, FP,
+// DIV/MOD). While one is in ID or EX, its warp may not issue (scheduler.warp_in_flight). Everything such an
+// instruction does to its warp (flush, WAITING_MEM/FP, fault, barrier) is registered by the time it leaves EX.
+wire id_serializing = id_pc_mux | id_call | id_ret_fn | id_exit | id_sync | id_mem_re | id_mem_we |
+                      id_shared_re | id_shared_we | (|id_atomic) | id_is_fp | id_is_div;
+wire ex_serializing = ex_pc_mux | ex_call | ex_ret_fn | ex_exit | ex_sync | ex_mem_re | ex_mem_we |
+                      ex_shared_re | ex_shared_we | (|ex_atomic) | ex_is_fp | ex_is_div;
 wire [NUM_WARPS-1:0] warp_in_flight;
 generate
     for (genvar w = 0; w < NUM_WARPS; w++) begin : g_inflight
-        assign warp_in_flight[w] = ((|id_active_mask)  && id_warp_id  == w) ||
-                                   ((|ex_active_mask)  && ex_warp_id  == w);
+        assign warp_in_flight[w] = ((|id_active_mask) && id_warp_id == w && id_serializing) ||
+                                   ((|ex_active_mask) && ex_warp_id == w && ex_serializing);
     end
 endgenerate
+
+// Issue-time scoreboard: decode the instruction fetched for the selected warp and hold it back while a same-warp
+// instruction in ID or EX will still write one of its source registers (that result is not in the register file
+// in time and nothing forwards it). Computed from the pipeline registers, so flushes need no bookkeeping.
+wire [$clog2(NUM_WARPS)-1:0] cand_warp_id;
+wire [4:0] iss_rd, iss_rs, iss_rt;
+wire       iss_rs_re, iss_rt_re, iss_rd_re;
+decoder #(
+    .DATA_BITS(DATA_BITS)
+) issue_decoder (
+    .instruction(if_instruction), .decoded_rd_address(iss_rd), .decoded_rs_address(iss_rs), .decoded_rt_address(iss_rt),
+    .decoded_rs_read_enable(iss_rs_re), .decoded_rt_read_enable(iss_rt_re), .decoded_rd_read_enable(iss_rd_re),
+    .decoded_nzp(), .decoded_immediate(), .decoded_use_mem_offset(), .decoded_mem_addr_offset(), .decoded_reg_write_enable(),
+    .decoded_mem_read_enable(), .decoded_mem_write_enable(), .decoded_nzp_write_enable(), .decoded_reg_input_mux(),
+    .decoded_alu_arithmetic_mux(), .decoded_alu_output_mux(), .decoded_pc_mux(), .decoded_sync(), .decoded_shared_read_enable(),
+    .decoded_shared_write_enable(), .decoded_ret_fn(), .decoded_exit(), .decoded_call(), .decoded_atomic(),
+    .decoded_flags_write_enable(), .decoded_is_fp(), .decoded_fp_op()
+);
+wire id_writes = (|id_active_mask) && id_warp_id == cand_warp_id && id_reg_we && (id_rd < 29);
+wire ex_writes = (|ex_active_mask) && ex_warp_id == cand_warp_id && ex_reg_we && (ex_rd < 29);
+function automatic logic reads_pending(input logic [4:0] r);
+    reads_pending = (id_writes && r == id_rd) || (ex_writes && r == ex_rd);
+endfunction
+wire issue_hazard = (iss_rs_re && reads_pending(iss_rs)) || (iss_rt_re && reads_pending(iss_rt)) ||
+                    (iss_rd_re && reads_pending(iss_rd));
 
 scheduler #(
     .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
@@ -642,7 +637,8 @@ scheduler #(
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready), .mem_in_progress(mem_in_progress), 
     .fp_req_valid(ex_fp_fire | ex_div_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(ll_wb_valid), .fp_wb_warp_id(ll_wb_warp_id),
-    .frontend_stall(frontend_stall), .warp_in_flight(warp_in_flight), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
+    .frontend_stall(frontend_stall), .warp_in_flight(warp_in_flight), .issue_hazard(issue_hazard), .cand_warp_id(cand_warp_id),
+    .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .found_var_comb(found_var_comb), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 
     .ex_exception_valid(ex_exception_valid), .done(done), .warp_diverged(warp_diverged),

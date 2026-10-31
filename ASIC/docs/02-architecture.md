@@ -58,14 +58,23 @@ per-core `icache_inst`/`dcache_inst`) and `core.sv`.
 ## Pipeline (per core)
 `IF` (fetcher + icache) → `ID` (combinational decoder, registered latch `id_*`) → `EX` (per-lane ALU, FPU, `pc`) →
 `MEM` (LSU, shared memory) → `WB`. The FPU has a fixed 5-stage latency with a per-warp **RAW scoreboard**
-(`core.sv`, `fp_pipe_*`, `fp_scoreboard`). Forwarding sources into EX: MEM-stage, WB-stage, LSU completion
-(`core.sv:fwd_*`). Each lane has its **own** `pc` instance, so NZP flags and the return stack are per lane per warp.
+(`core.sv`, `fp_pipe_*`, `fp_scoreboard`). **There is no operand forwarding into EX**: as in GPUs (NVIDIA's
+dependence counters, Vortex's scoreboard), a dependent instruction waits instead. Each lane has its **own** `pc`
+instance, so NZP flags and the return stack are per lane per warp.
 - Fetch: single-cycle on an instruction-cache hit (the cache answers hits combinationally, `icache.sv`, and
   `fetcher.sv` is a pass-through), so up to one instruction per cycle; a miss stalls issue until the line is
   filled. The scheduler picks the warp combinationally each cycle (`scheduler.sv`, `found_var_comb` /
-  `next_rr_var_comb`) and skips a warp that still has an instruction in ID or EX (`warp_in_flight`), so a
-  warp never has a wrong-path instruction in flight and its next instruction reads its results through the
-  register file's write-through. The other warp overlaps. The old fetcher (4 cycles per instruction) held
+  `next_rr_var_comb`).
+- Issue rules (`core.sv`, scheduler inputs `warp_in_flight` and `issue_hazard`):
+  - **Serializing instructions** (branch, call, return, exit, SYNC, memory, shared, atomic, FP, DIV/MOD) redirect or
+    replay their warp, so while one is in ID or EX its warp does not issue: no wrong-path instruction is ever in flight.
+  - **Issue-time scoreboard**: a second decoder reads the source registers of the instruction fetched for the selected
+    warp; if a same-warp instruction in ID or EX will still write one of them, the warp waits and the round-robin
+    pointer moves on to the other warp. A producer in MEM is written back while the consumer is in ID, and the
+    register file's write-through covers that cycle; loads write while their warp waits in WAITING_MEM.
+  - NZP and ALU flags are written at the end of EX and read in EX, so a compare directly followed by a branch needs no wait.
+  - `MAHI_SIM_CHECKS` (all Verilator builds) asserts every cycle that no case the old MEM/WB/LSU forwarding handled occurs.
+- The old fetcher (4 cycles per instruction) held
   instructions, which is what made [B3](05-bug-log.md#b3) possible; `if_fetched_pc == if_pc` (`core.sv:107`) now always holds.
 - Branch/call/divergence resolve in EX and flush the front end through the one-cycle pulse
   `flush_warp_mask` (`scheduler.sv`). The ID latch squash rule is subtle — see [B2](05-bug-log.md#b2).

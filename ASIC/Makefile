@@ -48,6 +48,7 @@ ifneq ($(SIM_WARPS),)
     export MAHI_THREADS := $(shell echo $$(($(SIM_WARPS) * $(SIM_LANES))))
     export MAHI_LANES := $(SIM_LANES)
     export MAHI_SHARED := $(shell echo $$((8 * $(SIM_WARPS) * $(SIM_LANES))))
+    export GEN_STRIDE ?= 32   # more threads: smaller private regions so programs fit the generator's 1024 words
 endif
 
 ifeq ($(PROFILE),asic)

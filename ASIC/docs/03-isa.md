@@ -53,7 +53,7 @@ All integer values are 32-bit. "signed" = two's complement.
 ## Registers
 32 per lane per warp, 32-bit. `R0–R28` general, **writes to `R29–R31` are ignored**:
 `R29` = block id (low 8 bits), `R30` = `THREADS_PER_BLOCK × NUM_WARPS` (=8), `R31` = `warp*4 + lane` (`registers.sv:81-90`).
-All `R0–R28` reset to 0. Same-cycle write→read is forwarded inside the register file and by the core's forwarding network.
+All `R0–R28` reset to 0. Same-cycle write→read is forwarded inside the register file (write-through); an instruction that needs a result still in the pipeline waits at issue (no forwarding network).
 Write-port priority when several results target the same register: FP > LSU > ALU (`registers.sv`); a per-warp scoreboard stalls
 instructions that read an FP result still in flight.
 
