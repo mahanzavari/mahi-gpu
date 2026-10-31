@@ -22,6 +22,10 @@ def set_key(key, value):
 set_key('DESIGN_NAME', '"user_project_wrapper"')
 set_key('CLOCK_PORT', '"wb_clk_i"')
 set_key('DIE_AREA', '[0, 0, 2920, 3520]')
+# Post-CTS hold margin 0.4 -> 0.1: under Caravel's SDC (5.57 ns clock source latency, 0.79 ns min input delay on
+# Wishbone) the 0.4 ns padding of all ~14k hold endpoints drove OpenROAD to a 13.6 GB footprint and into swap
+# (caravel_1030_1453: 24 h in this step, 26 min on the mini layout). The post-GRT timing repair keeps 0.4.
+set_key('PL_RESIZER_HOLD_SLACK_MARGIN', '0.1')
 s = re.sub(r'^CORE_AREA:.*\n', '', s, flags=re.M)                      # derived from the die, as in the template
 s = re.sub(r'^(VERILOG_FILES:\s*\n)', r'\1  - "dir::../caravel/verilog/rtl/defines.v"\n'
            r'  - "dir::../caravel/verilog/rtl/user_project_wrapper.v"\n', s, flags=re.M)
