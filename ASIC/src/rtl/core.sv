@@ -334,16 +334,53 @@ reg [DATA_BITS-1:0]           wb_alu_out [THREADS_PER_BLOCK];
 reg                           wb_reg_we;
 reg [1:0]                     wb_reg_mux;
 
+// EX-stage forwarding compares, registered one cycle early 
+// MEM and WB never hold a valid instruction: they load from the stage before or clear active_mask/reg_we.
+// So whenever a MEM/WB forward can fire, mem_rd/mem_warp_id were ex_rd/ex_warp_id one cycle ago and
+// wb_rd/wb_warp_id were mem_rd/mem_warp_id. The EX side's next value is id_* on an advance and unchanged on
+// a bubble. The comparators (register number, < 29, warp) therefore move out of EX; EX keeps only the ANDs
+// with the valid bits. The original expressions are checked against these every cycle in simulation (MAHI_SIM_CHECKS).
+wire                         ex_hold    = flush_warp_mask[id_warp_id] || fp_raw_stall;   // ID->EX bubble
+wire [4:0]                   ex_rs_nx   = ex_hold ? ex_rs : id_rs;
+wire [4:0]                   ex_rt_nx   = ex_hold ? ex_rt : id_rt;
+wire [4:0]                   ex_rd_nx   = ex_hold ? ex_rd : id_rd;
+wire [$clog2(NUM_WARPS)-1:0] ex_warp_nx = ex_hold ? ex_warp_id : id_warp_id;
+reg eq_mem_rs, eq_mem_rt, eq_mem_rd, eq_wb_rs, eq_wb_rt, eq_wb_rd;
+always @(posedge clk) begin
+    eq_mem_rs <= (ex_rd  == ex_rs_nx) && (ex_rd  < 29) && (ex_warp_id  == ex_warp_nx);
+    eq_mem_rt <= (ex_rd  == ex_rt_nx) && (ex_rd  < 29) && (ex_warp_id  == ex_warp_nx);
+    eq_mem_rd <= (ex_rd  == ex_rd_nx) && (ex_rd  < 29) && (ex_warp_id  == ex_warp_nx);
+    eq_wb_rs  <= (mem_rd == ex_rs_nx) && (mem_rd < 29) && (mem_warp_id == ex_warp_nx);
+    eq_wb_rt  <= (mem_rd == ex_rt_nx) && (mem_rd < 29) && (mem_warp_id == ex_warp_nx);
+    eq_wb_rd  <= (mem_rd == ex_rd_nx) && (mem_rd < 29) && (mem_warp_id == ex_warp_nx);
+end
+
 genvar i;
 generate
     for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
-        wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 29) && ex_rs_re && (mem_warp_id == ex_warp_id);
-        wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 29) && ex_rt_re && (mem_warp_id == ex_warp_id);
-        wire fwd_mem_rd_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rd) && (mem_rd < 29) && ex_rd_re && (mem_warp_id == ex_warp_id);
+        wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && ex_rs_re && eq_mem_rs;
+        wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && ex_rt_re && eq_mem_rt;
+        wire fwd_mem_rd_i = mem_active_mask[i] && mem_reg_we && ex_rd_re && eq_mem_rd;
 
-        wire fwd_wb_rs_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 29) && ex_rs_re && !fwd_mem_rs_i && (wb_warp_id == ex_warp_id);
-        wire fwd_wb_rt_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 29) && ex_rt_re && !fwd_mem_rt_i && (wb_warp_id == ex_warp_id);
-        wire fwd_wb_rd_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rd) && (wb_rd < 29) && ex_rd_re && !fwd_mem_rd_i && (wb_warp_id == ex_warp_id);
+        wire fwd_wb_rs_i  = wb_active_mask[i] && wb_reg_we && ex_rs_re && !fwd_mem_rs_i && eq_wb_rs;
+        wire fwd_wb_rt_i  = wb_active_mask[i] && wb_reg_we && ex_rt_re && !fwd_mem_rt_i && eq_wb_rt;
+        wire fwd_wb_rd_i  = wb_active_mask[i] && wb_reg_we && ex_rd_re && !fwd_mem_rd_i && eq_wb_rd;
+`ifdef MAHI_SIM_CHECKS
+        // The original, combinational compares: the registered ones must agree on every cycle (simulation only;
+        // MAHI_SIM_CHECKS is set by the Makefile's Verilator builds, which also define SYNTHESIS).
+        wire ref_mem_rs = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 29) && ex_rs_re && (mem_warp_id == ex_warp_id);
+        wire ref_mem_rt = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 29) && ex_rt_re && (mem_warp_id == ex_warp_id);
+        wire ref_mem_rd = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rd) && (mem_rd < 29) && ex_rd_re && (mem_warp_id == ex_warp_id);
+        wire ref_wb_rs  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 29) && ex_rs_re && !ref_mem_rs && (wb_warp_id == ex_warp_id);
+        wire ref_wb_rt  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 29) && ex_rt_re && !ref_mem_rt && (wb_warp_id == ex_warp_id);
+        wire ref_wb_rd  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rd) && (wb_rd < 29) && ex_rd_re && !ref_mem_rd && (wb_warp_id == ex_warp_id);
+        always @(posedge clk)
+            if (!reset && {fwd_mem_rs_i, fwd_mem_rt_i, fwd_mem_rd_i, fwd_wb_rs_i, fwd_wb_rt_i, fwd_wb_rd_i}
+                       !== {ref_mem_rs, ref_mem_rt, ref_mem_rd, ref_wb_rs, ref_wb_rt, ref_wb_rd})
+                $error("core: registered forwarding flags differ from the combinational ones (lane %0d): %b vs %b", i,
+                       {fwd_mem_rs_i, fwd_mem_rt_i, fwd_mem_rd_i, fwd_wb_rs_i, fwd_wb_rt_i, fwd_wb_rd_i},
+                       {ref_mem_rs, ref_mem_rt, ref_mem_rd, ref_wb_rs, ref_wb_rt, ref_wb_rd});
+`endif
 
         wire fwd_lsu_rs_i = lsu_we_array[i] && (lsu_rd_array == ex_rs) && (lsu_rd_array < 29) && ex_rs_re && !fwd_mem_rs_i && !fwd_wb_rs_i && (lsu_warp_id_array[0] == ex_warp_id);
         wire fwd_lsu_rt_i = lsu_we_array[i] && (lsu_rd_array == ex_rt) && (lsu_rd_array < 29) && ex_rt_re && !fwd_mem_rt_i && !fwd_wb_rt_i && (lsu_warp_id_array[0] == ex_warp_id);

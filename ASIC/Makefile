@@ -65,7 +65,7 @@ TOP_SOURCES := $(RTL_SOURCES) src/rtl/gpu_mem_subsys.sv src/rtl/gpu_asic_top.sv
 
 # Verilator flags shared by all simulations. Width/pin warnings in the RTL are
 # baselined (see LINT_WAIVE); simulation builds just don't fail on them.
-VL_SIM  := --binary --timing --assert -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING
+VL_SIM  := --binary --timing --assert -Wno-fatal -Wno-WIDTH -Wno-UNOPTFLAT -Wno-PINMISSING -DMAHI_SIM_CHECKS=1
 
 # SVA checkers (bound, no RTL edits). Checkers + per-module bind files.
 SVA_DIR   := src/rtl/sva
