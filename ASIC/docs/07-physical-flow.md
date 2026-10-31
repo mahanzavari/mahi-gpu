@@ -253,6 +253,46 @@ Global-route overflow is 0 and met3 usage is 15%, so congestion alone does not e
 Not fixed; recorded as a waiver in `flow/waivers/sram_dout_cap_slew.md`. Candidates (untried): an explicit buffer at each `dout1` pin in the SRAM wrapper, a macro placement halo (`PL_MACRO_HALO`; key not verified for this LibreLane version), a repair step after detailed routing.
 The 20 XOR differences make the flow exit with a deferred error (exit code 2); the physical checks are clean.
 
+## Critical paths of the final mini layout (#13, `place_1029_1604`, slow corner, 2026-10-31)
+From the 1,000 worst setup paths of `29-openroad-stapostpnr/max_ss_100C_1v60/max.rpt` (no new run). Worst slack +3.27 ns at 40 ns,
+so the slow-corner minimum period is about 36.7 ns.
+
+**The worst path** runs from the write-back register number `wb_rd` (in the netlist it carries the name
+`threads[0].reg_inst.decoded_rd_address`, because Yosys kept one copy for both lanes) to `threads[1].fpu_inst.stg1_mult_res[47]`:
+
+| Segment | Time | What it is |
+|---|---|---|
+| clk to Q + one hold delay cell | 1.9 ns | the 1.2 ns hold-fix cell sits on the shared trunk, so the setup path pays for it |
+| register-number compare | 3.5 ns | `rd == rs` and warp equality, `registers.sv` lines 58-75 |
+| forwarding-select decode | 6.9 ns | OR tree; one `or4` takes 2.0 ns under load |
+| select fan-out | 7.3 ns | 8 buffers in a row: one select drives 32 bits x 3 operands x 2 lanes |
+| operand mux and 24x24 multiply | 17.7 ns | FMA stage 1 (`fp32_fma.sv:53`) |
+
+Only 53% of the path is logic (29% repair buffers, 13% synthesis buffers, 3% hold cells; 67% logic over the 1,000 paths). It also travels
+about 2.1 mm: (1473, 998) um to the select at (2119, 1512), the multiplier at (2242, 1782), the endpoint at (1903, 2010).
+
+**One structure dominates.** 12 of the 14 worst start-to-end families start at `wb_rd`:
+
+| Worst slack | Paths | Start -> end |
+|---|---|---|
+| 3.27 ns | 39 | `wb_rd` -> FMA multiplier |
+| 4.77 | 60 | `wb_rd` -> `mem_alu_out` |
+| 5.17-6.31 | 54 | `wb_rd` -> memory offset, instruction, `current_pc`, `id_pc`, decoded fields (branch redirect and flush) |
+| 6.79 | 32 | SRAM dmem -> `dm_rd` |
+| 7.55 | 78 | SRAM dmem -> `d_acc` |
+
+**SRAM reads are half-cycle paths.** The OpenRAM liberty launches `dout` on the falling edge (`timing_type: falling_edge`), so a read
+launches at about 23.4 ns and must arrive by 40 ns. On the worst one clock-to-`dout1` is 7.4 ns, against about 3.1 ns at a legal load:
+the overloaded `dout1` nets of L17 cost about 4 ns here.
+
+**What RTL changes would buy (estimates, not measured):**
+1. Compute the forwarding select one stage earlier and register it (`wb_rd` is `mem_rd` one cycle later, `core.sv:523`), with
+   per-lane copies. It removes about 10 ns of compare and decode, the shared hold cell and most of the fan-out tree, and lifts all 12 `wb_rd` families.
+2. Register the FMA inputs (one more FP cycle; the scoreboard already handles variable FP latency): the 17.7 ns multiply leaves the operand path.
+3. Buffer each SRAM `dout1` at the macro: fixes the L17 cap violation and recovers about 4 ns of the half-cycle read.
+With change 1 the next limits are the SRAM read (period about 26 ns) and a dense band of other paths at about 32-33 ns, so about 10-15% faster.
+Doubling the clock would need deeper pipelining across many structures. None of this is needed for 40 ns.
+
 ## Die map (colour by block)
 `make die-map RUN=<routed run dir> NETLIST=<06-yosys-synthesis/gpu_asic_top.nl.v>` (script `scripts/die_map.py`, needs only numpy + Pillow) writes
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
