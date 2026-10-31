@@ -39,6 +39,17 @@ else
     ASIC_DEF := -DTARGET_ASIC=1
 endif
 
+# SIM_WARPS=N (simulation only): N warps per core instead of 2, to study latency hiding. Threads, lanes and
+# shared memory follow (8 words per thread); the Python tools get the same numbers through MAHI_*.
+ifneq ($(SIM_WARPS),)
+    SIM_LANES := $(if $(filter 1,$(MINI)),2,4)
+    ASIC_DEF += -DMAHI_SIM_WARPS=$(SIM_WARPS) -DMAHI_SIM_SHARED=$(shell echo $$((8 * $(SIM_WARPS) * $(SIM_LANES))))
+    B := $(B)_w$(SIM_WARPS)
+    export MAHI_THREADS := $(shell echo $$(($(SIM_WARPS) * $(SIM_LANES))))
+    export MAHI_LANES := $(SIM_LANES)
+    export MAHI_SHARED := $(shell echo $$((8 * $(SIM_WARPS) * $(SIM_LANES))))
+endif
+
 ifeq ($(PROFILE),asic)
     PROFILE_DEF := $(ASIC_DEF)
 else ifeq ($(PROFILE),fpga)
