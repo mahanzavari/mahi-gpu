@@ -27,7 +27,7 @@ module gpu_mem_subsys (
     input  wire [3:0]   h_sel,
     input  wire [8:0]   h_addr,      // word index within the bank
     input  wire [31:0]  h_wdata,
-    output wire [31:0]  h_rdata,     // valid the cycle after an h_en read (for h_bank held)
+    output wire [31:0]  h_rdata,     // valid two cycles after an h_en read (for h_bank held)
 
     output wire         gpu_busy,    // a GPU memory transaction is in flight
     output reg          oob_pulse,   // DMEM access outside the 512 words
@@ -113,7 +113,14 @@ module gpu_mem_subsys (
         .clk(clk), .csb0(d_csb0), .web0(d_web0), .wmask0(d_wm0), .addr0(d_a0), .din0(d_din0), .dout0(d_dout0),
         .csb1(d_csb1), .addr1(d_a1), .dout1(d_dout1));
 
-    assign h_rdata = h_bank ? d_dout1 : p_dout1;
+    // Host read data is registered per bank before the bank mux, so each flop sits by its own
+    // macro's dout1 pins (one flop fed by both macros landed between them, 430 um from DMEM's pins).
+    reg [31:0] h_q_p, h_q_d;
+    always @(posedge clk) begin
+        h_q_p <= p_dout1;
+        h_q_d <= d_dout1;
+    end
+    assign h_rdata = h_bank ? h_q_d : h_q_p;
 
     // ---------------- GPU FSMs
     always @(posedge clk) begin

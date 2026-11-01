@@ -127,7 +127,7 @@ Memory (`gpu_mem_subsys.sv`, `mahi_sram.sv`): two 512×32 dual-port (1RW+1R) SRA
 1-cycle read contract (simulation). The GPU side speaks the 128-bit block protocol: a block read is 4 sequential word reads on
 port 1 (5 cycles), a block write is up to 4 word writes on port 0 (strobe per word, 4 cycles). The host owns the SRAM ports
 whenever it issues a request, and is refused (`0xBAD0_BAD0`) while `busy`. Limits: [L15](04-limitations.md#l15),
-[L16](04-limitations.md#l16). Host read latency: 3 cycles to ack; write: 2.
+[L16](04-limitations.md#l16). Host read latency: 4 cycles to ack (the read data is registered next to each SRAM before the bank select); write: 2.
 
 `device_control_address` is only ever 0 from this wrapper, so **PMU configuration DCR addresses (0x01, 0x02, 0x10–0x13)
 are unreachable from the chip pins**; PMU snapshot outputs are left unconnected ([L13](04-limitations.md#l13)).

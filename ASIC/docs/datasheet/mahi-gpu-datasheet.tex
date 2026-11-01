@@ -140,7 +140,7 @@ Global data memory & 16\,K words (14-bit word address), external, 128-bit block 
 Shared memory & \textbf{64 words} (256\,B), 4 banks $\times$ 16 words\\
 L1 I-cache / L1 D-cache & 16 lines each; 16-byte lines (4 words); I: direct-mapped, D: 2-way, write-through\\
 L2 cache & 64 lines (16 sets $\times$ 4 ways), 16-byte lines, 4 sectors/line with dirty bits, PLRU, write-back; 4-entry victim write buffer\\
-Host interface & 32-bit Wishbone slave, single-cycle ack; \textbf{108 signal pins} (excl.\ power)\\
+Host interface & 32-bit Wishbone slave, ack in 1 (CSR), 2 (memory write) or 4 (memory read) cycles; \textbf{108 signal pins} (excl.\ power)\\
 Synthesised logic (current RTL) & mini profile (LibreLane synthesis): 95\,652 cells, 14\,634 flip-flops, 1.07\,mm\textsuperscript{2} before placement; full profile (Yosys/ABC sizing script, \texttt{sky130\_fd\_sc\_hd}): 226\,744 cells, 23\,964 flip-flops, 1.43\,mm\textsuperscript{2}; plus 0.85\,mm\textsuperscript{2} for three SRAM macros (\S\ref{sec:flow})\\
 Die size & mini: 2.4\,mm $\times$ 2.4\,mm (routed); full: 3.0\,mm $\times$ 3.0\,mm configured, never routed\\
 Package & none of its own: intended as a Caravel user project (\S\ref{sec:caravel}); the harness ships as QFN-64 (9\,mm $\times$ 9\,mm), 60-ball WCSP or bare die\\
@@ -183,8 +183,10 @@ Both memory interfaces use a native 128-bit block protocol (valid/ready/address/
 \sig{controller.sv}. On chip, \sig{gpu_mem_subsys} terminates them on two 512$\times$32 SRAM macros (one block = four sequential word accesses). An AXI4 adaptor exists in the repository but is \textbf{not} instantiated in the ASIC top level.
 
 \section{Host interface: Wishbone slave}
-\sig{gpu_asic_top} is a 32-bit Wishbone classic slave with a registered, single-cycle acknowledge
-(\sig{wb_ack_o} rises one clock after a request with both \sig{wb_cyc_i} and \sig{wb_stb_i} set).
+\sig{gpu_asic_top} is a 32-bit Wishbone classic slave with a registered acknowledge. For CSR accesses
+\sig{wb_ack_o} rises one clock after a request with both \sig{wb_cyc_i} and \sig{wb_stb_i} set; a memory-window
+write is acknowledged after 2 clocks and a memory-window read after 4 (the SRAM read data is registered next to
+each macro before the bank select, which keeps that half-cycle path short).
 
 \begin{table}[ht]\centering\rowcol
 \begin{tabular}{@{}llll@{}}
