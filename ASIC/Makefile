@@ -96,7 +96,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-caravel top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-caravel top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map congestion-map timing-map block-wiring convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -300,6 +300,43 @@ die-map:
 	@test -n "$(RUN)" -a -n "$(NETLIST)" || { echo "usage: make die-map RUN=<run dir> NETLIST=<06-yosys-synthesis/...nl.v>"; exit 1; }
 	python3 scripts/die_map.py --def $(DIE_DEF) --netlist $(NETLIST) --lef $(DIE_LEF) flow/macros/sky130_sram_2kbyte_1rw1r_32x512_8.lef \
 	  --out docs/figures/die_map.png --regions-out docs/figures/die_regions.png --title "$(or $(TITLE),mahi-gpu die map)"
+
+# --- Congestion map: global-route track use per gcell + routing DRC markers (scripts/congestion_map.py) ---------
+#   make congestion-map RUN=flow/runs/mini_1102_0724 [OUT=congestion.png]   (needs a run past global routing)
+congestion-map:
+	@test -n "$(RUN)" || { echo "usage: make congestion-map RUN=<run dir> [OUT=<png>]"; exit 1; }
+	python3 scripts/congestion_map.py --guide $(lastword $(wildcard $(RUN)/*-openroad-globalrouting/after_grt.guide)) \
+	  --def $(lastword $(wildcard $(RUN)/*-openroad-globalrouting/gpu_asic_top.def)) --lef flow/macros/sky130_sram_2kbyte_1rw1r_32x512_8.lef \
+	  $(if $(wildcard $(RUN)/*-openroad-detailedrouting/gpu_asic_top.drc),--drc $(lastword $(wildcard $(RUN)/*-openroad-detailedrouting/gpu_asic_top.drc))) \
+	  --out $(or $(OUT),$(RUN)/congestion.png) --title "$(notdir $(RUN)): routing congestion (global-route estimate)"
+
+# --- Timing / violator maps and block wiring of a finished run (pictures go into RUN/analysis/) ------------------
+#   make timing-map RUN=flow/runs/mini_1102_0724 [CORNER_LIB=ss_100C_1v60 SRAM_CORNER=SS_1p6V_100C SPEF_CORNER=max]
+#   make block-wiring RUN=flow/runs/mini_1102_0724 [NETLIST=<synthesized netlist>]
+CORNER_LIB  ?= ss_100C_1v60
+SRAM_CORNER ?= SS_1p6V_100C
+SPEF_CORNER ?= max
+WIRE_NL      = $(or $(NETLIST),$(RUN)/06-yosys-synthesis/gpu_asic_top.nl.v)
+timing-map:
+	@test -n "$(RUN)" -a -d "$(RUN)/final" || { echo "usage: make timing-map RUN=<finished run dir>"; exit 1; }
+	mkdir -p $(RUN)/sta_dump $(RUN)/analysis
+	DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) \
+	  -e STA_LIBS="$(PDK_DIR)/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__$(CORNER_LIB).lib $(CURDIR)/flow/macros/$(MACRO_NAME)_$(SRAM_CORNER).lib" \
+	  -e STA_NL=$(CURDIR)/$(RUN)/final/nl/gpu_asic_top.nl.v -e STA_SDC=$(CURDIR)/$(RUN)/final/sdc/gpu_asic_top.sdc \
+	  -e STA_SPEF=$(CURDIR)/$(RUN)/final/spef/$(SPEF_CORNER)/gpu_asic_top.$(SPEF_CORNER).spef \
+	  -e STA_DELAY=max -e STA_PATHS=300 -e STA_OUT=$(CURDIR)/$(RUN)/sta_dump ghcr.io/librelane/librelane:3.0.16 \
+	  bash -lc '$$(ls -d /nix/store/*-opensta/bin/sta | head -1) -no_splash -exit scripts/sta_dump.tcl > $(CURDIR)/$(RUN)/sta_dump/sta.log 2>&1'
+	python3 scripts/timing_map.py --sta-dir $(RUN)/sta_dump --def $(RUN)/final/def/gpu_asic_top.def \
+	  --lef $(DIE_LEF) flow/macros/$(MACRO_NAME).lef $(if $(wildcard $(WIRE_NL)),--netlist $(WIRE_NL)) \
+	  --final-netlist $(RUN)/final/nl/gpu_asic_top.nl.v --out-slack $(RUN)/analysis/slack_$(CORNER_LIB).png \
+	  --out-viol $(RUN)/analysis/violators_$(CORNER_LIB).png --title "$(notdir $(RUN)) $(CORNER_LIB)"
+block-wiring:
+	@test -n "$(RUN)" -a -f "$(WIRE_NL)" || { echo "usage: make block-wiring RUN=<run dir> [NETLIST=<synthesized netlist>]"; exit 1; }
+	mkdir -p $(RUN)/analysis
+	python3 scripts/block_wiring.py --netlist $(WIRE_NL) \
+	  --def $(firstword $(wildcard $(RUN)/final/def/gpu_asic_top.def $(RUN)/*-openroad-detailedrouting/gpu_asic_top.def)) \
+	  --lef $(DIE_LEF) flow/macros/$(MACRO_NAME).lef --out-matrix $(RUN)/analysis/wiring_matrix.png \
+	  --out-map $(RUN)/analysis/wiring_map.png --title "$(notdir $(RUN))"
 
 # --- Documented-limitation characterization + docs consistency -------------------
 # `limits` passes while each limitation in docs/04-limitations.md still exists; a FAIL means the design changed

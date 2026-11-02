@@ -301,6 +301,15 @@ the majority label of its netlist neighbours, and cells added after synthesis (r
 absorbed by its neighbours. The committed figures are the mini-profile run `floor_1022_1610` (2.4 x 2.4 mm): register files ~21% of cell area, FP32 FMA units 8%, core pipeline 9%; timing-repair buffers
 are 21.5% of cell area (32k cells) and taps 5.4%.
 
+## Analysis maps
+Pictures of a run, for finding floorplan and timing problems (same block inference as the die map; PNGs are written into the run):
+
+| Target | Script | Shows |
+|---|---|---|
+| `make congestion-map RUN=<run>` | `scripts/congestion_map.py` | global-route track use per gcell (met1-met5, from `after_grt.guide`) with the detailed router's DRC markers; works from global routing on |
+| `make timing-map RUN=<run>` | `scripts/sta_dump.tcl`, `scripts/timing_map.py` | OpenSTA at one corner (default SS max): worst slack per 50 um bin, the worst 100 paths drawn through their cells, an endpoint-slack histogram; max slew/cap/fanout violators by pin, by net and by driver |
+| `make block-wiring RUN=<run>` | `scripts/block_wiring.py` | nets and placed wire (HPWL) between every pair of blocks, SRAM macros and IO edges, as a matrix and as lines on the die; which blocks each macro pin edge serves |
+
 ## Not done (sign-off gaps)
 | Item | Status |
 |---|---|
