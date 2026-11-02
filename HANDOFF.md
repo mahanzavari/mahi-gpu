@@ -89,10 +89,8 @@ the physical flow.
 ## 3. Current state (as of this handoff)
 
 **Git**
-- `origin/main` = `a527645` (the user's "snapshot shown" README commit, on top of the merge `5236368` of
-  `rtl/fwd-precompute`).
-- `rtl/fwd-precompute` (checked out) = `21d8e93` = `a527645` + the README forwarding note. **Not pushed:** `21d8e93`
-  (`origin/rtl/fwd-precompute` is at `a6bb568`). Push the branch, then merge into `main` and push.
+- `main` = `origin/main` = `rtl/fwd-precompute` = `origin/rtl/fwd-precompute`: all in sync at the commit that adds
+  this file (the README forwarding note `21d8e93` is just before it). Nothing is unpushed. The Fedora checkout is on `main`.
 - Other branches: `ASIC` (merged earlier), `FU`, `librelane/route/shrinkDesign`.
 - Working tree:
   - `.gitignore` is modified (the user's `tmp-images/` line). **Not mine, leave it.**
@@ -580,5 +578,4 @@ Copy these by hand if needed:
 | Research notes | `ASIC/notes/gpu-hazards-and-open-pdks.md` | GPU hazards, open-PDK runtime estimates |
 | Working notes | `ASIC/OPEN_PROBLEMS.md` | untracked by choice |
 | This file | `HANDOFF.md` | untracked unless the user decides to commit it |
-| Unpushed commit | `21d8e93` on `rtl/fwd-precompute` | push (and merge to `main`) before switching machines |
 | LibreLane setup | `~/eda/librelane/.venv`, `~/.ciel` (PDK `8afc834`) | reinstall on the new machine |
