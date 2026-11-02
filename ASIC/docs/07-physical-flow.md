@@ -298,8 +298,9 @@ Doubling the clock would need deeper pipelining across many structures. None of 
 `docs/figures/die_map.png` (every standard cell coloured by block) and `docs/figures/die_regions.png` (flat, outlined block regions in the style of vendor die shots)
 from the routed DEF. The synthesized netlist is flat, so the block of each cell is **inferred**: flip-flops are seeded from the hierarchical net names Yosys kept, the other logic takes
 the majority label of its netlist neighbours, and cells added after synthesis (repair buffers, clock tree, diodes, taps) are grey tones. ALU/decoder logic has no registers to seed it and is
-absorbed by its neighbours. The committed figures are the mini-profile run `floor_1022_1610` (2.4 x 2.4 mm): register files ~21% of cell area, FP32 FMA units 8%, core pipeline 9%; timing-repair buffers
-are 21.5% of cell area (32k cells) and taps 5.4%.
+absorbed by its neighbours. The committed figures (`die_map.png`, `die_regions.png`, `die_blocks.png`, the last from `scripts/die_blocks.py`) are the mini-profile run `mini_1102_0724`
+(2.4 x 2.4 mm, issue-time scoreboard RTL, L2 data macro at y = 1200 um): register files 19.9% of cell area, core pipeline 16.3%, FP32 FMA units 6.0%; timing-repair
+buffers are 17.7% of cell area (31k cells), clock tree 5.2% and taps 4.8%.
 
 ## Analysis maps
 Pictures of a run, for finding floorplan and timing problems (same block inference as the die map; PNGs are written into the run):
