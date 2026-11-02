@@ -103,7 +103,7 @@ intended attachment point, for example to a Zynq processing system.
 | Category | What's implemented |
 |---|---|
 | **Execution model** | Multi-warp SIMT, round-robin scheduling, hardware divergence stack |
-| **Pipeline** | 5-stage (IF/ID/EX/MEM/WB), full forwarding network, FP RAW scoreboard |
+| **Pipeline** | 5-stage (IF/ID/EX/MEM/WB), full forwarding network, FP RAW scoreboard (the ASIC RTL instead uses single-cycle fetch and an issue-time scoreboard; see below) |
 | **Integer ALU** | ADD, SUB, MUL, DIV, MOD, AND, OR, XOR, SHL, SHR, MIN, MAX, ABS, NEG, MAC, POPCNT, CLZ, BREV |
 | **Floating point** | Pipelined IEEE-754 FMA unit — FADD, FSUB, FMUL, FMA (5 pipeline stages) |
 | **Memory** | L1 I-Cache + L1 D-Cache (per core), unified L2 (4-way PLRU), Victim Write Buffer |
@@ -301,6 +301,12 @@ SIMT divergence occurs when threads in the same warp evaluate a branch different
 4. **EXIT handling**: If a warp reaches `EXIT` with a non-empty stack, it pops the next entry and continues with that mask. This correctly handles kernels where different threads exit the main body at different times but all need to reach the final divergence point.
 
 ### Forwarding & Hazard Handling
+
+> **ASIC RTL differs here.** This section describes the original design in `src/rtl`. The ASIC tree (`ASIC/src/rtl`,
+> used for the sky130 layout and the FPGA profile) removed the forwarding network: an instruction is held at issue while a
+> same-warp instruction still in decode or execute will write one of its registers, and the scheduler issues another warp
+> instead, as GPUs do. Instruction fetch also returns I-cache hits in one cycle. Together these took 1.23-1.32x fewer cycles
+> and removed the forwarding paths from the critical-path list. Details: [ASIC architecture](ASIC/docs/02-architecture.md).
 
 The forwarding network resolves RAW hazards for integer instructions without stalls. Three forwarding sources are checked per operand, per thread:
 
