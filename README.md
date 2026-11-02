@@ -2,9 +2,9 @@
 
 > A full-stack GPGPU implementation in SystemVerilog — custom ISA, multi-warp SIMT scheduler, IEEE-754 FPU, multi-level cache hierarchy, AXI4 integration, and hardware performance monitoring — built from scratch as a learning platform for modern GPU microarchitecture.
 
-<p align="center">
+<!-- <p align="center">
   <img src="docs/PNG/GPU_card.png" alt="GPU block diagram" width="60%">
-</p>
+</p> -->
 
 <p align="center">
   <img src="ASIC/docs/figures/die_shot.jpg" alt="mahi-gpu die shot: sky130 layout with block regions outlined" width="80%">
