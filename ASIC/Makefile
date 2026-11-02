@@ -96,7 +96,7 @@ LINT_WAIVE := -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PINMISSING \
 UNIT_TESTS := $(patsubst src/tb/unit/tb_%.sv,%,$(wildcard src/tb/unit/tb_*.sv))
 
 .PHONY: verify lint unit sim sim-filelist verify-asic verify-asic-trace \
-        verify-matmul unit-alu-stub top-build top-quick top-caravel top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map congestion-map timing-map block-wiring convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
+        verify-matmul unit-alu-stub top-build top-quick top-caravel top-macro gls gls-build equiv macro-drc macro-lvs drc-waiver signoff-drc die-map congestion-map timing-map block-wiring die-shot convert-asic clean $(addprefix unit-,$(UNIT_TESTS))
 
 verify: lint unit verify-asic verify-matmul rand-quick top-quick limits docs-check
 	@echo "== make verify: ALL PASSED =="
@@ -309,6 +309,20 @@ congestion-map:
 	  --def $(lastword $(wildcard $(RUN)/*-openroad-globalrouting/gpu_asic_top.def)) --lef flow/macros/sky130_sram_2kbyte_1rw1r_32x512_8.lef \
 	  $(if $(wildcard $(RUN)/*-openroad-detailedrouting/gpu_asic_top.drc),--drc $(lastword $(wildcard $(RUN)/*-openroad-detailedrouting/gpu_asic_top.drc))) \
 	  --out $(or $(OUT),$(RUN)/congestion.png) --title "$(notdir $(RUN)): routing congestion (global-route estimate)"
+
+# --- Die shot: KLayout render of the final GDS in die-photo colours, block regions outlined and labelled -----------
+#   make die-shot RUN=flow/runs/mini_1102_0724 [OUT=docs/figures/die_shot.jpg] [NETLIST=<synthesized netlist>]
+die-shot:
+	@test -n "$(RUN)" -a -f "$(RUN)/final/klayout_gds/gpu_asic_top.klayout.gds" -a -f "$(WIRE_NL)" || { echo "usage: make die-shot RUN=<finished run dir> [NETLIST=...]"; exit 1; }
+	mkdir -p $(RUN)/analysis
+	DOCKER_CONTEXT=default docker run --rm -u $$(id -u):$$(id -g) -v $(HOME):$(HOME) -w $(CURDIR) -e HOME=$(CURDIR)/$(RUN)/analysis \
+	  ghcr.io/librelane/librelane:3.0.16 bash -lc 'QT_QPA_PLATFORM=offscreen klayout -b -zz -r scripts/die_shot_render.py \
+	  -rd gds=$(CURDIR)/$(RUN)/final/klayout_gds/gpu_asic_top.klayout.gds -rd lyp=none -rd out=$(CURDIR)/$(RUN)/analysis/die_render.png \
+	  -rd px=7200 -rd style=photo'
+	python3 scripts/die_shot_annotate.py --img $(RUN)/analysis/die_render.png --def $(RUN)/final/def/gpu_asic_top.def \
+	  --netlist $(WIRE_NL) --lef $(DIE_LEF) flow/macros/$(MACRO_NAME).lef --out $(or $(OUT),$(RUN)/analysis/die_shot.png) \
+	  --caption "mahi-gpu  ·  SkyWater sky130  ·  $(notdir $(RUN))  ·  KLayout render of the final GDS; block regions inferred from the netlist"
+	rm -f $(RUN)/analysis/die_render.png
 
 # --- Timing / violator maps and block wiring of a finished run (pictures go into RUN/analysis/) ------------------
 #   make timing-map RUN=flow/runs/mini_1102_0724 [CORNER_LIB=ss_100C_1v60 SRAM_CORNER=SS_1p6V_100C SPEF_CORNER=max]
