@@ -22,7 +22,10 @@ def err(m): errors.append(m)
 
 # ------------------------------------------------------------ generated blocks
 def full_profile_pkg(text):
-    """gpu_pkg.sv without the TARGET_ASIC_MINI overlay (the docs describe the full ASIC profile)."""
+    """gpu_pkg.sv without the TARGET_ASIC_MINI overlay and the simulation-only SIM_WARPS overrides
+    (the docs describe the full ASIC profile)."""
+    text = re.sub(r'`ifdef MAHI_SIM_WARPS\n.*?`else\n(.*?)`endif\n', r'\1', text, flags=re.S)
+    text = re.sub(r'`ifdef MAHI_SIM_SHARED\n.*?`elsif TARGET_ASIC_MINI\n', '`ifdef TARGET_ASIC_MINI\n', text, flags=re.S)
     return re.sub(r'`ifdef TARGET_ASIC_MINI\n.*?`else\n(.*?)`endif\n', r'\1', text, flags=re.S)
 
 def profile_table():
@@ -148,7 +151,7 @@ def check_static():
     # fixes present in ASIC
     has(f'{R}/l2_cache.sv', r"vwb_can_push = vwb_push_ready && !vwb_push_valid", why='B4')
     has(f'{R}/core.sv', r"if_instruction_valid = if_instruction_valid_raw && \(if_fetched_pc == if_pc\)", why='B3')
-    has(f'{R}/fetcher.sv', r"current_pc != fetch_pc", why='B3')
+    has(f'{R}/fetcher.sv', r"assign fetched_pc        = current_pc;", why='B3 (single-cycle fetch holds nothing)')
     has(f'{R}/core.sv', r"flush_warp_mask\[id_warp_id\] && !\(valid_issue && if_instruction_valid\)", why='B2')
     has(f'{R}/pc.sv', r"nzp\[warp_id\] <= alu_out\[2:0\]", why='B1')
     # L10: generic design still lacks the fixes

@@ -24,6 +24,13 @@ module scheduler #(
     input wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id,
     
     input wire frontend_stall,
+    // A warp with a serializing instruction (branch, call/return/exit, SYNC, memory, FP, DIV) still in ID or EX
+    // may not issue: those redirect or replay the warp, so nothing younger of that warp may be in flight.
+    input wire [NUM_WARPS-1:0] warp_in_flight,
+    // The instruction fetched for the selected warp (cand_warp_id) reads a register that a same-warp instruction
+    // in ID or EX will still write (core.sv: issue-time scoreboard). No forwarding exists, so it must wait.
+    input wire issue_hazard,
+    output logic [$clog2(NUM_WARPS)-1:0] cand_warp_id,
     output reg [NUM_WARPS-1:0] flush_warp_mask,
     
     // --- Now Combinational Outputs ---
@@ -135,7 +142,7 @@ module scheduler #(
             for (int i = 0; i < NUM_WARPS; i++) begin
                 check_w_var = (rr_ptr + i) % NUM_WARPS;
                 will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
-                if (!found_var_comb && warp_state[check_w_var] == READY && current_mask[check_w_var] != 0 && !warp_flush_inhibit[check_w_var] && !will_flush && !flush_warp_mask[check_w_var]) begin
+                if (!found_var_comb && warp_state[check_w_var] == READY && current_mask[check_w_var] != 0 && !warp_flush_inhibit[check_w_var] && !will_flush && !flush_warp_mask[check_w_var] && !warp_in_flight[check_w_var]) begin
                     found_var_comb = 1'b1;
                     next_rr_var_comb = check_w_var;
                 end
@@ -145,9 +152,10 @@ module scheduler #(
 
     // Point the memory fetch directly to the target PC combinationally
     assign if_pc = found_var_comb ? current_pc[next_rr_var_comb] : 0;
+    assign cand_warp_id = next_rr_var_comb;
 
     always_comb begin
-        if (found_var_comb && !frontend_stall) begin
+        if (found_var_comb && !frontend_stall && !issue_hazard) begin
             valid_issue = 1'b1;
             sched_active_mask = current_mask[next_rr_var_comb];
             sched_warp_id = next_rr_var_comb;
@@ -285,6 +293,8 @@ module scheduler #(
             if (valid_issue) begin
                 current_pc[next_rr_var_comb] <= current_pc[next_rr_var_comb] + 1;
                 rr_ptr <= (next_rr_var_comb + 1) % NUM_WARPS;
+            end else if (found_var_comb && issue_hazard) begin
+                rr_ptr <= (next_rr_var_comb + 1) % NUM_WARPS;   // let the other warps try while this one waits
             end
 
             all_warps_done = 1;

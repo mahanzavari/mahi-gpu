@@ -58,12 +58,24 @@ per-core `icache_inst`/`dcache_inst`) and `core.sv`.
 ## Pipeline (per core)
 `IF` (fetcher + icache) → `ID` (combinational decoder, registered latch `id_*`) → `EX` (per-lane ALU, FPU, `pc`) →
 `MEM` (LSU, shared memory) → `WB`. The FPU has a fixed 5-stage latency with a per-warp **RAW scoreboard**
-(`core.sv`, `fp_pipe_*`, `fp_scoreboard`). Forwarding sources into EX: MEM-stage, WB-stage, LSU completion
-(`core.sv:fwd_*`). Each lane has its **own** `pc` instance, so NZP flags and the return stack are per lane per warp.
-- Fetch granularity: one instruction at a time, shared by both warps; the scheduler picks the warp
-  combinationally each cycle (`scheduler.sv`, `found_var_comb` / `next_rr_var_comb`).
-  **The fetched instruction must match the selected warp's PC** — enforced by `if_fetched_pc == if_pc`
-  (`core.sv:107`) and the fetcher refetch (`fetcher.sv:74`); see [B3](05-bug-log.md#b3).
+(`core.sv`, `fp_pipe_*`, `fp_scoreboard`). **There is no operand forwarding into EX**: as in GPUs (NVIDIA's
+dependence counters, Vortex's scoreboard), a dependent instruction waits instead. Each lane has its **own** `pc`
+instance, so NZP flags and the return stack are per lane per warp.
+- Fetch: single-cycle on an instruction-cache hit (the cache answers hits combinationally, `icache.sv`, and
+  `fetcher.sv` is a pass-through), so up to one instruction per cycle; a miss stalls issue until the line is
+  filled. The scheduler picks the warp combinationally each cycle (`scheduler.sv`, `found_var_comb` /
+  `next_rr_var_comb`).
+- Issue rules (`core.sv`, scheduler inputs `warp_in_flight` and `issue_hazard`):
+  - **Serializing instructions** (branch, call, return, exit, SYNC, memory, shared, atomic, FP, DIV/MOD) redirect or
+    replay their warp, so while one is in ID or EX its warp does not issue: no wrong-path instruction is ever in flight.
+  - **Issue-time scoreboard**: a second decoder reads the source registers of the instruction fetched for the selected
+    warp; if a same-warp instruction in ID or EX will still write one of them, the warp waits and the round-robin
+    pointer moves on to the other warp. A producer in MEM is written back while the consumer is in ID, and the
+    register file's write-through covers that cycle; loads write while their warp waits in WAITING_MEM.
+  - NZP and ALU flags are written at the end of EX and read in EX, so a compare directly followed by a branch needs no wait.
+  - `MAHI_SIM_CHECKS` (all Verilator builds) asserts every cycle that no case the old MEM/WB/LSU forwarding handled occurs.
+- The old fetcher (4 cycles per instruction) held
+  instructions, which is what made [B3](05-bug-log.md#b3) possible; `if_fetched_pc == if_pc` (`core.sv:107`) now always holds.
 - Branch/call/divergence resolve in EX and flush the front end through the one-cycle pulse
   `flush_warp_mask` (`scheduler.sv`). The ID latch squash rule is subtle — see [B2](05-bug-log.md#b2).
 
@@ -71,7 +83,7 @@ per-core `icache_inst`/`dcache_inst`) and `core.sv`.
 | State | Where | Depth | Behaviour on overflow |
 |---|---|---|---|
 | Return (call) stack, per lane | `pc.sv:29` | 8, 3-bit pointer | wraps silently — [L6](04-limitations.md#l6) |
-| Divergence stack, per warp | `scheduler.sv:59` | 4 | `stack_ptr` would exceed 4; SVA `sched_sva` flags it — [L7](04-limitations.md#l7) |
+| Divergence stack, per warp | `scheduler.sv:66` | 4 | `stack_ptr` would exceed 4; SVA `sched_sva` flags it — [L7](04-limitations.md#l7) |
 | NZP flags | `pc.sv` `nzp[warp]`, per lane | 3 bits | reset to 0 — [L5](04-limitations.md#l5) |
 
 Divergence/reconvergence is described in [04-limitations L1](04-limitations.md#l1): groups are only merged when a
@@ -115,7 +127,7 @@ Memory (`gpu_mem_subsys.sv`, `mahi_sram.sv`): two 512×32 dual-port (1RW+1R) SRA
 1-cycle read contract (simulation). The GPU side speaks the 128-bit block protocol: a block read is 4 sequential word reads on
 port 1 (5 cycles), a block write is up to 4 word writes on port 0 (strobe per word, 4 cycles). The host owns the SRAM ports
 whenever it issues a request, and is refused (`0xBAD0_BAD0`) while `busy`. Limits: [L15](04-limitations.md#l15),
-[L16](04-limitations.md#l16). Host read latency: 3 cycles to ack; write: 2.
+[L16](04-limitations.md#l16). Host read latency: 4 cycles to ack (the read data is registered next to each SRAM before the bank select); write: 2.
 
 `device_control_address` is only ever 0 from this wrapper, so **PMU configuration DCR addresses (0x01, 0x02, 0x10–0x13)
 are unreachable from the chip pins**; PMU snapshot outputs are left unconnected ([L13](04-limitations.md#l13)).

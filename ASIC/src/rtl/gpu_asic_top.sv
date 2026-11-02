@@ -71,7 +71,7 @@ module gpu_asic_top (
     assign gpu_fault_pin = flag_fault;
 
     // ---- host-side memory request registers
-    localparam H_IDLE = 2'd0, H_ISSUE = 2'd1, H_WAIT = 2'd2;
+    localparam H_IDLE = 2'd0, H_ISSUE = 2'd1, H_WAIT = 2'd2, H_DATA = 2'd3;
     reg [1:0]  h_state;
     reg        h_bank, h_we;
     reg [3:0]  h_sel;
@@ -178,7 +178,8 @@ module gpu_asic_top (
                         h_state  <= H_WAIT;
                     end
                 end
-                H_WAIT: begin                        // SRAM dout is valid this cycle
+                H_WAIT: h_state <= H_DATA;           // SRAM dout is valid; gpu_mem_subsys registers it
+                H_DATA: begin                        // registered read data is valid this cycle
                     wb_dat_o <= h_rdata;
                     wb_ack_o <= 1'b1;
                     h_state  <= H_IDLE;

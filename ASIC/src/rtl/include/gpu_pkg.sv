@@ -27,7 +27,12 @@ package gpu_pkg;
     `ifdef TARGET_ASIC
         // --- ASIC Silicon Profile (Sky130 SRAM-Constrained) ---
         localparam int CFG_NUM_CORES                 = 1;
+`ifdef MAHI_SIM_WARPS
+        // Simulation-only experiment (make SIM_WARPS=N): more warps per core. Never set by run_asic.sh.
+        localparam int CFG_NUM_WARPS                 = `MAHI_SIM_WARPS;
+`else
         localparam int CFG_NUM_WARPS                 = 2;
+`endif
         // TARGET_ASIC_MINI (with TARGET_ASIC): "physical bring-up" overlay -- half the lanes and
         // smaller caches/buffers so place-and-route fits a 16 GB machine. Same ISA and microarchitecture.
 `ifdef TARGET_ASIC_MINI
@@ -40,7 +45,9 @@ package gpu_pkg;
         localparam int CFG_DMEM_ADDR_BITS            = 14; // 16K words (64KB)
         localparam int CFG_DMEM_DATA_BITS            = 32;
         localparam int CFG_SHARED_MEM_ADDR_BITS      = 8;
-`ifdef TARGET_ASIC_MINI
+`ifdef MAHI_SIM_SHARED
+        localparam int CFG_SHARED_MEM_SIZE           = `MAHI_SIM_SHARED;  // SIM_WARPS: 8 words per thread
+`elsif TARGET_ASIC_MINI
         localparam int CFG_SHARED_MEM_SIZE           = 32; // 32 words (128B)
 `else
         localparam int CFG_SHARED_MEM_SIZE           = 64; // 64 words (256B)

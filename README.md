@@ -6,6 +6,13 @@
   <img src="docs/PNG/GPU_card.png" alt="GPU block diagram" width="60%">
 </p>
 
+<p align="center">
+  <img src="ASIC/docs/figures/die_shot.jpg" alt="mahi-gpu die shot: sky130 layout with block regions outlined" width="80%">
+  <br>
+  <sub>The mini ASIC profile laid out on SkyWater sky130 (2.4 × 2.4 mm, three 2 KB OpenRAM SRAMs): a KLayout render of the final GDS
+  with the block regions outlined. See <a href="#silicon-asic-and-fpga-targets">Silicon (ASIC) and FPGA targets</a>.</sub>
+</p>
+
 ---
 
 ## Why this project exists
@@ -22,8 +29,37 @@ This is especially relevant now. The architectures underlying ML accelerators (G
 
 ---
 
+## Silicon (ASIC) and FPGA targets
+
+The same RTL is built in three profiles (`ASIC/src/rtl/include/gpu_pkg.sv`), selected at compile time:
+
+| Profile | Cores × warps × lanes | Memories | What it is for |
+|---|---|---|---|
+| **ASIC mini** (`TARGET_ASIC` + `TARGET_ASIC_MINI`) | 1 × 2 × 2 | 3 × 2 KB OpenRAM SRAM (program, data, L2 data), 8-line L1s, 32-word shared memory | the routed sky130 layout above |
+| **ASIC full** (`TARGET_ASIC`) | 1 × 2 × 4 | as mini, 16-line L1s, 64-word shared memory | synthesized; place and route needs more than a 16 GB machine |
+| **FPGA** (`TARGET_FPGA`) | 2 × 4 × 4 | block-RAM sized: 64K-word program and data spaces, 256-line L2, 256-word shared memory | prototyping at speed and running much larger configurations |
+
+**ASIC (sky130).** The mini profile goes from RTL to GDS with the open-source LibreLane/OpenROAD flow (`ASIC/run_asic.sh`).
+The latest layout closes setup and hold in all 9 process/voltage/temperature corners at a 40 ns clock (worst setup slack
++7.7 ns at the slow corner), with zero routing DRC, LVS and antenna errors. It has also been checked with gate-level
+simulation of the routed netlist, formal equivalence between the synthesized and routed netlists, and a transistor-level
+LVS of the SRAM macro. It has not been taped out. The ASIC tree has its own documentation:
+[overview](ASIC/docs/01-overview.md), [physical flow](ASIC/docs/07-physical-flow.md),
+[limitations](ASIC/docs/04-limitations.md) and a [datasheet (PDF)](ASIC/docs/datasheet/mahi-gpu-datasheet.pdf).
+
+**FPGA.** An ASIC on an open PDK is limited by its on-chip memory (OpenRAM macros are large) and by how big a design
+the open flow can place and route on one workstation. An FPGA has neither limit: block RAM holds far larger caches and
+memories, and the design runs at real clock speed instead of in a cycle-accurate simulator. That makes it the place to
+prototype and measure configurations far beyond the ASIC, such as more cores, more warps per core and wider warps, and
+to run real kernels millions of cycles long. The `TARGET_FPGA` profile is defined and lint-clean (`make lint` in
+`ASIC/`). It has not been synthesized for a specific board yet. The `gpu_axi_wrapper` AXI4 master interface is the
+intended attachment point, for example to a Zynq processing system.
+
+---
+
 ## Table of Contents
 
+- [Silicon (ASIC) and FPGA targets](#silicon-asic-and-fpga-targets)
 - [Feature Highlights](#feature-highlights)
 - [Architecture Overview](#architecture-overview)
   - [System Topology](#system-topology)

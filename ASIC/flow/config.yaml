@@ -43,7 +43,7 @@ MACROS:
         location: [80, 600]
         orientation: N
       gpu_inst.unified_cache.data_eng.g_sram.sram.macro:   # L2 data array (64 lines x 4 words)
-        location: [80, 1120]
+        location: [80, 1200]   # was 1120: the 104 um DMEM-L2 channel held 204 of 214 DRT errors in mini_1101_1057
         orientation: N
 
 # Format: <instance> <design power net> <design ground net> <macro power pin> <macro ground pin>. The design nets are VPWR/VGND;
@@ -79,14 +79,14 @@ DRT_OPT_ITERS: 16
 # top/bottom edges (5.44 um pitch) and the router reaches them with ~7 um stubs; the VPWR/VGND strap pairs (1.6 um wide,
 # every 153.6 um) ran right up to the edge and sat 0.12 um from some stubs (met4 needs 0.30) -> 53 router DRC errors.
 # Obstructions exist only while the PDN is generated. Bands: 12 um above/below each macro, across the macro width.
-# macros at (80,80), (80,600), (80,1120); size 683.1 x 416.54
+# macros at (80,80), (80,600), (80,1200); size 683.1 x 416.54
 PDN_OBSTRUCTIONS:
   - [met4, 80, 68, 763.1, 80]            # pmem, below
   - [met4, 80, 496.54, 763.1, 508.54]    # pmem, above
   - [met4, 80, 588, 763.1, 600]          # dmem, below
   - [met4, 80, 1016.54, 763.1, 1028.54]  # dmem, above
-  - [met4, 80, 1108, 763.1, 1120]        # l2 data, below
-  - [met4, 80, 1536.54, 763.1, 1548.54]  # l2 data, above
+  - [met4, 80, 1188, 763.1, 1200]        # l2 data, below
+  - [met4, 80, 1616.54, 763.1, 1628.54]  # l2 data, above
 
 # --- Attempt: timing, LVS and GDS handling (2026-10-23) ---------------------------------------------------------------
 # Worst slow-corner path (-9.27 ns @ 40 ns) was a ~58-stage fanout buffer chain from the register-file warp_id flop made of
