@@ -12,7 +12,7 @@ cover what is *different or specific* in the ASIC variant and link there instead
 ## Read in this order
 | # | Page | Read it to… |
 |---|---|---|
-| 1 | [01-overview](01-overview.md) | understand what the ASIC variant is and exactly how it differs from `src/rtl` |
+| 1 | [01-overview](01-overview.md) | understand what the ASIC variant is and how it differed from the original `src/rtl` (now `FPGA/src/rtl`, a synced copy) |
 | 2 | [02-architecture](02-architecture.md) | see the ASIC profile (sizes), block/pipeline/memory diagrams, top-level pins and address map |
 | 3 | [03-isa](03-isa.md) | know the instruction semantics *as implemented* (incl. quirks) |
 | 4 | [04-limitations](04-limitations.md) | **know what not to trust** (limitation register, IDs `L1…`) |
@@ -25,7 +25,7 @@ cover what is *different or specific* in the ASIC variant and link there instead
 ## Status at a glance
 | Area | Status | Evidence / where |
 |---|---|---|
-| RTL port (`ASIC/src/rtl`) | Functionally working on the ASIC profile; 4 port-era/latent bugs fixed **in ASIC copy only** | [05-bug-log](05-bug-log.md), [L10](04-limitations.md#l10) |
+| RTL port (`ASIC/src/rtl`) | Functionally working on the ASIC profile; 4 port-era/latent bugs fixed; `FPGA/src/rtl` is a synced copy | [05-bug-log](05-bug-log.md), [L10](04-limitations.md#l10) |
 | Unit tests (8 modules, incl. the shared divider) | Pass; mutation-checked | `make unit` — [06-verification](06-verification.md) |
 | System tests | `verify-asic` (NZP/CALL/RET), `verify-matmul` (2-core 5×5) pass | `make verify-asic verify-matmul` |
 | SVA assertions | 6 checker modules bound, silent on current design, each shown to fire on its historical bug | `src/rtl/sva/` |

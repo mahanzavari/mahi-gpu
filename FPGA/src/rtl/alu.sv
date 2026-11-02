@@ -2,7 +2,7 @@
 `timescale 1ns/1ns
 
 module alu #(
-    parameter DATA_BITS = 16
+    parameter DATA_BITS = gpu_pkg::DATA_BITS
 ) (
     input wire enable,
     input wire [4:0] decoded_alu_arithmetic_mux, 
@@ -74,7 +74,25 @@ module alu #(
                 DIV: begin
                     if (rt == 0) begin
                         alu_out = {DATA_BITS{1'b0}}; div_by_zero = 1'b1;
-                    end else alu_out = rs / rt;
+                    end else begin
+                        `ifdef USE_COMB_DIV
+                            alu_out = rs / rt;
+                        `else
+                            // For ASIC area/timing: division stubbed or delegated to software
+                            alu_out = {DATA_BITS{1'b0}};
+                        `endif
+                    end
+                end
+                MOD: begin
+                    if (rt == 0) begin
+                        alu_out = {DATA_BITS{1'b0}}; div_by_zero = 1'b1;
+                    end else begin
+                        `ifdef USE_COMB_DIV
+                            alu_out = rs % rt;
+                        `else
+                            alu_out = {DATA_BITS{1'b0}};
+                        `endif
+                    end
                 end
                 AND: alu_out = rs & rt;
                 OR:  alu_out = rs | rt;
@@ -82,9 +100,7 @@ module alu #(
                 SHL: begin
                     alu_out = rs << rt;
                     if (rt > 0 && rt <= DATA_BITS) begin
-                        integer shl_idx;
-                        shl_idx = DATA_BITS - rt;
-                        flag_c = rs[shl_idx];
+                        flag_c = rs[DATA_BITS - rt];
                     end else begin
                         flag_c = 1'b0;
                     end
@@ -92,17 +108,10 @@ module alu #(
                 SHR: begin
                     alu_out = rs >> rt;
                     if (rt > 0 && rt <= DATA_BITS) begin
-                        integer shr_idx;
-                        shr_idx = rt - 1;
-                        flag_c = rs[shr_idx];
+                        flag_c = rs[rt - 1];
                     end else begin
                         flag_c = 1'b0;
                     end
-                end
-                MOD: begin
-                    if (rt == 0) begin
-                        alu_out = {DATA_BITS{1'b0}}; div_by_zero = 1'b1;
-                    end else alu_out = rs % rt;
                 end
                 MIN: alu_out = ($signed(rs) < $signed(rt)) ? rs : rt;
                 MAX: alu_out = ($signed(rs) > $signed(rt)) ? rs : rt;

@@ -741,7 +741,7 @@ B3 & \texttt{ab57e33} & Fetcher held an instruction for one warp's PC while the 
 B4 & \texttt{e086fc4} & L2 pushed to a full victim write buffer (stale ready); the dirty line was dropped.\\
 \bottomrule
 \end{tabular}
-\caption{Fixed bugs. B2--B4 are latent in the shared design and are fixed in the ASIC copy only (erratum L10).}
+\caption{Fixed bugs. B2--B4 were latent in the original shared design; the generic copy (\texttt{FPGA/src/rtl}) is now synced with the ASIC copy and has the fixes too (erratum L10, resolved).}
 \end{table}
 
 \section{Physical implementation}\label{sec:flow}
@@ -834,7 +834,7 @@ L6 & M & 8-deep call stack wraps & Silent corruption on the ninth nested call.\\
 L7 & L & 4-deep divergence stack & Cannot overflow with four lanes; could with $\ge6$ lanes.\\
 L8 & M & FP is not IEEE-754 & Truncation, flush-to-zero, no NaN/Inf, zero-operand alignment quirk.\\
 L9 & M & Atomics coverage & \ins{ATOM_CAS}, ordered old values and multi-core coherence untested by random tests.\\
-L10 & M & Fixes only in ASIC copy & B2--B4 are not applied to the generic \texttt{src/rtl}.\\
+L10 & -- & Fixes only in ASIC copy & \textbf{Resolved:} the generic RTL moved to \texttt{FPGA/src/rtl} and is a synced copy of \texttt{ASIC/src/rtl}.\\
 L11 & L & Test debt & Legacy testbenches do not build against the current block interface; \texttt{tb\_matmul} times out under iverilog (passes under Verilator).\\
 L12 & -- & Faults invisible & \textbf{Resolved:} STATUS[4], FAULT\_INFO and \sig{gpu_fault_pin} report the first fault. The faulted warp's later results are still missing; check STATUS[4] after DONE.\\
 L13 & L & PMU/DCR unreachable & Only DCR address 0 is driven by the Wishbone wrapper.\\

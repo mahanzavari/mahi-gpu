@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module shared_mem #(
-    parameter DATA_BITS         = 32,
-    parameter ADDR_BITS         = 32,
-    parameter SIZE              = 256,
-    parameter THREADS_PER_BLOCK = 4,
+    parameter DATA_BITS         = gpu_pkg::DATA_BITS,
+    parameter ADDR_BITS         = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter SIZE              = gpu_pkg::CFG_SHARED_MEM_SIZE,
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
     parameter N_BANKS           = 4
 ) (
     input  wire clk,
@@ -92,12 +92,18 @@ module shared_mem #(
                 
                 // WRITE Dispatch
                 if (write_valid[i] && !w_bank_conflict[i]) begin
+`ifdef SHM_TRACE
+                    $display("[%0t] [SHM-WRITE] lane=%0d addr=%0d data=%h", $time, i, write_address[i], write_data[i]);
+`endif
                     mem[w_bank[i]][w_offset[i]] <= write_data[i];
                     write_ready[i] <= 1'b1;
                 end
 
                 // READ Dispatch: Standard
                 if (read_valid[i] && !r_bank_conflict[i] && !raw_conflict[i] && !r_broadcast[i]) begin
+`ifdef SHM_TRACE
+                    $display("[%0t] [SHM-READ] lane=%0d addr=%0d data=%h", $time, i, read_address[i], mem[r_bank[i]][r_offset[i]]);
+`endif
                     read_data[i]  <= mem[r_bank[i]][r_offset[i]];
                     read_ready[i] <= 1'b1;
                 end

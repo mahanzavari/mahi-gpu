@@ -18,7 +18,7 @@
 | [L7](#l7) | Divergence stack 4 deep | L | SVA |
 | [L8](#l8) | FP: truncation, flush-to-zero, no Inf/NaN, alignment quirk | M | exec |
 | [L9](#l9) | Atomics: `CAS`, ordering and multi-core untested | M | — |
-| [L10](#l10) | Fixes B2–B4 exist only in `ASIC/src/rtl` | M | static |
+| [L10](#l10) | ~~Fixes B2–B4 exist only in `ASIC/src/rtl`~~ — **resolved**: `FPGA/src/rtl` is a synced copy | — | static |
 | [L11](#l11) | Tooling/legacy test debt | L | — |
 | [L12](#l12) | ~~Faults are invisible outside the core~~ — **resolved**: `STATUS[4]`, `FAULT_INFO`, `gpu_fault_pin` | — | exec |
 | [L13](#l13) | PMU/DCR registers unreachable from chip pins | L | static |
@@ -43,7 +43,7 @@
   pops it when (a) `EXIT` executes (`scheduler.sv:244-249`) or (b) a later non-divergent branch targets exactly the stacked PC
   (`is_reconverge`, `scheduler.sv:262-269`). There is no reconvergence at the join/post-dominator, so merging almost never happens.
   `SYNC` only counts *warps* (`barrier_count >= num_active_warps_comb`, `scheduler.sv:287`), not lanes.
-  The same logic is in `src/rtl/scheduler.sv` (checked by diff, only trace prints differ).
+  `FPGA/src/rtl/scheduler.sv` is the same file ([L10](#l10)).
 - **Evidence.** Random-regression seed 76 (shared-memory program): the final readout executed lane by lane — lane 0 finished
   at t≈24,900 ns, lane 1 ≈45,700, lane 2 ≈67,600, lane 3 ≈90,300 — while other lanes' stores were still pending; 18/240
   seeds failed before the generator was made warp-uniform. (Before the fault was added, `make limits` case `L1` reproduced
@@ -79,7 +79,7 @@ run and read back purely over Wishbone, golden-model compared) and the synthesis
 [07-physical-flow](07-physical-flow.md). The entry stays as history; remaining consequences are L15–L17.
 
 ## L4
-**L2 `ev_*` PMU outputs are constants 0** (`l2_cache.sv:333-340`). They were already undriven regs in `src/rtl`; the port made
+**L2 `ev_*` PMU outputs are constants 0** (`l2_cache.sv:333-340`). They were already undriven regs in the original generic RTL; the port made
 it explicit. L2 hit/miss counters in the PMU therefore read 0. L1 (I/D cache) events are real.
 
 ## L5
@@ -111,9 +111,11 @@ and not checked. `ATOM_CAS` is not covered by any random or directed test. Every
 (L1 write-through, shared L2) is exercised only by `verify-matmul`.
 
 ## L10
-**Fixes B2 (ID-latch), B3 (fetcher PC match), B4 (L2/VWB push gating) are only in `ASIC/src/rtl`.** By inspection `src/rtl/core.sv:110`,
-`src/rtl/l2_cache.sv:193,229` still contain the buggy forms and `src/rtl/fetcher.sv` has no PC check (not run on `src/rtl`). Its
-`pc.sv` is not affected by B1. Static check: `docs-check` fails when the patterns change, to prompt updating this entry.
+**Resolved (2026-11-03).** Fixes B2 (ID-latch), B3 (fetcher PC match) and B4 (L2/VWB push gating) used to exist only in
+`ASIC/src/rtl`; the generic tree at the repository root (`src/rtl`) still had the buggy forms and the forwarding network.
+That tree was moved to `FPGA/src/rtl` and re-synced as a byte-identical copy of `ASIC/src/rtl`, so it now carries B1–B4,
+the scoreboard, the shared divider, the fault reporting, `gpu_pkg.sv` and the SVA. Static check: `docs-check` fails when a
+`.sv`/`.v` file differs between the two trees or exists in only one, to prompt updating this entry.
 
 ## L11
 **Tooling/test debt.** `tb_matmul` completes under Verilator but **times out under iverilog**; the old `make sim` target is

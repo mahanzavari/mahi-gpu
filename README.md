@@ -302,8 +302,8 @@ SIMT divergence occurs when threads in the same warp evaluate a branch different
 
 ### Forwarding & Hazard Handling
 
-> **ASIC RTL differs here.** This section describes the original design in `src/rtl`. The ASIC tree (`ASIC/src/rtl`,
-> used for the sky130 layout and the FPGA profile) removed the forwarding network: an instruction is held at issue while a
+> **The current RTL differs here.** This section describes the original design. Both RTL trees, `ASIC/src/rtl` (the sky130
+> layout) and its synced copy `FPGA/src/rtl`, removed the forwarding network: an instruction is held at issue while a
 > same-warp instruction still in decode or execute will write one of its registers, and the scheduler issues another warp
 > instead, as GPUs do. Instruction fetch also returns I-cache hits in one cycle. Together these took 1.23-1.32x fewer cycles
 > and removed the forwarding paths from the critical-path list. Details: [ASIC architecture](ASIC/docs/02-architecture.md).
@@ -714,7 +714,8 @@ The module tracks the currently open row per bank independently for reads and wr
 
 ```
 mahi-gpu/
-├── src/
+├── ASIC/                       sky130 flow, docs, verification (src/rtl, src/tb)
+├── FPGA/src/rtl/               synced copy of ASIC/src/rtl (file list below)
 │   ├── gpu.sv                  Top-level GPU module
 │   ├── gpu_axi_wrapper.sv      AXI4 integration wrapper
 │   ├── core.sv                 Compute core (pipeline + warp management)
@@ -736,8 +737,8 @@ mahi-gpu/
 │   ├── dispatch.sv             Block dispatcher
 │   ├── dcr.sv                  Device control register
 │   └── core_pmu.sv             Performance monitoring unit
-├── tb/
-│   └── gpu_tb.sv               Top-level testbench
+├── FPGA/src/tb/
+│   └── infant/gpu_tb.sv        Top-level testbench
 ├── sim/
 │   └── axi_ram.sv              DDR behavioral simulation model
 ├── kernels/

@@ -20,8 +20,8 @@
 | 9 | `make limits` | 7 cases (L1, L2, L5, L6, L8, L12, L14), all `PASS (documented behaviour observed)` — a FAIL means a limitation changed | 04 |
 | 13 | `make datasheet` | builds `docs/datasheet/mahi-gpu-datasheet.pdf` (21 pages) with no LaTeX errors | datasheet |
 | 10 | `grep dfxtp flow/runs/*/06-yosys-synthesis/reports/stat.rpt; ls flow/runs/*/final` | `854 … dfxtp_2` (old run) and *no* `final/` — until the flow is re-run | 07 |
-| 11 | `grep -c vwb_can_push ../src/rtl/l2_cache.sv; grep -c fetched_pc ../src/rtl/core.sv ../src/rtl/fetcher.sv` | `0` for all three (fixes only in the ASIC copy) until [L10](04-limitations.md#l10) is resolved | 04 |
-| 12 | `for f in controller core_pmu dcr axi4_adaptor; do cmp ../src/rtl/$f.sv src/rtl/$f.sv; done; cmp ../src/rtl/axi_ram.v src/rtl/axi_ram.v` | no output (identical) | 01 |
+| 11 | `diff -r ../FPGA/src/rtl src/rtl` | no output: the FPGA tree is a synced copy ([L10](04-limitations.md#l10), resolved) | 04 |
+| 12 | `grep -c vwb_can_push ../FPGA/src/rtl/l2_cache.sv; grep -c fetched_pc ../FPGA/src/rtl/core.sv ../FPGA/src/rtl/fetcher.sv` | non-zero for all three (fixes B3/B4 present in the FPGA tree) | 01 |
 
 Fault-injection spot checks (re-prove the tests have teeth; each should make the named command **fail**):
 - Delete the `nzp[warp_id] <= alu_out[2:0];` line in `src/rtl/pc.sv` → `make unit-pc` fails.

@@ -2,14 +2,14 @@
 `timescale 1ns/1ns
 
 module scheduler #(
-    parameter THREADS_PER_BLOCK = 4,
-    parameter NUM_WARPS = 4,
-    parameter PROGRAM_MEM_ADDR_BITS = 32
+    parameter THREADS_PER_BLOCK     = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS             = gpu_pkg::CFG_NUM_WARPS,
+    parameter PROGRAM_MEM_ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS
 ) (
     input wire clk,
     input wire reset,
     input wire start,
-    input wire [$clog2(NUM_WARPS * THREADS_PER_BLOCK):0] thread_count,
+    input wire [$clog2(gpu_pkg::THREADS_PER_CORE):0] thread_count,
     
     input wire mem_req_valid,
     input wire [$clog2(NUM_WARPS)-1:0] mem_warp_id,
@@ -24,6 +24,13 @@ module scheduler #(
     input wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id,
     
     input wire frontend_stall,
+    // A warp with a serializing instruction (branch, call/return/exit, SYNC, memory, FP, DIV) still in ID or EX
+    // may not issue: those redirect or replay the warp, so nothing younger of that warp may be in flight.
+    input wire [NUM_WARPS-1:0] warp_in_flight,
+    // The instruction fetched for the selected warp (cand_warp_id) reads a register that a same-warp instruction
+    // in ID or EX will still write (core.sv: issue-time scoreboard). No forwarding exists, so it must wait.
+    input wire issue_hazard,
+    output logic [$clog2(NUM_WARPS)-1:0] cand_warp_id,
     output reg [NUM_WARPS-1:0] flush_warp_mask,
     
     // --- Now Combinational Outputs ---
@@ -42,6 +49,8 @@ module scheduler #(
     input wire ex_sync,
     input wire ex_exception_valid,
     output reg done,
+    // per-warp: divergence stack non-empty (core faults a SYNC executed in this state, cause 3)
+    output wire [NUM_WARPS-1:0] warp_diverged,
 
     output wire ev_scheduler_idle,
     output wire ev_warp_switch,
@@ -55,6 +64,8 @@ module scheduler #(
     warp_state_t warp_state [NUM_WARPS];
 
     localparam STACK_DEPTH = 4;
+    // Guard: NUM_WARPS==1 (future profile) would make $clog2 -> [-1:0].
+    localparam WARP_PTR_WIDTH = (NUM_WARPS > 1) ? $clog2(NUM_WARPS) : 1;
     reg [PROGRAM_MEM_ADDR_BITS-1:0] current_pc [NUM_WARPS];
     reg [THREADS_PER_BLOCK-1:0] current_mask [NUM_WARPS];
     
@@ -62,7 +73,12 @@ module scheduler #(
     reg [THREADS_PER_BLOCK-1:0] stack_mask [NUM_WARPS][STACK_DEPTH];
     reg [$clog2(STACK_DEPTH+1)-1:0] stack_ptr [NUM_WARPS];
 
-    reg [$clog2(NUM_WARPS)-1:0] rr_ptr;
+    genvar gd;
+    generate for (gd = 0; gd < NUM_WARPS; gd = gd + 1) begin : g_div
+        assign warp_diverged[gd] = (stack_ptr[gd] != 0);
+    end endgenerate
+
+    reg [WARP_PTR_WIDTH-1:0] rr_ptr;
     reg [$clog2(NUM_WARPS+1):0] barrier_count;
     logic [$clog2(NUM_WARPS+1):0] num_active_warps_comb;
     logic all_warps_done;
@@ -73,6 +89,8 @@ module scheduler #(
     always_comb begin
         logic [PROGRAM_MEM_ADDR_BITS-1:0] comb_target_a;
         logic comb_target_a_valid;
+
+        comb_target_a = '0; 
         
         ex_is_branch = 1'b0; ex_has_divergence = 1'b0; comb_target_a_valid = 1'b0; warp_flush_inhibit = '0; num_active_warps_comb = 0;
         
@@ -111,15 +129,20 @@ module scheduler #(
 
     // --- NEW: Combinational Next-Warp & Issue Logic ---
     logic [$clog2(NUM_WARPS)-1:0] next_rr_var_comb;
+    logic [$clog2(NUM_WARPS)-1:0] check_w_var;
+    logic will_flush;
 
     always_comb begin
         found_var_comb = 1'b0;
         next_rr_var_comb = rr_ptr;
+        check_w_var = '0;   // <-- Defaults prevent latch inference
+        will_flush = 1'b0;  // <-- Defaults prevent latch inference
+
         if (start && !done) begin
             for (int i = 0; i < NUM_WARPS; i++) begin
-                logic [$clog2(NUM_WARPS)-1:0] check_w_var = (rr_ptr + i) % NUM_WARPS;
-                logic will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
-                if (!found_var_comb && warp_state[check_w_var] == READY && current_mask[check_w_var] != 0 && !warp_flush_inhibit[check_w_var] && !will_flush && !flush_warp_mask[check_w_var]) begin
+                check_w_var = (rr_ptr + i) % NUM_WARPS;
+                will_flush = (ex_valid && ex_active_mask != 0 && ex_warp_id == check_w_var && warp_flush_inhibit[check_w_var]);
+                if (!found_var_comb && warp_state[check_w_var] == READY && current_mask[check_w_var] != 0 && !warp_flush_inhibit[check_w_var] && !will_flush && !flush_warp_mask[check_w_var] && !warp_in_flight[check_w_var]) begin
                     found_var_comb = 1'b1;
                     next_rr_var_comb = check_w_var;
                 end
@@ -129,9 +152,10 @@ module scheduler #(
 
     // Point the memory fetch directly to the target PC combinationally
     assign if_pc = found_var_comb ? current_pc[next_rr_var_comb] : 0;
+    assign cand_warp_id = next_rr_var_comb;
 
     always_comb begin
-        if (found_var_comb && !frontend_stall) begin
+        if (found_var_comb && !frontend_stall && !issue_hazard) begin
             valid_issue = 1'b1;
             sched_active_mask = current_mask[next_rr_var_comb];
             sched_warp_id = next_rr_var_comb;
@@ -194,7 +218,9 @@ module scheduler #(
                 warp_state[ex_warp_id] != WAITING_FP) begin
                 
                 if (ex_exception_valid) begin
+`ifndef SYNTHESIS
                     $display("[%0t] [SCHED-FAULT] Warp %0d Faulted!", $time, ex_warp_id);
+`endif
                     warp_state[ex_warp_id] <= FAULTED; flush_warp_mask[ex_warp_id] <= 1'b1;
                 end else begin
                     logic [PROGRAM_MEM_ADDR_BITS-1:0] target_a, target_b;
@@ -228,13 +254,25 @@ module scheduler #(
                         stack_pc[ex_warp_id][stack_ptr[ex_warp_id]] <= target_b; stack_mask[ex_warp_id][stack_ptr[ex_warp_id]] <= mask_b;
                         stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] + 1;
                         current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a; flush_warp_mask[ex_warp_id] <= 1'b1;
+`ifdef MEM_TRACE
+                        $display("[%0t] [SCHED-DIVERGE] warp=%0d ex_pc=%0h target_a=%0h mask_a=%b target_b=%0h mask_b=%b stack_ptr->%0d",
+                                 $time, ex_warp_id, ex_pc, target_a, mask_a, target_b, mask_b, stack_ptr[ex_warp_id]+1);
+`endif
                     end else begin
                         is_reconverge = (stack_ptr[ex_warp_id] > 0 && target_a_valid && target_a == stack_pc[ex_warp_id][stack_ptr[ex_warp_id]-1]);
                         if (is_reconverge) begin
                             current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a | stack_mask[ex_warp_id][stack_ptr[ex_warp_id]-1];
                             stack_ptr[ex_warp_id] <= stack_ptr[ex_warp_id] - 1; flush_warp_mask[ex_warp_id] <= 1'b1;
+`ifdef MEM_TRACE
+                            $display("[%0t] [SCHED-RECONVERGE] warp=%0d ex_pc=%0h target_a=%0h merged_mask=%b stack_ptr->%0d",
+                                     $time, ex_warp_id, ex_pc, target_a, mask_a | stack_mask[ex_warp_id][stack_ptr[ex_warp_id]-1], stack_ptr[ex_warp_id]-1);
+`endif
                         end else if (is_branch || ex_sync) begin
                             current_pc[ex_warp_id] <= target_a; current_mask[ex_warp_id] <= mask_a; flush_warp_mask[ex_warp_id] <= 1'b1;
+`ifdef MEM_TRACE
+                            $display("[%0t] [SCHED-BRANCH] warp=%0d ex_pc=%0h -> target_a=%0h mask_a=%b is_branch=%0d ex_sync=%0d",
+                                     $time, ex_warp_id, ex_pc, target_a, mask_a, is_branch, ex_sync);
+`endif
                             if (ex_sync) begin 
                                 if (warp_state[ex_warp_id] != WAITING_BARRIER) begin
                                     warp_state[ex_warp_id] <= WAITING_BARRIER; 
@@ -255,6 +293,8 @@ module scheduler #(
             if (valid_issue) begin
                 current_pc[next_rr_var_comb] <= current_pc[next_rr_var_comb] + 1;
                 rr_ptr <= (next_rr_var_comb + 1) % NUM_WARPS;
+            end else if (found_var_comb && issue_hazard) begin
+                rr_ptr <= (next_rr_var_comb + 1) % NUM_WARPS;   // let the other warps try while this one waits
             end
 
             all_warps_done = 1;

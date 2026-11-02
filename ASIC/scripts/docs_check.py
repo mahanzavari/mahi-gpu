@@ -154,14 +154,13 @@ def check_static():
     has(f'{R}/fetcher.sv', r"assign fetched_pc        = current_pc;", why='B3 (single-cycle fetch holds nothing)')
     has(f'{R}/core.sv', r"flush_warp_mask\[id_warp_id\] && !\(valid_issue && if_instruction_valid\)", why='B2')
     has(f'{R}/pc.sv', r"nzp\[warp_id\] <= alu_out\[2:0\]", why='B1')
-    # L10: generic design still lacks the fixes
-    g = f'{REPO}/src/rtl'
-    has(f'{g}/l2_cache.sv', r"vwb_can_push", want=False, why='L10: src/rtl not fixed (update L10 if you ported it)')
-    has(f'{g}/core.sv', r"if_fetched_pc", want=False, why='L10'); has(f'{g}/fetcher.sv', r"fetched_pc", want=False, why='L10')
-    has(f'{g}/core.sv', r"flush_warp_mask\[id_warp_id\] \|\| \(valid_issue", why='L10 buggy ID latch still in src/rtl')
-    for f in ('controller.sv', 'core_pmu.sv', 'dcr.sv', 'axi4_adaptor.sv', 'axi_ram.v'):      # claims in 01-overview
-        a, b = f'{g}/{f}', f'{ASIC}/{R}/{f}'
-        if read(a) != read(b): err(f'static: {f} no longer identical to src/rtl (01-overview says "=")')
+    # L10 resolved: the generic tree (FPGA/src/rtl) mirrors ASIC/src/rtl (claims in 01-overview, 04 L10)
+    g = f'{REPO}/FPGA/src/rtl'
+    def tree(d): return {os.path.relpath(os.path.join(p, f), d).replace(os.sep, '/') for p, _, fs in os.walk(d) for f in fs if f.endswith(('.sv', '.v'))}
+    a_files, g_files = tree(f'{ASIC}/{R}'), tree(g)
+    for f in sorted(a_files ^ g_files): err(f'static: {f} is in only one of ASIC/{R} and FPGA/{R} (L10 says the trees are synced)')
+    for f in sorted(a_files & g_files):
+        if read(f'{g}/{f}') != read(f'{ASIC}/{R}/{f}'): err(f'static: {f} differs between ASIC/{R} and FPGA/{R} (update L10 if the FPGA tree diverged on purpose)')
     # physical-flow page, only if the run is present
     run = f'{ASIC}/flow/runs/RUN_2026-10-19_14-54-17'
     if os.path.isdir(run):

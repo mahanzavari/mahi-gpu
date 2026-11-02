@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module victim_write_buffer #(
-    parameter ADDR_BITS  = 32,
-    parameter BLOCK_BITS = 128,
-    parameter SECTORS    = 4,
-    parameter DEPTH      = 4
+    parameter ADDR_BITS  = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter BLOCK_BITS = gpu_pkg::AXI_DATA_WIDTH,
+    parameter SECTORS    = gpu_pkg::CFG_L2_SECTORS,
+    parameter DEPTH      = gpu_pkg::CFG_VWB_DEPTH
 ) (
     input wire clk,
     input wire reset,
@@ -37,6 +37,8 @@ module victim_write_buffer #(
 );
 
     localparam SECTOR_BITS = BLOCK_BITS / SECTORS;
+    // Guard: DEPTH==1 (future profile) would make $clog2 -> [-1:0].
+    localparam DEPTH_PTR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
 
     reg                  valid   [DEPTH];
     reg [ADDR_BITS-1:0]  addr    [DEPTH];
@@ -53,9 +55,9 @@ module victim_write_buffer #(
     assign push_ready = !full;
 
     logic merge_found;
-    logic [$clog2(DEPTH)-1:0] merge_idx;
+    logic [DEPTH_PTR_WIDTH-1:0] merge_idx;
     logic free_found;
-    logic [$clog2(DEPTH)-1:0] free_idx;
+    logic [DEPTH_PTR_WIDTH-1:0] free_idx;
     logic v_next;
 
     always_comb begin
@@ -63,10 +65,10 @@ module victim_write_buffer #(
         free_found  = 1'b0; free_idx  = '0;
         for (int i = 0; i < DEPTH; i++) begin
             if (valid[i] && addr[i] == push_addr && !merge_found) begin
-                merge_found = 1'b1; merge_idx = i[$clog2(DEPTH)-1:0];
+                merge_found = 1'b1; merge_idx = i[DEPTH_PTR_WIDTH-1:0];
             end
             if (!valid[i] && !free_found) begin
-                free_found = 1'b1; free_idx = i[$clog2(DEPTH)-1:0];
+                free_found = 1'b1; free_idx = i[DEPTH_PTR_WIDTH-1:0];
             end
         end
     end
@@ -85,20 +87,29 @@ module victim_write_buffer #(
     end
 
     logic drain_pending;
-    logic [$clog2(DEPTH)-1:0] drain_idx;
+    logic [DEPTH_PTR_WIDTH-1:0] drain_idx;
     always_comb begin
         drain_pending = 1'b0; drain_idx = '0;
         for (int i = 0; i < DEPTH; i++) begin
             if (valid[i] && !drain_pending) begin
-                drain_pending = 1'b1; drain_idx = i[$clog2(DEPTH)-1:0];
+                drain_pending = 1'b1; drain_idx = i[DEPTH_PTR_WIDTH-1:0];
             end
         end
     end
 
+`ifndef SYNTHESIS
+    // A push while full is dropped by the logic below -> lost dirty data.
+    // Producers must check push_ready in the cycle they *issue* the push.
+    always @(posedge clk) begin
+        if (!reset && push_valid && !push_ready)
+            $error("[%0t] VWB: push of addr %0h dropped while buffer full (lost writeback)", $time, push_addr);
+    end
+`endif
+
     typedef enum logic [1:0] { IDLE, DRAINING } state_t;
     state_t state;
 
-    reg [$clog2(DEPTH)-1:0] active_drain_idx;
+    reg [DEPTH_PTR_WIDTH-1:0] active_drain_idx;
     reg                     active_drain_valid;
 
     always @(posedge clk) begin
@@ -116,6 +127,14 @@ module victim_write_buffer #(
             if (push_valid || probe_valid) idle_counter <= 0;
             else if (idle_counter != 5'h1F) idle_counter <= idle_counter + 1;
 
+`ifdef MEM_TRACE
+            if (push_valid) $display("[%0t] [VWB-PUSH] addr=%0d ready=%0d merge=%0d(idx %0d) free=%0d(idx %0d) dirty=%b data=%h state=%0d drain_idx=%0d active=%0d",
+                $time, push_addr, push_ready, merge_found, merge_idx, free_found, free_idx, push_sector_dirty, push_data, state, active_drain_idx, active_drain_valid);
+            if (probe_pop) $display("[%0t] [VWB-POP] addr=%0d", $time, pop_addr);
+            if (state == IDLE && mem_write_valid == 0 && drain_pending && (flush_en || count >= DEPTH/2 || idle_counter == 5'h1F))
+                $display("[%0t] [VWB-DRAIN-START] idx=%0d addr=%0d strobe=%b", $time, drain_idx, addr[drain_idx], dirty[drain_idx]);
+            if (state == DRAINING && mem_write_ready) $display("[%0t] [VWB-DRAIN-DONE] idx=%0d addr=%0d active_valid=%0d", $time, active_drain_idx, addr[active_drain_idx], active_drain_valid);
+`endif
             if (push_valid && push_ready) begin
                 if (merge_found) begin
                     logic [BLOCK_BITS-1:0] merged_data;

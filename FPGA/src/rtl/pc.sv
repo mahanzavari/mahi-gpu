@@ -2,10 +2,10 @@
 `timescale 1ns/1ns
 
 module pc #(
-    parameter DATA_MEM_DATA_BITS = 16,
-    parameter PROGRAM_MEM_ADDR_BITS = 32,
-    parameter NUM_WARPS = 4,
-    parameter DEBUG = 0  // Added cleanly globally
+    parameter DATA_MEM_DATA_BITS = gpu_pkg::CFG_DMEM_DATA_BITS,
+    parameter PROGRAM_MEM_ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter NUM_WARPS = gpu_pkg::CFG_NUM_WARPS,
+    parameter DEBUG = gpu_pkg::CFG_DEBUG  // Added cleanly globally
 ) (
     input wire clk,
     input wire reset,
@@ -27,6 +27,8 @@ module pc #(
 
     reg [2:0] nzp [NUM_WARPS];
     localparam STACK_DEPTH = 8;
+    // Guard: NUM_WARPS==1 (future profile) would make $clog2 -> [-1:0].
+    localparam WARP_PTR_WIDTH = (NUM_WARPS > 1) ? $clog2(NUM_WARPS) : 1;
     reg [PROGRAM_MEM_ADDR_BITS-1:0] return_stack [NUM_WARPS][STACK_DEPTH];
     reg [$clog2(STACK_DEPTH)-1:0]   stack_ptr    [NUM_WARPS];
 
@@ -53,28 +55,36 @@ module pc #(
         end else if (enable) begin
             if (decoded_nzp_write_enable) begin
                 nzp[warp_id] <= alu_out[2:0];
+`ifndef SYNTHESIS
                 if (DEBUG) $display("[%0t] [PC] Warp %0d NZP <- %b", $time, warp_id, alu_out[2:0]);
+`endif
             end
 
             if (decoded_call) begin
                 return_stack[warp_id][stack_ptr[warp_id]] <= current_pc + 1;
                 stack_ptr[warp_id] <= stack_ptr[warp_id] + 1;
+`ifndef SYNTHESIS
                 if (DEBUG) $display("[%0t] [PC] Warp %0d CALL: storing ret addr %0d (sp=%0d -> %0d)",
                          $time, warp_id, current_pc+1, stack_ptr[warp_id], stack_ptr[warp_id]+1);
+`endif
             end
 
             if (decoded_ret_fn) begin
                 stack_ptr[warp_id] <= stack_ptr[warp_id] - 1;
+`ifndef SYNTHESIS
                 if (DEBUG) $display("[%0t] [PC] Warp %0d RET: popping, sp %0d -> %0d, ret to %0d",
                          $time, warp_id, stack_ptr[warp_id], stack_ptr[warp_id]-1,
                          return_stack[warp_id][stack_ptr[warp_id]-1]);
+`endif
             end
 
+`ifndef SYNTHESIS
             if (decoded_pc_mux && !decoded_call) begin
-                if (DEBUG) $display("[%0t] [PC] Warp %0d BR: NZP=%b Cond=%b %s", 
+                if (DEBUG) $display("[%0t] [PC] Warp %0d BR: NZP=%b Cond=%b %s",
                          $time, warp_id, nzp[warp_id], decoded_nzp,
                          ((nzp[warp_id] & decoded_nzp) != 3'b0) ? "TAKEN" : "FALLTHROUGH");
             end
+`endif
         end
     end
 

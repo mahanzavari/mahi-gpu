@@ -2,13 +2,13 @@
 `timescale 1ns/1ns
 
 module gpu_axi_wrapper #(
-    parameter DATA_MEM_ADDR_BITS = 32,
-    parameter PROGRAM_MEM_ADDR_BITS = 32,
-    parameter DATA_BITS = 32,
-    parameter AXI_DATA_WIDTH = 128, // 4 words per block * 32 bits
-    parameter NUM_CORES = 2,
-    parameter THREADS_PER_BLOCK = 4,
-    parameter NUM_WARPS = 4
+    parameter DATA_MEM_ADDR_BITS = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter PROGRAM_MEM_ADDR_BITS = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter DATA_BITS = gpu_pkg::DATA_BITS,
+    parameter AXI_DATA_WIDTH = gpu_pkg::AXI_DATA_WIDTH, // 4 words per block * 32 bits
+    parameter NUM_CORES = gpu_pkg::CFG_NUM_CORES,
+    parameter THREADS_PER_BLOCK = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS = gpu_pkg::CFG_NUM_WARPS
 ) (
     input wire clk,
     input wire reset,

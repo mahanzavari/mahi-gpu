@@ -2,17 +2,17 @@
 `timescale 1ns/1ns
 
 module core #(
-    parameter DATA_MEM_ADDR_BITS        = 32,
-    parameter DATA_MEM_DATA_BITS        = 32,
-    parameter PROGRAM_MEM_ADDR_BITS     = 32,
-    parameter PROGRAM_MEM_DATA_BITS     = 32,
-    parameter THREADS_PER_BLOCK         = 4,
-    parameter NUM_WARPS                 = 4,
-    parameter SHARED_MEM_ADDR_BITS      = 8,
-    parameter SHARED_MEM_SIZE           = 256,
+    parameter DATA_MEM_ADDR_BITS        = gpu_pkg::CFG_DMEM_ADDR_BITS,
+    parameter DATA_MEM_DATA_BITS        = gpu_pkg::CFG_DMEM_DATA_BITS,
+    parameter PROGRAM_MEM_ADDR_BITS     = gpu_pkg::CFG_PMEM_ADDR_BITS,
+    parameter PROGRAM_MEM_DATA_BITS     = gpu_pkg::CFG_PMEM_DATA_BITS,
+    parameter THREADS_PER_BLOCK         = gpu_pkg::CFG_THREADS_PER_BLOCK,
+    parameter NUM_WARPS                 = gpu_pkg::CFG_NUM_WARPS,
+    parameter SHARED_MEM_ADDR_BITS      = gpu_pkg::CFG_SHARED_MEM_ADDR_BITS,
+    parameter SHARED_MEM_SIZE           = gpu_pkg::CFG_SHARED_MEM_SIZE,
     parameter MAX_MEM_ADDR              = 32'h0000_FFFF, 
-    parameter DATA_BITS                 = 32,
-    parameter DEBUG                     = 0  
+    parameter DATA_BITS                 = gpu_pkg::DATA_BITS,
+    parameter DEBUG                     = gpu_pkg::CFG_DEBUG  
 ) (
     input  wire clk,
     input  wire reset,
@@ -20,10 +20,10 @@ module core #(
     input  wire start,
     output wire done,
     input  wire [7:0]                                   block_id,
-    input  wire [$clog2(THREADS_PER_BLOCK*NUM_WARPS):0] thread_count,
+    input  wire [$clog2(gpu_pkg::THREADS_PER_CORE):0] thread_count,
     
     output reg exception_raised,
-    output reg [$clog2(NUM_WARPS)-1:0] exception_warp_id,
+    output reg [gpu_pkg::WARP_ID_BITS-1:0] exception_warp_id,
     output reg [PROGRAM_MEM_ADDR_BITS-1:0] exception_pc,
     output reg [3:0] exception_cause,
 
@@ -69,6 +69,8 @@ wire [4:0]                             lsu_rd_array;
 wire [DATA_BITS-1:0]                   lsu_data_array [THREADS_PER_BLOCK];
 
 wire if_instruction_valid;
+wire if_instruction_valid_raw;
+wire [PROGRAM_MEM_ADDR_BITS-1:0] if_fetched_pc;
 wire core_running    = start && !done;
 wire fetch_stall     = !if_instruction_valid;
 
@@ -95,8 +97,14 @@ fetcher #(
     .flush(|flush_warp_mask),
     .current_pc(if_pc), .mem_read_valid(program_mem_read_valid), .mem_read_address(program_mem_read_address),
     .mem_read_ready(program_mem_read_ready), .mem_read_data(program_mem_read_data),
-    .instruction_valid(if_instruction_valid), .instruction(if_instruction)
+    .instruction_valid(if_instruction_valid_raw), .instruction(if_instruction),
+    .fetched_pc(if_fetched_pc)
 );
+
+// Only accept the fetched instruction if it was fetched for the PC of the warp
+// the scheduler is selecting *now* (selection is combinational and can change
+// while a fetch is in flight, which used to issue warp A's instruction as B's).
+assign if_instruction_valid = if_instruction_valid_raw && (if_fetched_pc == if_pc);
 
 reg [31:0] id_instruction; reg [PROGRAM_MEM_ADDR_BITS-1:0] id_pc; reg [THREADS_PER_BLOCK-1:0] id_active_mask;
 reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
@@ -107,7 +115,17 @@ reg [$clog2(NUM_WARPS)-1:0] id_warp_id;
 always @(posedge clk) begin
     if (reset) begin
         id_instruction <= 0; id_pc <= 0; id_active_mask <= 0; id_warp_id <= 0;
-    end else if (flush_warp_mask[id_warp_id] || (valid_issue && flush_warp_mask[sched_warp_id])) begin
+    end else if ((flush_warp_mask[id_warp_id] && !(valid_issue && if_instruction_valid)) ||
+                 (valid_issue && flush_warp_mask[sched_warp_id])) begin
+        // A stale ID-stage occupant (id_warp_id, left over from last cycle)
+        // whose warp just got flushed must be squashed -- UNLESS a fresh,
+        // valid instruction for a *different* warp is loading this same
+        // cycle (valid_issue && if_instruction_valid): that fresh load must
+        // win, since id_warp_id hasn't been updated to sched_warp_id yet
+        // and flush_warp_mask[id_warp_id] firing for the OLD occupant's
+        // warp must not discard the NEW one. The fresh load is still
+        // subject to its own flush check (flush_warp_mask[sched_warp_id],
+        // second clause) in case IT was fetched pre-redirect.
         id_active_mask <= 0;
     end else if (!fp_raw_stall) begin
         id_warp_id     <= if_instruction_valid ? sched_warp_id : id_warp_id;
@@ -129,7 +147,9 @@ reg [1:0] ex_atomic;
 wire id_is_fp;
 wire [1:0] id_fp_op;
 
-decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
+decoder #(
+    .DATA_BITS(DATA_BITS)
+) decoder_inst (
     .instruction(id_instruction), .decoded_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
     .decoded_nzp(id_nzp), .decoded_immediate(id_imm), .decoded_use_mem_offset(id_use_mem_offset), .decoded_mem_addr_offset(id_mem_addr_offset),
     .decoded_rs_read_enable(id_rs_re), .decoded_rt_read_enable(id_rt_re), .decoded_reg_write_enable(id_reg_we),
@@ -143,7 +163,9 @@ decoder #( .DATA_BITS(DATA_BITS) ) decoder_inst (
 
 reg [31:0] fp_scoreboard [NUM_WARPS];
 
-assign fp_raw_stall = (|id_active_mask) && (
+// Long-latency (FMA + divider) RAW stall: a source register still owed by an in-flight FP/DIV op.
+// The scoreboard is shared by both units (fp_scoreboard). div_busy_stall (below) is the other term.
+wire fp_sb_stall = (|id_active_mask) && (
                       (id_rs_re && fp_scoreboard[id_warp_id][id_rs]) |
                       (id_rt_re && fp_scoreboard[id_warp_id][id_rt]) |
                       (id_rd_re && fp_scoreboard[id_warp_id][id_rd]) );
@@ -181,7 +203,13 @@ always @(posedge clk) begin
         ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0; ex_fp_op <= 0;
     end else if (flush_warp_mask[id_warp_id] || fp_raw_stall) begin
         ex_active_mask <= 0; ex_call <= 0; ex_ret_fn <= 0; ex_exit <= 0;
-        ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0; 
+        ex_atomic <= 0; ex_flags_we <= 0; ex_is_fp <= 0;
+`ifndef SYNTHESIS
+`ifdef MEM_TRACE
+        $display("[%0t] [CORE-SQUASH] id_warp_id=%0d id_pc=%0h id_active_mask=%b flush_warp_mask=%b fp_raw_stall=%0d",
+                 $time, id_warp_id, id_pc, id_active_mask, flush_warp_mask, fp_raw_stall);
+`endif
+`endif
     end else begin
         ex_active_mask <= id_active_mask; ex_warp_id <= id_warp_id; ex_pc <= id_pc;
         ex_rd <= id_rd; ex_rs <= id_rs; ex_rt <= id_rt; ex_rs_re <= id_rs_re; ex_rt_re <= id_rt_re;
@@ -199,7 +227,8 @@ end
 
 wire ex_has_div0;
 wire ex_has_mem_fault;
-wire ex_exception_valid = ex_has_div0 | ex_has_mem_fault;
+wire ex_has_sync_div;
+wire ex_exception_valid = ex_has_div0 | ex_has_mem_fault | ex_has_sync_div;
 
 reg [4:0] fp_pipe_valid;
 reg [$clog2(NUM_WARPS)-1:0] fp_pipe_warp [5];
@@ -229,12 +258,41 @@ wire [$clog2(NUM_WARPS)-1:0] fp_wb_warp_id = fp_pipe_warp[4];
 wire [4:0] fp_wb_rd_warp = fp_pipe_rd[4];
 wire [THREADS_PER_BLOCK-1:0] fp_wb_mask = fp_pipe_mask[4];
 
+// --- Shared iterative divider (DIV/MOD) on the long-latency path -------------------------------------------
+// In the ASIC build DIV/MOD go to one divider shared by all lanes (src/rtl/divider.sv). The warp is parked like
+// an FP op (scheduler fp_req), rd is scoreboarded, the ALU writeback is suppressed, and the result returns through
+// the long-latency register write port (FMA results have priority). USE_COMB_DIV keeps the old single-cycle ALU
+// divide for the fast simulation profile.
+`ifdef USE_COMB_DIV
+localparam LL_DIV = 0;
+`else
+localparam LL_DIV = 1;
+`endif
+localparam [4:0] ALU_OP_DIV = 5'd3, ALU_OP_MOD = 5'd9;
+wire ex_is_div   = (LL_DIV != 0) && !ex_is_fp && ex_reg_we && (ex_alu_arith_mux == ALU_OP_DIV || ex_alu_arith_mux == ALU_OP_MOD);
+wire ex_div_fire = (|ex_active_mask) && ex_is_div && !ex_exception_valid;
+wire id_is_div   = (LL_DIV != 0) && !id_is_fp && id_reg_we && (id_alu_arith_mux == ALU_OP_DIV || id_alu_arith_mux == ALU_OP_MOD);
+wire div_busy, div_done;
+wire [DATA_BITS-1:0] div_result [THREADS_PER_BLOCK];
+wire [THREADS_PER_BLOCK-1:0] div_mask;
+wire [$clog2(NUM_WARPS)-1:0] div_warp;
+wire [4:0] div_rd;
+// one divide at a time: a second DIV waits in ID while the unit is busy or a DIV sits in EX
+wire div_busy_stall = (|id_active_mask) && id_is_div && (div_busy || ((|ex_active_mask) && ex_is_div));
+assign fp_raw_stall = fp_sb_stall | div_busy_stall;
+
+wire div_wb_go = div_done && !fp_wb_valid_warp;
+wire ll_wb_valid = fp_wb_valid_warp | div_wb_go;
+wire [$clog2(NUM_WARPS)-1:0] ll_wb_warp_id = fp_wb_valid_warp ? fp_wb_warp_id : div_warp;
+wire [4:0] ll_wb_rd = fp_wb_valid_warp ? fp_wb_rd_warp : div_rd;
+wire [THREADS_PER_BLOCK-1:0] ll_wb_mask = fp_wb_valid_warp ? fp_wb_mask : div_mask;
+
 always @(posedge clk) begin
     if (reset) begin
         for (int w=0; w<NUM_WARPS; w++) fp_scoreboard[w] <= 0;
     end else begin
-        if (fp_wb_valid_warp && fp_wb_rd_warp < 29) fp_scoreboard[fp_wb_warp_id][fp_wb_rd_warp] <= 1'b0;
-        if (ex_fp_fire && ex_rd < 29) fp_scoreboard[ex_warp_id][ex_rd] <= 1'b1;
+        if (ll_wb_valid && ll_wb_rd < 29) fp_scoreboard[ll_wb_warp_id][ll_wb_rd] <= 1'b0;
+        if ((ex_fp_fire || ex_div_fire) && ex_rd < 29) fp_scoreboard[ex_warp_id][ex_rd] <= 1'b1;
     end
 end
 
@@ -259,6 +317,15 @@ wire [THREADS_PER_BLOCK-1:0] thread_mem_fault;
 wire is_global_mem_op = ex_mem_re | ex_mem_we | (|ex_atomic);
 wire is_shared_mem_op = ex_shared_re | ex_shared_we;
 
+divider #(
+    .LANES(THREADS_PER_BLOCK), .DATA_BITS(DATA_BITS), .WARP_BITS($clog2(NUM_WARPS))
+) divider_inst (
+    .clk(clk), .reset(reset), .start(ex_div_fire), .is_mod(ex_alu_arith_mux == ALU_OP_MOD),
+    .mask(ex_active_mask), .warp(ex_warp_id), .rd(ex_rd), .a(fwd_ex_rs_data), .b(fwd_ex_rt_data),
+    .busy(div_busy), .done(div_done), .ack(div_wb_go),
+    .result(div_result), .out_mask(div_mask), .out_warp(div_warp), .out_rd(div_rd)
+);
+
 reg [THREADS_PER_BLOCK-1:0]   wb_active_mask;
 reg [$clog2(NUM_WARPS)-1:0]   wb_warp_id;
 reg [4:0]                     wb_rd;
@@ -267,31 +334,37 @@ reg [DATA_BITS-1:0]           wb_alu_out [THREADS_PER_BLOCK];
 reg                           wb_reg_we;
 reg [1:0]                     wb_reg_mux;
 
+// No operand forwarding into EX. A same-warp instruction never reads a register that an instruction ahead of it in
+// ID or EX will still write: the issue-time scoreboard (issue_hazard, below) holds it back, as GPUs do instead of a
+// bypass network. A producer in MEM is written back while the consumer is in ID, and the register file's
+// write-through (registers.sv) covers that cycle; loads write through the LSU while their warp waits (WAITING_MEM);
+// FMA/DIV results are covered by fp_scoreboard. So EX reads the operands latched in ID. The names fwd_ex_* stay for
+// the consumers. MAHI_SIM_CHECKS checks every cycle that no case the old forwarding network handled can occur.
 genvar i;
 generate
     for (i = 0; i < THREADS_PER_BLOCK; i = i + 1) begin : threads
-        wire fwd_mem_rs_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rs) && (mem_rd < 29) && ex_rs_re && (mem_warp_id == ex_warp_id);
-        wire fwd_mem_rt_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rt) && (mem_rd < 29) && ex_rt_re && (mem_warp_id == ex_warp_id);
-        wire fwd_mem_rd_i = mem_active_mask[i] && mem_reg_we && (mem_rd == ex_rd) && (mem_rd < 29) && ex_rd_re && (mem_warp_id == ex_warp_id);
-
-        wire fwd_wb_rs_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rs) && (wb_rd < 29) && ex_rs_re && !fwd_mem_rs_i && (wb_warp_id == ex_warp_id);
-        wire fwd_wb_rt_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rt) && (wb_rd < 29) && ex_rt_re && !fwd_mem_rt_i && (wb_warp_id == ex_warp_id);
-        wire fwd_wb_rd_i  = wb_active_mask[i] && wb_reg_we && (wb_rd == ex_rd) && (wb_rd < 29) && ex_rd_re && !fwd_mem_rd_i && (wb_warp_id == ex_warp_id);
-
-        wire fwd_lsu_rs_i = lsu_we_array[i] && (lsu_rd_array == ex_rs) && (lsu_rd_array < 29) && ex_rs_re && !fwd_mem_rs_i && !fwd_wb_rs_i && (lsu_warp_id_array[0] == ex_warp_id);
-        wire fwd_lsu_rt_i = lsu_we_array[i] && (lsu_rd_array == ex_rt) && (lsu_rd_array < 29) && ex_rt_re && !fwd_mem_rt_i && !fwd_wb_rt_i && (lsu_warp_id_array[0] == ex_warp_id);
-        wire fwd_lsu_rd_i = lsu_we_array[i] && (lsu_rd_array == ex_rd) && (lsu_rd_array < 29) && ex_rd_re && !fwd_mem_rd_i && !fwd_wb_rd_i && (lsu_warp_id_array[0] == ex_warp_id);
-        
-        wire [DATA_BITS-1:0] fwd_mem_data_i = (mem_reg_mux == 2'b10) ? mem_imm : mem_alu_out[i];
-        wire [DATA_BITS-1:0] fwd_wb_data_i  = (wb_reg_mux  == 2'b10) ? wb_imm  : wb_alu_out[i];
-
-        assign fwd_ex_rs_data[i] = fwd_mem_rs_i ? fwd_mem_data_i : fwd_wb_rs_i  ? fwd_wb_data_i  : fwd_lsu_rs_i ? lsu_data_array[i] : ex_rs_data[i];
-        assign fwd_ex_rt_data[i] = fwd_mem_rt_i ? fwd_mem_data_i : fwd_wb_rt_i  ? fwd_wb_data_i  : fwd_lsu_rt_i ? lsu_data_array[i] : ex_rt_data[i];
-        assign fwd_ex_rd_data[i] = fwd_mem_rd_i ? fwd_mem_data_i : fwd_wb_rd_i  ? fwd_wb_data_i  : fwd_lsu_rd_i ? lsu_data_array[i] : ex_rd_data[i];
+        assign fwd_ex_rs_data[i] = ex_rs_data[i];
+        assign fwd_ex_rt_data[i] = ex_rt_data[i];
+        assign fwd_ex_rd_data[i] = ex_rd_data[i];
+`ifdef MAHI_SIM_CHECKS
+        // The conditions under which the removed MEM/WB/LSU -> EX forwarding would have fired.
+        wire need_mem = mem_active_mask[i] && mem_reg_we && (mem_rd < 29) && (mem_warp_id == ex_warp_id) && ex_active_mask[i] &&
+                        ((ex_rs_re && mem_rd == ex_rs) || (ex_rt_re && mem_rd == ex_rt) || (ex_rd_re && mem_rd == ex_rd));
+        wire need_wb  = wb_active_mask[i] && wb_reg_we && (wb_rd < 29) && (wb_warp_id == ex_warp_id) && ex_active_mask[i] &&
+                        ((ex_rs_re && wb_rd == ex_rs) || (ex_rt_re && wb_rd == ex_rt) || (ex_rd_re && wb_rd == ex_rd));
+        wire need_lsu = lsu_we_array[i] && (lsu_rd_array < 29) && (lsu_warp_id_array[0] == ex_warp_id) && ex_active_mask[i] &&
+                        ((ex_rs_re && lsu_rd_array == ex_rs) || (ex_rt_re && lsu_rd_array == ex_rt) || (ex_rd_re && lsu_rd_array == ex_rd));
+        always @(posedge clk)
+            if (!reset && (need_mem || need_wb || need_lsu))
+                $error("core: lane %0d warp %0d pc %0h reads a register still in flight (mem=%0d wb=%0d lsu=%0d): no forwarding exists",
+                       i, ex_warp_id, ex_pc, need_mem, need_wb, need_lsu);
+`endif
 
         wire alu_flag_c, alu_flag_v, alu_flag_z, alu_flag_n, alu_flag_sat;
         
-        alu #( .DATA_BITS(DATA_BITS) ) alu_inst (
+        alu #(
+            .DATA_BITS(DATA_BITS)
+        ) alu_inst (
             .enable(ex_active_mask[i] && !ex_is_fp), 
             .decoded_alu_arithmetic_mux(ex_alu_arith_mux), .decoded_alu_output_mux(ex_alu_out_mux),
             .rs(fwd_ex_rs_data[i]), .rt(fwd_ex_rt_data[i]), .rd_val(fwd_ex_rd_data[i]), .alu_out(ex_alu_out[i]), 
@@ -336,14 +409,23 @@ generate
         wire [31:0] eff_addr = ex_use_mem_offset ? (fwd_ex_rs_data[i] + {{16{ex_mem_addr_offset[15]}}, ex_mem_addr_offset}) : fwd_ex_rs_data[i];
         assign thread_mem_fault[i] = ex_active_mask[i] && ((is_global_mem_op && eff_addr > MAX_MEM_ADDR) || (is_shared_mem_op && eff_addr >= SHARED_MEM_SIZE));
 
-        pc #( .DATA_MEM_DATA_BITS(DATA_BITS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS), .NUM_WARPS(NUM_WARPS), .DEBUG(DEBUG) ) pc_inst (
+        pc #(
+            .DATA_MEM_DATA_BITS(DATA_MEM_DATA_BITS),
+            .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS),
+            .NUM_WARPS(NUM_WARPS),
+            .DEBUG(DEBUG)
+        ) pc_inst (
             .clk(clk), .reset(reset), .enable(ex_active_mask[i]), .warp_id(ex_warp_id), .decoded_nzp(ex_nzp),
             .decoded_immediate(ex_imm), .decoded_nzp_write_enable(ex_nzp_we), .decoded_pc_mux(ex_pc_mux),
             .decoded_call(ex_call), .decoded_ret_fn(ex_ret_fn), .alu_out(ex_alu_out[i]), .current_pc(ex_pc), .next_pc(ex_next_pc[i])
         );
 
         wire [7:0] physical_thread_id = i;
-        registers #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .DATA_BITS(DATA_BITS) ) reg_inst (
+        registers #(
+            .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+            .NUM_WARPS(NUM_WARPS),
+            .DATA_BITS(DATA_BITS)
+        ) reg_inst (
             .clk(clk), .reset(reset), .enable(wb_active_mask[i]), .warp_id(wb_warp_id), .read_warp_id(id_warp_id),
             .block_id(block_id), .thread_id(physical_thread_id), 
             .read_rd_address(id_rd), .decoded_rs_address(id_rs), .decoded_rt_address(id_rt),
@@ -351,12 +433,13 @@ generate
             .decoded_rd_address(wb_rd), .decoded_reg_write_enable(wb_reg_we), 
             .decoded_reg_input_mux(wb_reg_mux), .decoded_immediate(wb_imm), .alu_out(wb_alu_out[i]), .lsu_out(0),
             .lsu_we(lsu_we_array[i]), .lsu_warp_id(lsu_warp_id_array[0]), .lsu_rd(lsu_rd_array), .lsu_data(lsu_data_array[i]),
-            .fp_wb_valid(fp_wb_valid_warp && fp_wb_mask[i]),
-            .fp_wb_warp_id(fp_wb_warp_id),
-            .fp_wb_rd(fp_wb_rd_warp),
-            .fp_wb_data(fp_result_t)
+            .fp_wb_valid(ll_wb_valid && ll_wb_mask[i]),
+            .fp_wb_warp_id(ll_wb_warp_id),
+            .fp_wb_rd(ll_wb_rd),
+            .fp_wb_data(fp_wb_valid_warp ? fp_result_t : div_result[i])
         );
 
+`ifndef SYNTHESIS
         always @(posedge clk) begin
             if (fp_wb_valid_warp && fp_wb_mask[i] && fp_wb_rd_warp < 29) begin
                 $display("[%0t] [CORE-FPWB] Warp %0d Thread %0d Written: %h to r%0d", $time, fp_wb_warp_id, i, fp_result_t, fp_wb_rd_warp);
@@ -364,15 +447,20 @@ generate
             if (wb_active_mask[i] && wb_reg_we && wb_rd < 29) begin
                 logic [DATA_BITS-1:0] actual_wb_data;
                 actual_wb_data = (wb_reg_mux == 2'b10) ? wb_imm : ((wb_reg_mux == 2'b01) ? lsu_data_array[i] : wb_alu_out[i]);
-                $display("[%0t] [CORE-INTWB] Warp %0d Thread %0d Written: %h to r%0d", $time, wb_warp_id, i, actual_wb_data, wb_rd);
+                $display("[%0t] [CORE-INTWB] %m Warp %0d Thread %0d Written: %h to r%0d", $time, wb_warp_id, i, actual_wb_data, wb_rd);
             end
         end
+`endif
     end
 endgenerate
 
 assign ex_has_div0 = |(ex_active_mask & alu_div_by_zero);
 assign ex_has_mem_fault = |(ex_active_mask & thread_mem_fault);
-wire [3:0] ex_exception_cause = ex_has_div0 ? 4'd1 : (ex_has_mem_fault ? 4'd2 : 4'd0);
+// SYNC inside a divergent region would release the barrier with lanes still parked on the divergence stack
+// (limitation L1); it is a fault instead of a silent early release.
+wire [NUM_WARPS-1:0] warp_diverged;
+assign ex_has_sync_div = ex_sync && (|ex_active_mask) && warp_diverged[ex_warp_id];
+wire [3:0] ex_exception_cause = ex_has_div0 ? 4'd1 : (ex_has_mem_fault ? 4'd2 : (ex_has_sync_div ? 4'd3 : 4'd0));
 
 always @(posedge clk) begin
     if (reset) exception_raised <= 0;
@@ -407,7 +495,7 @@ always @(posedge clk) begin
         // =====================================================================
         // FIX 2: Clear mem_reg_we when ex_is_fp is set to prevent integer ALU 0-writeback
         // =====================================================================
-        mem_reg_we <= ex_reg_we && !ex_is_fp; 
+        mem_reg_we <= ex_reg_we && !ex_is_fp && !ex_is_div; 
         mem_mem_re <= ex_mem_re; mem_mem_we <= ex_mem_we;
         mem_shared_re <= ex_shared_re; mem_shared_we <= ex_shared_we; mem_reg_mux <= ex_reg_mux;
         mem_use_mem_offset <= ex_use_mem_offset; mem_mem_addr_offset <= ex_mem_addr_offset;
@@ -419,7 +507,12 @@ wire [THREADS_PER_BLOCK-1:0]     sh_read_valid,  sh_read_ready, sh_write_valid, 
 wire [DATA_MEM_ADDR_BITS-1:0]    sh_read_address  [THREADS_PER_BLOCK], sh_write_address [THREADS_PER_BLOCK];
 wire [DATA_MEM_DATA_BITS-1:0]    sh_read_data     [THREADS_PER_BLOCK], sh_write_data    [THREADS_PER_BLOCK];
 
-shared_mem #( .DATA_BITS(DATA_MEM_DATA_BITS), .ADDR_BITS(DATA_MEM_ADDR_BITS), .SIZE(SHARED_MEM_SIZE), .THREADS_PER_BLOCK(THREADS_PER_BLOCK) ) shared_mem_instance (
+shared_mem #(
+    .DATA_BITS(DATA_MEM_DATA_BITS),
+    .ADDR_BITS(DATA_MEM_ADDR_BITS),
+    .SIZE(SHARED_MEM_SIZE),
+    .THREADS_PER_BLOCK(THREADS_PER_BLOCK)
+) shared_mem_instance (
     .clk(clk), .reset(reset), .read_valid(sh_read_valid), .read_address(sh_read_address), .read_ready(sh_read_ready), .read_data(sh_read_data), 
     .write_valid(sh_write_valid), .write_address(sh_write_address), .write_data(sh_write_data), .write_ready(sh_write_ready)
 );
@@ -470,7 +563,13 @@ always @(posedge clk) begin
     end
 end
 
-lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .WORDS_PER_BLOCK(4), .ADDR_BITS(DATA_MEM_ADDR_BITS) ) lsu_inst (
+lsu #(
+    .DATA_BITS(DATA_BITS),
+    .NUM_WARPS(NUM_WARPS),
+    .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+    .WORDS_PER_BLOCK(gpu_pkg::WORDS_PER_BLOCK),
+    .ADDR_BITS(DATA_MEM_ADDR_BITS)
+) lsu_inst (
     .clk(clk), .reset(reset), .enable_mask(mem_active_mask), .warp_id(mem_warp_id),
     .decoded_mem_read_enable(mem_mem_re), .decoded_mem_write_enable(mem_mem_we),
     .decoded_shared_read_enable(mem_shared_re), .decoded_shared_write_enable(mem_shared_we),
@@ -490,14 +589,59 @@ lsu #( .DATA_BITS(DATA_BITS), .NUM_WARPS(NUM_WARPS), .THREADS_PER_BLOCK(THREADS_
 
 wire sched_ev_idle, sched_ev_warp_switch, sched_ev_diverge, sched_ev_stall_mem, sched_ev_stall_barrier, sched_ev_stall_noready;
 
-scheduler #( .THREADS_PER_BLOCK(THREADS_PER_BLOCK), .NUM_WARPS(NUM_WARPS), .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS) ) scheduler_instance (
+// Serializing instructions redirect or replay their warp (branch/call/return/exit, SYNC, memory and atomics, FP,
+// DIV/MOD). While one is in ID or EX, its warp may not issue (scheduler.warp_in_flight). Everything such an
+// instruction does to its warp (flush, WAITING_MEM/FP, fault, barrier) is registered by the time it leaves EX.
+wire id_serializing = id_pc_mux | id_call | id_ret_fn | id_exit | id_sync | id_mem_re | id_mem_we |
+                      id_shared_re | id_shared_we | (|id_atomic) | id_is_fp | id_is_div;
+wire ex_serializing = ex_pc_mux | ex_call | ex_ret_fn | ex_exit | ex_sync | ex_mem_re | ex_mem_we |
+                      ex_shared_re | ex_shared_we | (|ex_atomic) | ex_is_fp | ex_is_div;
+wire [NUM_WARPS-1:0] warp_in_flight;
+generate
+    for (genvar w = 0; w < NUM_WARPS; w++) begin : g_inflight
+        assign warp_in_flight[w] = ((|id_active_mask) && id_warp_id == w && id_serializing) ||
+                                   ((|ex_active_mask) && ex_warp_id == w && ex_serializing);
+    end
+endgenerate
+
+// Issue-time scoreboard: decode the instruction fetched for the selected warp and hold it back while a same-warp
+// instruction in ID or EX will still write one of its source registers (that result is not in the register file
+// in time and nothing forwards it). Computed from the pipeline registers, so flushes need no bookkeeping.
+wire [$clog2(NUM_WARPS)-1:0] cand_warp_id;
+wire [4:0] iss_rd, iss_rs, iss_rt;
+wire       iss_rs_re, iss_rt_re, iss_rd_re;
+decoder #(
+    .DATA_BITS(DATA_BITS)
+) issue_decoder (
+    .instruction(if_instruction), .decoded_rd_address(iss_rd), .decoded_rs_address(iss_rs), .decoded_rt_address(iss_rt),
+    .decoded_rs_read_enable(iss_rs_re), .decoded_rt_read_enable(iss_rt_re), .decoded_rd_read_enable(iss_rd_re),
+    .decoded_nzp(), .decoded_immediate(), .decoded_use_mem_offset(), .decoded_mem_addr_offset(), .decoded_reg_write_enable(),
+    .decoded_mem_read_enable(), .decoded_mem_write_enable(), .decoded_nzp_write_enable(), .decoded_reg_input_mux(),
+    .decoded_alu_arithmetic_mux(), .decoded_alu_output_mux(), .decoded_pc_mux(), .decoded_sync(), .decoded_shared_read_enable(),
+    .decoded_shared_write_enable(), .decoded_ret_fn(), .decoded_exit(), .decoded_call(), .decoded_atomic(),
+    .decoded_flags_write_enable(), .decoded_is_fp(), .decoded_fp_op()
+);
+wire id_writes = (|id_active_mask) && id_warp_id == cand_warp_id && id_reg_we && (id_rd < 29);
+wire ex_writes = (|ex_active_mask) && ex_warp_id == cand_warp_id && ex_reg_we && (ex_rd < 29);
+function automatic logic reads_pending(input logic [4:0] r);
+    reads_pending = (id_writes && r == id_rd) || (ex_writes && r == ex_rd);
+endfunction
+wire issue_hazard = (iss_rs_re && reads_pending(iss_rs)) || (iss_rt_re && reads_pending(iss_rt)) ||
+                    (iss_rd_re && reads_pending(iss_rd));
+
+scheduler #(
+    .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
+    .NUM_WARPS(NUM_WARPS),
+    .PROGRAM_MEM_ADDR_BITS(PROGRAM_MEM_ADDR_BITS)
+) scheduler_instance (
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready), .mem_in_progress(mem_in_progress), 
-    .fp_req_valid(ex_fp_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(fp_wb_valid_warp), .fp_wb_warp_id(fp_wb_warp_id),
-    .frontend_stall(frontend_stall), .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
+    .fp_req_valid(ex_fp_fire | ex_div_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(ll_wb_valid), .fp_wb_warp_id(ll_wb_warp_id),
+    .frontend_stall(frontend_stall), .warp_in_flight(warp_in_flight), .issue_hazard(issue_hazard), .cand_warp_id(cand_warp_id),
+    .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .found_var_comb(found_var_comb), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 
-    .ex_exception_valid(ex_exception_valid), .done(done),
+    .ex_exception_valid(ex_exception_valid), .done(done), .warp_diverged(warp_diverged),
     .ev_scheduler_idle(sched_ev_idle), .ev_warp_switch(sched_ev_warp_switch), .ev_diverge(sched_ev_diverge),
     .ev_stall_mem(sched_ev_stall_mem), .ev_stall_barrier(sched_ev_stall_barrier), .ev_stall_noready(sched_ev_stall_noready)
 );
@@ -508,7 +652,7 @@ wire ev_issue       = core_running && valid_issue;
 wire ev_fetch_stall = core_running && fetch_stall;
 wire ev_flush       = core_running && (|flush_warp_mask);
 wire ev_mem         = core_running && (|mem_active_mask) && is_mem_op && !mem_in_progress[mem_warp_id];
-wire fp_wb_collision = (|wb_active_mask) && wb_reg_we && fp_wb_valid_warp && (wb_warp_id == fp_wb_warp_id) && (wb_rd == fp_wb_rd_warp);
+wire fp_wb_collision = (|wb_active_mask) && wb_reg_we && ll_wb_valid && (wb_warp_id == ll_wb_warp_id) && (wb_rd == ll_wb_rd);
 
 wire [31:0] event_bus;
 assign event_bus[31:28] = 4'd0; assign event_bus[27] = fp_wb_collision; assign event_bus[26] = fp_raw_stall;
@@ -529,9 +673,10 @@ core_pmu pmu_inst (
     .snapshot_0(pmu_snap_0), .snapshot_1(pmu_snap_1), .snapshot_2(pmu_snap_2), .snapshot_3(pmu_snap_3)
 );
 
+`ifndef SYNTHESIS
 always @(posedge clk) begin
     if (valid_issue) begin
-        $display("[%0t] [SCHED-ISSUE] Warp %0d | PC %0h | Mask %b | Inst %h | Opcode: %0d", 
+        $display("[%0t] [SCHED-ISSUE] %m Warp %0d | PC %0h | Mask %b | Inst %h | Opcode: %0d", 
                  $time, sched_warp_id, if_pc, sched_active_mask, if_instruction, if_instruction[31:26]);
     end
     
@@ -539,7 +684,7 @@ always @(posedge clk) begin
         $display("[%0t] [CORE-STALL] Warp %0d | PC %0h | FP RAW Hazard Detected (waiting on FPU)", $time, id_warp_id, id_pc);
     end
     if (|ex_active_mask) begin
-        $display("[%0t] [CORE-EX] Warp %0d | PC %0h | Mask %b | %s Op | RD:r%0d RS:r%0d RT:r%0d | Imm: %0h | ALU_Op: %0d", 
+        $display("[%0t] [CORE-EX] %m Warp %0d | PC %0h | Mask %b | %s Op | RD:r%0d RS:r%0d RT:r%0d | Imm: %0h | ALU_Op: %0d", 
                  $time, ex_warp_id, ex_pc, ex_active_mask, 
                  (ex_mem_re || ex_mem_we) ? "MEM" : (ex_is_fp ? "FP " : "INT"), 
                  ex_rd, ex_rs, ex_rt, ex_imm, ex_alu_arith_mux);
@@ -552,5 +697,6 @@ always @(posedge clk) begin
         end
     end
 end
+`endif
 
 endmodule

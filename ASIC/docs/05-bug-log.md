@@ -1,6 +1,6 @@
 # 05 — Bug log (found and fixed)
 
-> Verified against commit `dadec7f` (+ uncommitted docs), 2026-10-21. All four fixes are in `ASIC/src/rtl` only ([L10](04-limitations.md#l10)).
+> Verified against commit `dadec7f` (+ uncommitted docs), 2026-10-21. All four fixes are in `ASIC/src/rtl` and, since the 2026-11-03 sync, in `FPGA/src/rtl` ([L10](04-limitations.md#l10), resolved).
 > For each bug: how it showed up, root cause, fix, **the test that fails without the fix** and **the SVA that now fires at the
 > moment of failure** (both were demonstrated by re-introducing the bug — "mutation evidence").
 

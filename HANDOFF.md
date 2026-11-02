@@ -31,15 +31,18 @@ divergence stack, a 5-stage pipeline, a pipelined FP32 FMA, L1 I/D caches, a uni
 banked shared memory, atomics, faults, a PMU, a DCR, and AXI4 / Wishbone host interfaces.
 
 There are two RTL trees:
-- **`src/rtl/`** is the original design, described by the root `README.md`. It still has the full operand-forwarding
-  network.
-- **`ASIC/src/rtl/`** is the maintained, verified tree used for silicon and FPGA. It has diverged from `src/rtl`:
+- **`FPGA/src/rtl/`** (until 2026-11-03 at the root as `src/rtl/`) was the original design described by the root
+  `README.md`, with the full operand-forwarding network. On 2026-11-03 (branch `fpga/src-sync`) it was moved under
+  `FPGA/` and re-synced as a byte-identical copy of `ASIC/src/rtl/`; `make docs-check` fails if the two drift apart.
+  Its testbenches (`FPGA/src/tb/`) were moved but **not** synced.
+- **`ASIC/src/rtl/`** is the maintained, verified tree used for silicon and FPGA. Before the sync it had diverged from the
+  original tree:
   - **Front end and hazards:** single-cycle fetch and an issue-time scoreboard in place of forwarding.
   - **Functional fixes:**
     - a shared iterative divider;
     - faults visible to the host;
     - SYNC-while-diverged raises a fault;
-    - fixes B2–B4, which exist only in this tree (L10).
+    - fixes B2–B4 (L10, resolved by the sync).
   - **Chip top:** the `gpu_asic_top` Wishbone chip top, with 3 OpenRAM SRAMs.
 
 **Profiles** (`ASIC/src/rtl/include/gpu_pkg.sv`, selected by defines):
@@ -67,9 +70,9 @@ the physical flow.
 | Path | What |
 |---|---|
 | `README.md` | top-level description (die shot at the top, "Silicon (ASIC) and FPGA targets" section) |
-| `src/rtl/`, `src/tb/` | original RTL and testbenches |
+| `FPGA/src/rtl/`, `FPGA/src/tb/` | synced copy of `ASIC/src/rtl` (since 2026-11-03), and the original testbenches |
 | `assembler/assembler.py` | **an existing 125-line text assembler** (opcodes 0–36, labels) with kernels in `assembler/kernels/*.asm`; a starting point for the compiler work |
-| `FPGA/logs/` | only old simulation logs; no FPGA build flow exists yet |
+| `FPGA/` | `src/` only; no FPGA build flow exists yet |
 | `ASIC/Makefile` | all verification and analysis targets (section 7) |
 | `ASIC/run_asic.sh` | runs the LibreLane flow (`MINI=1`, resume options) |
 | `ASIC/src/rtl/` | maintained RTL; `include/gpu_pkg.sv` holds the profiles; `sva/` holds assertions and binds |

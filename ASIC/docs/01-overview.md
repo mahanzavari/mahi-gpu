@@ -3,7 +3,7 @@
 > Verified against commit `dadec7f` (+ uncommitted docs), 2026-10-21.
 
 ## What it is
-`ASIC/src/rtl/` is a copy of `src/rtl/` (the generic SIMT GPU used for simulation/FPGA) retargeted for a
+`ASIC/src/rtl/` started as a copy of the generic SIMT GPU RTL (then at the repository root, `src/rtl/`) retargeted for a
 sky130 ASIC: hard-coded widths replaced by a **profile package** (`include/gpu_pkg.sv`), small size
 (1 core, 2 warps × 4 lanes), plus an ASIC top module (`gpu_asic_top.sv`, Wishbone slave). Everything else
 (ISA, pipeline, caches) is the same design.
@@ -13,6 +13,10 @@ Build profile selection (`ASIC/src/rtl/include/gpu_pkg.sv:27-86`):
 addresses, 2 cores, 4 warps). **`gpu_pkg.sv` must be first on every compile line** (leaf defaults reference it).
 
 ## File map and delta against `src/rtl`
+**The delta is now zero.** On 2026-11-03 the generic tree moved from `src/rtl` to `FPGA/src/rtl` and was re-synced as a
+byte-identical copy of `ASIC/src/rtl` ([L10](04-limitations.md#l10), resolved; `docs-check` keeps the two trees equal). The
+table below is the port-era history: how `ASIC/src/rtl` differed from the original generic tree before the sync.
+
 Legend: **=** byte-identical to `src/rtl`; **Δ** differs. (Checked with `diff -u src/rtl/X ASIC/src/rtl/X`.)
 
 | File | | Nature of the difference |
@@ -28,7 +32,8 @@ Legend: **=** byte-identical to `src/rtl`; **Δ** differs. (Checked with `diff -
 | `fp32_fma.sv` | Δ | `$display` under `` `ifndef SYNTHESIS `` only |
 
 \* `fetcher.sv`, `core.sv`, `l2_cache.sv`, `victim_write_buffer.sv` additionally carry the **post-port fixes** B2–B4
-(see [05-bug-log](05-bug-log.md)); these fixes are **not** in `src/rtl` ([L10](04-limitations.md#l10)).
+(see [05-bug-log](05-bug-log.md)); the original `src/rtl` never had them, and `FPGA/src/rtl` has them since the sync
+([L10](04-limitations.md#l10)).
 
 Port-era systematic changes (all behaviour-preserving):
 1. `$clog2(N)` of a possibly-1 value guarded (`N>1 ? $clog2(N) : 1`) for the 1-core / 1-port ASIC corner.
