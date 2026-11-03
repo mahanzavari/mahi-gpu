@@ -154,13 +154,23 @@ def check_static():
     has(f'{R}/fetcher.sv', r"assign fetched_pc        = current_pc;", why='B3 (single-cycle fetch holds nothing)')
     has(f'{R}/core.sv', r"flush_warp_mask\[id_warp_id\] && !\(valid_issue && if_instruction_valid\)", why='B2')
     has(f'{R}/pc.sv', r"nzp\[warp_id\] <= alu_out\[2:0\]", why='B1')
-    # L10 resolved: the generic tree (FPGA/src/rtl) mirrors ASIC/src/rtl (claims in 01-overview, 04 L10)
+    # L10: FPGA/src/rtl mirrors ASIC/src/rtl except the fixes the xsim flow found (FPGA/README.md), which are not
+    # yet in ASIC/src/rtl. Those files must carry the fix in the FPGA copy and lack it in the ASIC copy (port it ->
+    # update L10 and drop the entry here); every other file must be identical.
     g = f'{REPO}/FPGA/src/rtl'
+    fpga_only = {'core.sv': (r"wire rs_pending =", r"warp_in_pipe\[w\]\s+="),       # issue_hazard without a function
+                 'pc.sv': (r"stack_ptr\[warp_id\] - 1'b1\]",),                    # RET index wraps at sp = 0
+                 'scheduler.sv': (r"at_join = warp_in_pipe",)}                     # hold at the join point
     def tree(d): return {os.path.relpath(os.path.join(p, f), d).replace(os.sep, '/') for p, _, fs in os.walk(d) for f in fs if f.endswith(('.sv', '.v'))}
     a_files, g_files = tree(f'{ASIC}/{R}'), tree(g)
     for f in sorted(a_files ^ g_files): err(f'static: {f} is in only one of ASIC/{R} and FPGA/{R} (L10 says the trees are synced)')
     for f in sorted(a_files & g_files):
-        if read(f'{g}/{f}') != read(f'{ASIC}/{R}/{f}'): err(f'static: {f} differs between ASIC/{R} and FPGA/{R} (update L10 if the FPGA tree diverged on purpose)')
+        if f in fpga_only:
+            for rx in fpga_only[f]:
+                has(f'{g}/{f}', rx, why=f'L10: FPGA-only fix missing from FPGA/{R}/{f}')
+                has(f'{R}/{f}', rx, want=False, why=f'L10: fix now in ASIC/{R}/{f} too -- update L10 and fpga_only')
+        elif read(f'{g}/{f}') != read(f'{ASIC}/{R}/{f}'):
+            err(f'static: {f} differs between ASIC/{R} and FPGA/{R} (update L10 if the FPGA tree diverged on purpose)')
     # physical-flow page, only if the run is present
     run = f'{ASIC}/flow/runs/RUN_2026-10-19_14-54-17'
     if os.path.isdir(run):

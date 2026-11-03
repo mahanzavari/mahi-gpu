@@ -596,11 +596,13 @@ wire id_serializing = id_pc_mux | id_call | id_ret_fn | id_exit | id_sync | id_m
                       id_shared_re | id_shared_we | (|id_atomic) | id_is_fp | id_is_div;
 wire ex_serializing = ex_pc_mux | ex_call | ex_ret_fn | ex_exit | ex_sync | ex_mem_re | ex_mem_we |
                       ex_shared_re | ex_shared_we | (|ex_atomic) | ex_is_fp | ex_is_div;
-wire [NUM_WARPS-1:0] warp_in_flight;
+wire [NUM_WARPS-1:0] warp_in_flight, warp_in_pipe;
 generate
     for (genvar w = 0; w < NUM_WARPS; w++) begin : g_inflight
         assign warp_in_flight[w] = ((|id_active_mask) && id_warp_id == w && id_serializing) ||
                                    ((|ex_active_mask) && ex_warp_id == w && ex_serializing);
+        // any instruction of warp w in ID or EX (the scheduler holds a warp at its join point while this is set)
+        assign warp_in_pipe[w]   = ((|id_active_mask) && id_warp_id == w) || ((|ex_active_mask) && ex_warp_id == w);
     end
 endgenerate
 
@@ -623,11 +625,12 @@ decoder #(
 );
 wire id_writes = (|id_active_mask) && id_warp_id == cand_warp_id && id_reg_we && (id_rd < 29);
 wire ex_writes = (|ex_active_mask) && ex_warp_id == cand_warp_id && ex_reg_we && (ex_rd < 29);
-function automatic logic reads_pending(input logic [4:0] r);
-    reads_pending = (id_writes && r == id_rd) || (ex_writes && r == ex_rd);
-endfunction
-wire issue_hazard = (iss_rs_re && reads_pending(iss_rs)) || (iss_rt_re && reads_pending(iss_rt)) ||
-                    (iss_rd_re && reads_pending(iss_rd));
+// Plain wires, not a function reading id_*/ex_* from module scope: a continuous assignment is only re-evaluated when
+// its own operands change, so event-driven simulators (xsim, iverilog) never saw the hazard clear and the warp hung.
+wire rs_pending = (id_writes && iss_rs == id_rd) || (ex_writes && iss_rs == ex_rd);
+wire rt_pending = (id_writes && iss_rt == id_rd) || (ex_writes && iss_rt == ex_rd);
+wire rd_pending = (id_writes && iss_rd == id_rd) || (ex_writes && iss_rd == ex_rd);
+wire issue_hazard = (iss_rs_re && rs_pending) || (iss_rt_re && rt_pending) || (iss_rd_re && rd_pending);
 
 scheduler #(
     .THREADS_PER_BLOCK(THREADS_PER_BLOCK),
@@ -637,7 +640,8 @@ scheduler #(
     .clk(clk), .reset(reset), .start(start), .thread_count(thread_count),
     .mem_req_valid(mem_req_valid), .mem_warp_id(mem_warp_id), .mem_pc(mem_pc), .warp_mem_ready(warp_mem_ready), .mem_in_progress(mem_in_progress), 
     .fp_req_valid(ex_fp_fire | ex_div_fire), .fp_warp_id(ex_warp_id), .fp_pc(ex_pc), .fp_wb_valid(ll_wb_valid), .fp_wb_warp_id(ll_wb_warp_id),
-    .frontend_stall(frontend_stall), .warp_in_flight(warp_in_flight), .issue_hazard(issue_hazard), .cand_warp_id(cand_warp_id),
+    .frontend_stall(frontend_stall), .warp_in_flight(warp_in_flight), .warp_in_pipe(warp_in_pipe),
+    .issue_hazard(issue_hazard), .cand_warp_id(cand_warp_id),
     .flush_warp_mask(flush_warp_mask), .if_pc(if_pc), .sched_active_mask(sched_active_mask),
     .sched_warp_id(sched_warp_id), .valid_issue(valid_issue), .found_var_comb(found_var_comb), .ex_valid(|ex_active_mask), .ex_warp_id(ex_warp_id),
     .ex_active_mask(ex_active_mask), .ex_pc(ex_pc), .ex_next_pc(ex_next_pc), .ex_exit(ex_exit), .ex_sync(ex_sync), 

@@ -20,7 +20,7 @@
 | 9 | `make limits` | 7 cases (L1, L2, L5, L6, L8, L12, L14), all `PASS (documented behaviour observed)` — a FAIL means a limitation changed | 04 |
 | 13 | `make datasheet` | builds `docs/datasheet/mahi-gpu-datasheet.pdf` (21 pages) with no LaTeX errors | datasheet |
 | 10 | `grep dfxtp flow/runs/*/06-yosys-synthesis/reports/stat.rpt; ls flow/runs/*/final` | `854 … dfxtp_2` (old run) and *no* `final/` — until the flow is re-run | 07 |
-| 11 | `diff -r ../FPGA/src/rtl src/rtl` | no output: the FPGA tree is a synced copy ([L10](04-limitations.md#l10), resolved) | 04 |
+| 11 | `diff -rq ../FPGA/src/rtl src/rtl` | only `core.sv`, `pc.sv`, `scheduler.sv` differ: the FPGA-only fixes ([L10](04-limitations.md#l10)) | 04 |
 | 12 | `grep -c vwb_can_push ../FPGA/src/rtl/l2_cache.sv; grep -c fetched_pc ../FPGA/src/rtl/core.sv ../FPGA/src/rtl/fetcher.sv` | non-zero for all three (fixes B3/B4 present in the FPGA tree) | 01 |
 
 Fault-injection spot checks (re-prove the tests have teeth; each should make the named command **fail**):

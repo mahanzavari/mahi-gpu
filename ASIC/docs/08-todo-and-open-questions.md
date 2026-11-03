@@ -17,6 +17,7 @@
 | P1 | Reconvergence ([L1](04-limitations.md#l1)): `SYNC` while diverged now faults (cause 3); true join-point reconvergence is still open | `limits.py` case L1 checks the fault |
 | ~~P1~~ | ~~Expose faults ([L12](04-limitations.md#l12))~~ — **done**: `STATUS[4]`, `FAULT_INFO` at `0x3000_0008`, `gpu_fault_pin` | `make limits` case L12, chip testbench |
 | ~~P1~~ | ~~Port fixes B2–B4 to `src/rtl` and add the SVA/tests there, or retire `src/rtl` ([L10](04-limitations.md#l10))~~ — **done**: the tree moved to `FPGA/src/rtl` and is a synced copy of `ASIC/src/rtl` (RTL and SVA; its testbenches in `FPGA/src/tb` are not synced) | `make docs-check` keeps the trees equal |
+| P1 | Port the three FPGA-side fixes (`scheduler.sv` join-point lane loss, `core.sv` `issue_hazard`, `pc.sv` RET index; [L10](04-limitations.md#l10)) to `ASIC/src/rtl`, re-run `make verify`, and add a random-test case for a fall-through reconvergence | the lane-loss bug also applies to the routed mini layout's RTL |
 | P2 | Overflow detection/SVA for the call stack ([L6](04-limitations.md#l6)); consider trapping on `CALL` at depth 8 | |
 | P2 | Random-test extensions: `ATOM_CAS`, multi-core, barriers with join-point reconvergence (after L1), larger programs, PMU | [L9](04-limitations.md#l9) |
 | P2 | Expose PMU/DCR over Wishbone ([L13](04-limitations.md#l13)); implement or remove L2 events ([L4](04-limitations.md#l4)) | |

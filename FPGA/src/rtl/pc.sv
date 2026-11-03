@@ -38,7 +38,9 @@ module pc #(
         end else if (decoded_call) begin
             next_pc = decoded_immediate[PROGRAM_MEM_ADDR_BITS-1:0];
         end else if (decoded_ret_fn) begin
-            next_pc = return_stack[warp_id][stack_ptr[warp_id] - 1];
+            // 1'b1, not 1: the index stays 3 bits and wraps at sp=0 (8-deep stack, L6). With a 32-bit 1 it is -1,
+            // out of range, which event-driven simulators read as X (Verilator and synthesis truncate it).
+            next_pc = return_stack[warp_id][stack_ptr[warp_id] - 1'b1];
         end else if (decoded_pc_mux && ((nzp[warp_id] & decoded_nzp) != 3'b0)) begin
             next_pc = decoded_immediate[PROGRAM_MEM_ADDR_BITS-1:0];
         end else begin
@@ -74,7 +76,7 @@ module pc #(
 `ifndef SYNTHESIS
                 if (DEBUG) $display("[%0t] [PC] Warp %0d RET: popping, sp %0d -> %0d, ret to %0d",
                          $time, warp_id, stack_ptr[warp_id], stack_ptr[warp_id]-1,
-                         return_stack[warp_id][stack_ptr[warp_id]-1]);
+                         return_stack[warp_id][stack_ptr[warp_id]-1'b1]);
 `endif
             end
 

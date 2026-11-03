@@ -34,7 +34,10 @@ There are two RTL trees:
 - **`FPGA/src/rtl/`** (until 2026-11-03 at the root as `src/rtl/`) was the original design described by the root
   `README.md`, with the full operand-forwarding network. On 2026-11-03 (branch `fpga/src-sync`) it was moved under
   `FPGA/` and re-synced as a byte-identical copy of `ASIC/src/rtl/`; `make docs-check` fails if the two drift apart.
-  Its testbenches (`FPGA/src/tb/`) were moved but **not** synced.
+  The same day the Vivado xsim flow found three bugs, **fixed only in the FPGA tree so far** (user's call: "for now fix
+  FPGA part"): `scheduler.sv` loses lanes at a fall-through reconvergence (real bug), and `core.sv` `issue_hazard` and
+  `pc.sv` RET indexing break event-driven simulators. Details in `FPGA/README.md` and L10; docs-check knows the three
+  files. The maintained testbenches were copied into `FPGA/src/tb/` (adapted for 2 cores).
 - **`ASIC/src/rtl/`** is the maintained, verified tree used for silicon and FPGA. Before the sync it had diverged from the
   original tree:
   - **Front end and hazards:** single-cycle fetch and an issue-time scoreboard in place of forwarding.
@@ -70,9 +73,9 @@ the physical flow.
 | Path | What |
 |---|---|
 | `README.md` | top-level description (die shot at the top, "Silicon (ASIC) and FPGA targets" section) |
-| `FPGA/src/rtl/`, `FPGA/src/tb/` | synced copy of `ASIC/src/rtl` (since 2026-11-03), and the original testbenches |
+| `FPGA/src/rtl/`, `FPGA/src/tb/` | copy of `ASIC/src/rtl` plus 3 FPGA-only fixes (L10), and the testbenches |
 | `assembler/assembler.py` | **an existing 125-line text assembler** (opcodes 0–36, labels) with kernels in `assembler/kernels/*.asm`; a starting point for the compiler work |
-| `FPGA/` | `src/` only; no FPGA build flow exists yet |
+| `FPGA/` | `src/` plus a Vivado xsim flow (`python sim/xsim_run.py all`, see `FPGA/README.md`); no synthesis/board flow yet |
 | `ASIC/Makefile` | all verification and analysis targets (section 7) |
 | `ASIC/run_asic.sh` | runs the LibreLane flow (`MINI=1`, resume options) |
 | `ASIC/src/rtl/` | maintained RTL; `include/gpu_pkg.sv` holds the profiles; `sva/` holds assertions and binds |

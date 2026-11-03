@@ -18,7 +18,7 @@
 | [L7](#l7) | Divergence stack 4 deep | L | SVA |
 | [L8](#l8) | FP: truncation, flush-to-zero, no Inf/NaN, alignment quirk | M | exec |
 | [L9](#l9) | Atomics: `CAS`, ordering and multi-core untested | M | — |
-| [L10](#l10) | ~~Fixes B2–B4 exist only in `ASIC/src/rtl`~~ — **resolved**: `FPGA/src/rtl` is a synced copy | — | static |
+| [L10](#l10) | ~~Fixes B2–B4 exist only in `ASIC/src/rtl`~~ — resolved; but 3 newer fixes (one a lane-loss bug at reconvergence) exist only in `FPGA/src/rtl` | M | static |
 | [L11](#l11) | Tooling/legacy test debt | L | — |
 | [L12](#l12) | ~~Faults are invisible outside the core~~ — **resolved**: `STATUS[4]`, `FAULT_INFO`, `gpu_fault_pin` | — | exec |
 | [L13](#l13) | PMU/DCR registers unreachable from chip pins | L | static |
@@ -114,8 +114,21 @@ and not checked. `ATOM_CAS` is not covered by any random or directed test. Every
 **Resolved (2026-11-03).** Fixes B2 (ID-latch), B3 (fetcher PC match) and B4 (L2/VWB push gating) used to exist only in
 `ASIC/src/rtl`; the generic tree at the repository root (`src/rtl`) still had the buggy forms and the forwarding network.
 That tree was moved to `FPGA/src/rtl` and re-synced as a byte-identical copy of `ASIC/src/rtl`, so it now carries B1–B4,
-the scoreboard, the shared divider, the fault reporting, `gpu_pkg.sv` and the SVA. Static check: `docs-check` fails when a
-`.sv`/`.v` file differs between the two trees or exists in only one, to prompt updating this entry.
+the scoreboard, the shared divider, the fault reporting, `gpu_pkg.sv` and the SVA.
+
+**The FPGA tree is now ahead by three fixes, not yet ported here** (details: [FPGA/README.md](../../FPGA/README.md)). The
+Vivado xsim flow found them on 2026-11-03; `ASIC/src/rtl` still has all three:
+1. `scheduler.sv`, **lanes lost at a join point** (a real bug in any simulator and in silicon). A reconvergence detected
+   in EX on a fall-through instruction does not stop the next same-warp instruction, already issued with the pre-merge
+   mask; if that one is a branch, it writes its mask back and the lanes waiting on the stack never run the rest of the
+   program. Seen on random seeds 227 and 294 with 4 warps; nothing in the logic limits it to 4 warps.
+2. `core.sv`, `issue_hazard` is an `assign` that calls a function reading `id_*`/`ex_*` from module scope, so
+   event-driven simulators never re-evaluate it and the warp hangs. Verilator and synthesis are unaffected.
+3. `pc.sv`, RET at stack pointer 0 (after 8 nested calls) indexes `-1`: X in 4-state simulation; Verilator and
+   synthesis truncate the index and wrap as [L6](#l6) documents.
+
+Static check: `docs-check` fails when any other `.sv`/`.v` file differs between the two trees or exists in only one,
+when an FPGA copy loses its fix, or when the fix appears in the ASIC copy (port it, then update this entry).
 
 ## L11
 **Tooling/test debt.** `tb_matmul` completes under Verilator but **times out under iverilog**; the old `make sim` target is

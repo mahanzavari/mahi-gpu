@@ -44,6 +44,7 @@ module tb_matmul;
     ) dut (
         .clk(clk), .reset(reset), .start(start), .done(done),
         .device_control_write_enable(device_control_write_enable),
+        .device_control_address(8'h00),   // DCR 0 = thread count; left open it floats to z in 4-state simulators
         .device_control_data(device_control_data),
         
         .program_mem_read_valid(program_mem_read_valid), .program_mem_read_address(program_mem_read_address),
@@ -75,12 +76,14 @@ module tb_matmul;
                OP_MUL = 6'd5, OP_DIV = 6'd6, OP_LDR = 6'd7, OP_STR = 6'd8,
                OP_CONST = 6'd9, OP_CALL = 6'd13, OP_RET_FN = 6'd14, OP_EXIT = 6'd15;
 
+    integer word_base, rd_blk, wr_blk;
+
     always @(posedge clk) begin
         for (int i = 0; i < PROGRAM_MEM_NUM_CHANNELS; i++) begin
             program_mem_read_ready[i] <= program_mem_read_valid[i];
             if (program_mem_read_valid[i]) begin
-                // Block address ? word base address
-                int word_base = program_mem_read_address[i] * 4;
+                // Block address -> word base address
+                word_base = program_mem_read_address[i] * 4;
                 program_mem_read_data[i] <= {
                     p_mem[word_base + 3],
                     p_mem[word_base + 2],
@@ -89,23 +92,26 @@ module tb_matmul;
                 };
             end
         end
-        
+
         for (int i = 0; i < DATA_MEM_NUM_CHANNELS; i++) begin
             // FIX: PACK 128-BIT BLOCK (4 x 32-bit words)
             data_mem_read_ready[i] <= data_mem_read_valid[i];
             if (data_mem_read_valid[i]) begin
-                int b = data_mem_read_address[i];
-                data_mem_read_data[i] <= {d_mem[b*4+3], d_mem[b*4+2], d_mem[b*4+1], d_mem[b*4+0]};
+                rd_blk = data_mem_read_address[i];
+                data_mem_read_data[i] <= {d_mem[rd_blk*4+3], d_mem[rd_blk*4+2], d_mem[rd_blk*4+1], d_mem[rd_blk*4+0]};
             end
-            
+
             // FIX: UNPACK AND STROBE 128-BIT WRITE
             data_mem_write_ready[i] <= data_mem_write_valid[i];
             if (data_mem_write_valid[i]) begin
-                int b = data_mem_write_address[i];
-                if (data_mem_write_strobe[i][0]) d_mem[b*4+0] <= data_mem_write_data[i][31:0];
-                if (data_mem_write_strobe[i][1]) d_mem[b*4+1] <= data_mem_write_data[i][63:32];
-                if (data_mem_write_strobe[i][2]) d_mem[b*4+2] <= data_mem_write_data[i][95:64];
-                if (data_mem_write_strobe[i][3]) d_mem[b*4+3] <= data_mem_write_data[i][127:96];
+                wr_blk = data_mem_write_address[i];
+`ifdef MEM_TRACE
+                $display("[%0t] [DMEM-WRITE] chan=%0d block=%0d strobe=%b data=%h", $time, i, wr_blk, data_mem_write_strobe[i], data_mem_write_data[i]);
+`endif
+                if (data_mem_write_strobe[i][0]) d_mem[wr_blk*4+0] <= data_mem_write_data[i][31:0];
+                if (data_mem_write_strobe[i][1]) d_mem[wr_blk*4+1] <= data_mem_write_data[i][63:32];
+                if (data_mem_write_strobe[i][2]) d_mem[wr_blk*4+2] <= data_mem_write_data[i][95:64];
+                if (data_mem_write_strobe[i][3]) d_mem[wr_blk*4+3] <= data_mem_write_data[i][127:96];
             end
         end
     end
@@ -212,8 +218,9 @@ module tb_matmul;
         
         begin
             int errors = 0;
+            int expected_val;
             for (int i = 0; i < 25; i++) begin
-                int expected_val = i;
+                expected_val = i;
                 if (d_mem[50 + i] == expected_val) $display("Matrix C Element %02d (Computed by Thread %02d): %02d [PASS]", i, i, d_mem[50+i]);
                 else begin
                     $display("Matrix C Element %02d (Computed by Thread %02d): %02d ... EXPECTED %02d [FAIL]", i, i, d_mem[50+i], expected_val);

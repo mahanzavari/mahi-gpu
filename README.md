@@ -715,7 +715,7 @@ The module tracks the currently open row per bank independently for reads and wr
 ```
 mahi-gpu/
 ├── ASIC/                       sky130 flow, docs, verification (src/rtl, src/tb)
-├── FPGA/src/rtl/               synced copy of ASIC/src/rtl (file list below)
+├── FPGA/src/rtl/               ASIC/src/rtl plus 3 fixes, see FPGA/README.md (file list below)
 │   ├── gpu.sv                  Top-level GPU module
 │   ├── gpu_axi_wrapper.sv      AXI4 integration wrapper
 │   ├── core.sv                 Compute core (pipeline + warp management)

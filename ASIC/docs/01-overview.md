@@ -13,9 +13,10 @@ Build profile selection (`ASIC/src/rtl/include/gpu_pkg.sv:27-86`):
 addresses, 2 cores, 4 warps). **`gpu_pkg.sv` must be first on every compile line** (leaf defaults reference it).
 
 ## File map and delta against `src/rtl`
-**The delta is now zero.** On 2026-11-03 the generic tree moved from `src/rtl` to `FPGA/src/rtl` and was re-synced as a
-byte-identical copy of `ASIC/src/rtl` ([L10](04-limitations.md#l10), resolved; `docs-check` keeps the two trees equal). The
-table below is the port-era history: how `ASIC/src/rtl` differed from the original generic tree before the sync.
+**The delta is now three FPGA-side fixes.** On 2026-11-03 the generic tree moved from `src/rtl` to `FPGA/src/rtl` and was
+re-synced as a byte-identical copy of `ASIC/src/rtl`; the same day the Vivado xsim flow found three bugs, fixed so far only
+in the FPGA copies of `core.sv`, `pc.sv` and `scheduler.sv` ([L10](04-limitations.md#l10); `docs-check` keeps every other
+file equal). The table below is the port-era history: how `ASIC/src/rtl` differed from the original generic tree.
 
 Legend: **=** byte-identical to `src/rtl`; **Δ** differs. (Checked with `diff -u src/rtl/X ASIC/src/rtl/X`.)
 
