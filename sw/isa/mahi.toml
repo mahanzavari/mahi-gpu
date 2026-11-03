@@ -1,0 +1,509 @@
+# mahi-gpu instruction set: the single machine-readable definition.
+#
+# Everything that encodes, decodes or reasons about mahi machine code reads this file: the assembler and
+# disassembler (sw/asm), the ISA reference (sw/isa/ISA.md, generated) and, later, the compiler backend.
+# sw/isa/check.py keeps it honest against the hardware: decoder.sv (ASIC and FPGA trees), the golden model
+# ASIC/scripts/isa.py and gpu_pkg.sv. When the hardware changes, change this file first, then the RTL,
+# and run `python sw/isa/check.py`.
+#
+# Version 0 describes the ISA exactly as the RTL implements it today, quirks included; nothing here is
+# aspirational. Planned changes go in [[open]] at the end, not into the instruction table.
+
+[meta]
+name      = "mahi"
+version   = 0
+word_bits = 32
+# Program counters, branch targets and data addresses all count 32-bit words, not bytes.
+addressing = "word"
+
+# Bit ranges [msb, lsb] of the instruction word. Fields overlap; each format uses a subset.
+[fields]
+op    = [31, 26]
+rd    = [25, 21]
+nzp   = [25, 23]
+rs    = [20, 16]
+rt    = [15, 11]
+imm16 = [15, 0]
+imm20 = [20, 1]
+
+[registers]
+count = 32
+# Writes to these are discarded (registers.sv: rd < 29). They are set at block start.
+read_only = [29, 30, 31]
+
+[registers.special]
+29 = { alias = "bid",  meaning = "block id (8-bit DCR-assigned block index, zero-extended)" }
+30 = { alias = "nthr", meaning = "threads per block = THREADS_PER_BLOCK * NUM_WARPS" }
+31 = { alias = "tid",  meaning = "thread id within the block = warp * THREADS_PER_BLOCK + lane" }
+
+# Condition codes, written only by CMP (pc.sv: per warp, not per lane, reset to 0).
+[nzp]
+n = 4   # rs <  rt (unsigned)
+z = 2   # rs == rt
+p = 1   # rs >  rt (unsigned)
+
+# Formats: which fields an encoding uses. Bits outside them are zero in canonical encodings and ignored by
+# the decoder (except that LUI's imm20 overlaps rs, and BR's nzp overlaps rd).
+[formats]
+N  = []                       # no operands
+R3 = ["rd", "rs", "rt"]
+R2 = ["rd", "rs"]
+C  = ["rs", "rt"]             # compare
+I  = ["rd", "imm16"]          # 16-bit immediate, sign-extended
+U  = ["rd", "imm20"]          # upper immediate
+M  = ["rd", "rs", "imm16"]    # memory with offset
+S  = ["rd", "rs"]             # shared memory, no offset
+B  = ["nzp", "imm16"]         # conditional branch
+J  = ["imm16"]                # call
+
+# Operand roles in `syntax` (what a compiler needs to know about each register operand):
+#   rd  destination, rd field, written
+#   rc  rd field, read and written (accumulator / compare value)
+#   rv  rd field, read only (value to store; decoder.sv routes it through the rt read port)
+#   rs, rt  sources
+#   imm   signed 16-bit (-32768..32767)
+#   uimm20  unsigned 20-bit, placed in bits [31:12] of the result
+#   target  program word address (label or number, 0..65535), imm16 field
+#   [rs+imm]  address = rs + sext(imm16);  [rs]  address = rs
+#
+# `ctrl` lists the decoder.sv outputs that differ from their defaults for this opcode, with the
+# `decoded_` prefix dropped. check.py compares it with every case arm of decoder.sv.
+# `unit`: alu (1 cycle), div (shared iterative divider, long latency), fp (pipelined FMA, long latency),
+# lsu (global memory), shmem, branch, ctrl.
+
+# ---------------------------------------------------------------------------------------------------- ALU
+[[instr]]
+name = "ADD"
+opcode = 3
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rs + rt"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 0, flags_write_enable = 1 }
+
+[[instr]]
+name = "SUB"
+opcode = 4
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rs - rt"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 1, flags_write_enable = 1 }
+
+[[instr]]
+name = "MUL"
+opcode = 5
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = low32(rs * rt)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 2, flags_write_enable = 1 }
+
+[[instr]]
+name = "DIV"
+opcode = 6
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "div"
+sem = "rd = rs / rt (unsigned); rt == 0 faults (cause 1)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 3, flags_write_enable = 1 }
+
+[[instr]]
+name = "MOD"
+opcode = 22
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "div"
+sem = "rd = rs % rt (unsigned); rt == 0 faults (cause 1)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 9, flags_write_enable = 1 }
+
+[[instr]]
+name = "AND"
+opcode = 17
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rs & rt"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 4, flags_write_enable = 1 }
+
+[[instr]]
+name = "OR"
+opcode = 18
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rs | rt"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 5, flags_write_enable = 1 }
+
+[[instr]]
+name = "XOR"
+opcode = 19
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rs ^ rt"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 6, flags_write_enable = 1 }
+
+[[instr]]
+name = "SHL"
+opcode = 20
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rt < 32 ? rs << rt : 0"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 7, flags_write_enable = 1 }
+
+[[instr]]
+name = "SHR"
+opcode = 21
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = rt < 32 ? rs >> rt : 0 (logical)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 8, flags_write_enable = 1 }
+
+[[instr]]
+name = "MIN"
+opcode = 23
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = signed_min(rs, rt)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 10, flags_write_enable = 1 }
+
+[[instr]]
+name = "MAX"
+opcode = 24
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "alu"
+sem = "rd = signed_max(rs, rt)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 11, flags_write_enable = 1 }
+
+[[instr]]
+name = "MAC"
+opcode = 27
+format = "R3"
+syntax = "rc, rs, rt"
+unit = "alu"
+sem = "rc = low32(rc + rs * rt)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, rd_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 14, flags_write_enable = 1 }
+
+[[instr]]
+name = "ABS"
+opcode = 25
+format = "R2"
+syntax = "rd, rs"
+unit = "alu"
+sem = "rd = |rs| (signed; ABS(INT_MIN) = INT_MIN)"
+ctrl = { rs_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 12, flags_write_enable = 1 }
+
+[[instr]]
+name = "NEG"
+opcode = 26
+format = "R2"
+syntax = "rd, rs"
+unit = "alu"
+sem = "rd = -rs"
+ctrl = { rs_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 13, flags_write_enable = 1 }
+
+[[instr]]
+name = "POPCNT"
+opcode = 30
+format = "R2"
+syntax = "rd, rs"
+unit = "alu"
+sem = "rd = number of set bits in rs"
+ctrl = { rs_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 15, flags_write_enable = 1 }
+
+[[instr]]
+name = "CLZ"
+opcode = 31
+format = "R2"
+syntax = "rd, rs"
+unit = "alu"
+sem = "rd = leading zeros of rs (32 for 0)"
+ctrl = { rs_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 16, flags_write_enable = 1 }
+
+[[instr]]
+name = "BREV"
+opcode = 32
+format = "R2"
+syntax = "rd, rs"
+unit = "alu"
+sem = "rd = bit-reverse(rs)"
+ctrl = { rs_read_enable = 1, reg_write_enable = 1, alu_arithmetic_mux = 17, flags_write_enable = 1 }
+
+[[instr]]
+name = "CMP"
+opcode = 2
+format = "C"
+syntax = "rs, rt"
+unit = "alu"
+sem = "nzp = {rs < rt, rs == rt, rs > rt}, unsigned, per warp from the issuing lanes"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, alu_output_mux = 1, nzp_write_enable = 1 }
+
+[[instr]]
+name = "CONST"
+opcode = 9
+format = "I"
+syntax = "rd, imm"
+unit = "alu"
+sem = "rd = sext(imm16)"
+ctrl = { reg_write_enable = 1, reg_input_mux = 2 }
+
+[[instr]]
+name = "LUI"
+opcode = 29
+format = "U"
+syntax = "rd, uimm20"
+unit = "alu"
+sem = "rd = uimm20 << 12"
+ctrl = { reg_write_enable = 1, reg_input_mux = 2 }
+
+# ----------------------------------------------------------------------------------------------- FP32
+# Not IEEE 754 (limitation L8): truncation, flush to zero, no Inf/NaN. Bit-exact model: ASIC/scripts/isa.py fma_bits.
+[[instr]]
+name = "FADD"
+opcode = 33
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "fp"
+sem = "rd = rs + rt (fp32)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, is_fp = 1, fp_op = 1 }
+
+[[instr]]
+name = "FSUB"
+opcode = 34
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "fp"
+sem = "rd = rs - rt (fp32)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, is_fp = 1, fp_op = 3 }
+
+[[instr]]
+name = "FMUL"
+opcode = 35
+format = "R3"
+syntax = "rd, rs, rt"
+unit = "fp"
+sem = "rd = rs * rt (fp32)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, is_fp = 1, fp_op = 2 }
+
+[[instr]]
+name = "FMA"
+opcode = 36
+format = "R3"
+syntax = "rc, rs, rt"
+unit = "fp"
+sem = "rc = rs * rt + rc (fp32, single truncation)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, rd_read_enable = 1, reg_write_enable = 1, is_fp = 1, fp_op = 0 }
+
+# ------------------------------------------------------------------------------------------------ memory
+# Global addresses are word addresses; an address above the core's MAX_MEM_ADDR faults (cause 2), one between
+# the data bus width and MAX_MEM_ADDR wraps silently (L14).
+[[instr]]
+name = "LDR"
+opcode = 7
+format = "M"
+syntax = "rd, [rs+imm]"
+legacy = ["rd, rs, imm"]
+unit = "lsu"
+sem = "rd = mem[rs + sext(imm16)]"
+ctrl = { rs_read_enable = 1, reg_write_enable = 1, reg_input_mux = 1, mem_read_enable = 1, use_mem_offset = 1 }
+
+[[instr]]
+name = "STR"
+opcode = 8
+format = "M"
+syntax = "rv, [rs+imm]"
+legacy = ["rv, rs, imm"]
+unit = "lsu"
+sem = "mem[rs + sext(imm16)] = rv"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, mem_write_enable = 1, use_mem_offset = 1 }
+
+[[instr]]
+name = "LDSH"
+opcode = 11
+format = "S"
+syntax = "rd, [rs]"
+legacy = ["rd, rs", "rd, rs, 0"]
+unit = "shmem"
+sem = "rd = shared[rs]; rs >= SHARED_MEM_SIZE faults (cause 2)"
+ctrl = { rs_read_enable = 1, shared_read_enable = 1, reg_input_mux = 3, reg_write_enable = 1 }
+
+[[instr]]
+name = "STSH"
+opcode = 12
+format = "S"
+syntax = "rv, [rs]"
+legacy = ["rv, rs", "rv, rs, 0"]
+unit = "shmem"
+sem = "shared[rs] = rv; rs >= SHARED_MEM_SIZE faults (cause 2)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, shared_write_enable = 1 }
+
+[[instr]]
+name = "ATOM_ADD"
+opcode = 16
+format = "R3"
+syntax = "rd, [rs], rt"
+legacy = ["rd, rs, rt"]
+unit = "lsu"
+sem = "old = mem[rs]; mem[rs] = old + rt; rd = old (lanes serialised, order unspecified)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, reg_write_enable = 1, reg_input_mux = 1, atomic = 1 }
+
+[[instr]]
+name = "ATOM_CAS"
+opcode = 28
+format = "R3"
+syntax = "rc, [rs], rt"
+legacy = ["rc, rs, rt"]
+unit = "lsu"
+sem = "old = mem[rs]; if old == rc: mem[rs] = rt; rc = old (untested, L9)"
+ctrl = { rs_read_enable = 1, rt_read_enable = 1, rd_read_enable = 1, reg_write_enable = 1, reg_input_mux = 1, atomic = 2 }
+
+# ---------------------------------------------------------------------------------------------- control
+[[instr]]
+name = "BR"
+opcode = 1
+format = "B"
+syntax = "nzp, target"
+unit = "branch"
+sem = "if (nzp_reg & nzp) pc = target; lanes that disagree diverge (scheduler divergence stack, 4 deep)"
+ctrl = { pc_mux = 1 }
+
+[[instr]]
+name = "CALL"
+opcode = 13
+format = "J"
+syntax = "target"
+unit = "branch"
+sem = "push pc+1 on the warp's return stack (8 deep, wraps silently, L6); pc = target"
+ctrl = { call = 1, pc_mux = 1 }
+
+[[instr]]
+name = "RET"
+opcode = 14
+format = "N"
+syntax = ""
+unit = "branch"
+sem = "pc = pop return stack"
+ctrl = { ret_fn = 1 }
+
+[[instr]]
+name = "SYNC"
+opcode = 10
+format = "N"
+syntax = ""
+unit = "ctrl"
+sem = "block barrier: waits until every active warp of the block arrives; faults (cause 3) if the warp is diverged (L1)"
+ctrl = { sync = 1 }
+
+[[instr]]
+name = "EXIT"
+opcode = 15
+format = "N"
+syntax = ""
+unit = "ctrl"
+sem = "the issuing lanes finish; a diverged warp resumes the next group from its stack"
+ctrl = { exit = 1 }
+
+[[instr]]
+name = "NOP"
+opcode = 0
+format = "N"
+syntax = ""
+unit = "ctrl"
+sem = "nothing"
+ctrl = {}
+
+# ------------------------------------------------------------------------------------------- pseudo ops
+# Expanded by the assembler; not opcodes.
+[[pseudo]]
+name = "MOV"
+syntax = "rd, rs"
+expand = ["OR rd, rs, rs"]
+
+[[pseudo]]
+name = "JMP"
+syntax = "target"
+expand = ["CMP r0, r0", "BR z, target"]
+note = "clobbers nzp; CMP of a register with itself always sets z"
+
+[[pseudo]]
+name = "LI"
+syntax = "rd, imm32"
+note = "one CONST if the value fits a signed 16-bit immediate, one LUI if its low 12 bits are zero, otherwise an error (no OR-immediate to combine them without a scratch register)"
+
+# ----------------------------------------------------------------------------------------------- profiles
+# Machine sizes per hardware profile (gpu_pkg.sv; check.py verifies them). `chip_*` are the words actually
+# backed by memory at the chip top (gpu_asic_top / gpu_mem_subsys.sv, L15), smaller than the address space.
+[profiles.asic_mini]
+cores = 1
+warps = 2
+lanes = 2
+pmem_addr_bits = 12
+dmem_addr_bits = 14
+shared_words = 32
+chip_pmem_words = 512
+chip_dmem_words = 512
+
+[profiles.asic]
+cores = 1
+warps = 2
+lanes = 4
+pmem_addr_bits = 12
+dmem_addr_bits = 14
+shared_words = 64
+
+[profiles.fpga]
+cores = 2
+warps = 4
+lanes = 4
+pmem_addr_bits = 16
+dmem_addr_bits = 16
+shared_words = 256
+
+[profiles.sim]
+cores = 2
+warps = 4
+lanes = 4
+pmem_addr_bits = 32
+dmem_addr_bits = 32
+shared_words = 256
+
+# ----------------------------------------------------------------------------------- not architectural
+# The ALU also writes per-warp C/V/Z/N/SAT flags (core.sv, flags_write_enable); no instruction reads them.
+# Return-stack depth 8 (pc.sv), divergence-stack depth 4 (scheduler.sv).
+
+# ---------------------------------------------------------------------------------------- open questions
+# Decisions the compiler needs before version 1 (see sw/isa/README.md).
+[[open]]
+id = "Q1"
+topic = "reconvergence"
+text = "No join-point reconvergence; SYNC after divergence faults (L1). Pick: compiler-placed join instruction, or hardware post-dominator stack."
+
+[[open]]
+id = "Q2"
+topic = "addressing"
+text = "Word addressing only, no byte/halfword access. Keep (backend scales pointers, i8/i16 by shift and mask) or move to byte addresses."
+
+[[open]]
+id = "Q3"
+topic = "kernel ABI"
+text = "No kernel-argument mechanism, no stack pointer or private memory, hardware-only 8-deep return stack, 8-bit thread count."
+
+[[open]]
+id = "Q4"
+topic = "compare and branch"
+text = "CMP is unsigned only, nzp resets to 0 so an unconditional branch needs a CMP first (L5). Signed compare and a true jump are cheap to add."
+
+[[open]]
+id = "Q5"
+topic = "immediates"
+text = "No ALU-immediate forms; 32-bit constants need LUI + CONST + OR with a scratch register."
+
+[[open]]
+id = "Q6"
+topic = "floating point"
+text = "FP32 add/sub/mul/fma only, not IEEE; no compare, min/max, conversion, divide or sqrt (L8)."
