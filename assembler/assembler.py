@@ -1,3 +1,5 @@
+# Superseded by sw/asm/mahias.py (encodings from sw/isa/mahi.toml); kept because sw/asm/test_asm.py checks
+# that the new assembler reproduces its output on the existing kernels. Known bugs: sw/README.md.
 import sys
 import re
 

@@ -7,7 +7,8 @@
 Checks: (1) generated tables (profile params from gpu_pkg.sv, opcodes from decoder.sv vs isa.py, flow config),
 (2) every `file.ext:line` citation points at an existing file with enough lines,
 (3) static facts the limitation register relies on (regex anchors in the RTL),
-(4) relative markdown links and #anchors resolve, (5) informational: header commit vs HEAD.
+(4) relative markdown links and #anchors resolve, (5) informational: header commit vs HEAD,
+(6) the ISA spec sw/isa/mahi.toml against the RTL, and the assembler's round trip.
 """
 import os, re, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -231,9 +232,16 @@ def check_datasheet():
     for cmd in re.findall(r'make (limits|docs-check|verify|datasheet)', t): pass
     notes.append(f'datasheet cross-checked (pins={pins}, opcodes={nop})')
 
+def check_isa():
+    """sw/isa/mahi.toml agrees with decoder.sv, isa.py and gpu_pkg.sv; the assembler round-trips (quick run)."""
+    for cmd in (['sw/isa/check.py'], ['sw/asm/test_asm.py', '--words', '5000', '--seeds', '30']):
+        r = subprocess.run([sys.executable] + cmd, cwd=REPO, capture_output=True, text=True)
+        if r.returncode: err(f'{cmd[0]} failed:\n' + (r.stdout + r.stderr).strip())
+    notes.append('ISA spec, decoders and assembler round trip checked (sw/isa/check.py, sw/asm/test_asm.py)')
+
 if __name__ == '__main__':
     update = '--update' in sys.argv
-    check_blocks(update); check_citations(); check_static(); check_links(); check_datasheet(); check_headers()
+    check_blocks(update); check_citations(); check_static(); check_links(); check_datasheet(); check_headers(); check_isa()
     for n in notes: print('note:', n)
     if errors:
         print('\n'.join('FAIL: ' + e for e in errors)); print(f'docs-check: {len(errors)} problem(s)'); sys.exit(1)

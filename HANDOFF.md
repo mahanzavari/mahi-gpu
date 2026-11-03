@@ -467,10 +467,11 @@ All 600 measured runs matched the golden model.
    - fixing the PMU gaps (L4 L2 events are 0; L13 counters unreachable from the pins).
 
 ### 9.3 Compiler
-- **Stage 1: assembler.** Extend or replace `assembler/assembler.py`:
-  - pseudo-instructions: `LI` (`LUI` + `OR`), `MOV`, `JMP` (needs a `CMP` first because of L5);
-  - output in the `prog.hex` format of `tb_random`;
-  - check its output against `isa.py`.
+- **Stage 1: assembler.** Done on branch `fpga/src-sync` (see [sw/README.md](sw/README.md)). The ISA is defined
+  once in `sw/isa/mahi.toml` and checked against both decoders, `isa.py` and `gpu_pkg.sv`. The assembler v2
+  (`sw/asm/mahias.py`) has pseudo-instructions `LI`/`MOV`/`JMP` and outputs hex (the `tb_random` format), hex128 or bin.
+  It has a disassembler with an exact round trip and an oracle test against `isa.py`. Open ISA decisions Q1-Q6 are
+  listed in `sw/isa/ISA.md`.
 - **Stage 2: kernel compiler.**
   - **Front end:** Python-subset kernels via Python's `ast` module, or a C/CUDA-like subset via `pycparser`.
   - **Middle end:** IR, then instruction selection, then linear-scan register allocation over 29 registers, spilling to
