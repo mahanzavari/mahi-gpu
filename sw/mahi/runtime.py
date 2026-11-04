@@ -183,7 +183,7 @@ def _sva_files():
 
 class VerilatorBackend:
     """tb_random under Verilator, built once per profile into sw/build/verilator_<profile>/."""
-    def __init__(self, profile_name, profile, lat=0, maxcyc=5_000_000, rebuild=False, sva=True):
+    def __init__(self, profile_name, profile, lat=0, maxcyc=200_000_000, rebuild=False, sva=True):
         from xsim_run import RTL_SOURCES
         self.lat, self.maxcyc = lat, maxcyc
         self.dir = os.path.join(BUILD, f'verilator_{profile_name}')
@@ -221,7 +221,7 @@ class VerilatorBackend:
 
 class XsimBackend:
     """tb_random under Vivado xsim (FPGA/sim/xsim_run.py does the tool handling). Snapshot built on first use."""
-    def __init__(self, profile_name, profile, lat=0, maxcyc=5_000_000, vivado=None, timeout=3600):
+    def __init__(self, profile_name, profile, lat=0, maxcyc=200_000_000, vivado=None, timeout=3600):
         import xsim_run
         if profile_name not in xsim_run.PROFILE_DEF: raise DeviceError(f'xsim backend supports {list(xsim_run.PROFILE_DEF)}')
         self.x, self.lat = xsim_run, lat

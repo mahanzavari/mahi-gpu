@@ -8,15 +8,32 @@ RTL simulation and, later, on the FPGA.
 |---|---|---|
 | Assembler v2 | `mahi/asm.py` | done (M1) |
 | Runtime: device memory, launch; `golden` / `verilator` / `xsim` backends | `mahi/runtime.py` | done (M2); `xsim` written but not yet run (needs Vivado) |
-| Kernel library | `kernels/*.s` | `vadd`, `matvec` (FMA, linear layer), `reduce_sum` (shared memory + SYNC) |
-| NN kernels and the training framework | — | next (M3–M6) |
+| Kernels: `vadd`, `matvec`, `reduce_sum` | `kernels/*.s` | done |
+| NN kernels: `linear_fwd`, `linear_bwd_x`, `linear_bwd_w`, `relu_fwd`, `relu_bwd`, `mse`, `sgd` | `kernels/*.s` | done (M3) |
+| Framework: `MLP` (any depth, one launch per op), `RefMLP` (NumPy float32 reference) | `mahi/nn.py` | done (M4) |
+| Fused training kernel `mlp_train` (one hidden layer, N steps per launch) + `FusedMLP` | `kernels/mlp_train.s`, `mahi/nn.py` | done (M5) |
+| Examples: XOR (2-4-1, 17 params), sin(x) fit (1-8-1, 25 params, 16 samples) | `examples/` | done (M4, M6) |
 | FPGA board backend | — | after board bring-up (M7) |
+
+## Results (profile `fpga`: 2 cores x 4 warps x 4 lanes; RTL = Verilator simulation of FPGA/src/rtl)
+| Run | Steps | Result | RTL vs golden model | GPU cycles |
+|---|---|---|---|---|
+| XOR, unfused (`examples/xor.py`) | 600 | loss 0.000000, outputs [0, 1, 1, 0] | losses and weights bit-identical | 5.61 M (9,354/step, 12 launches/step) |
+| XOR, fused (`--fused`) | 600 | same | same weights as unfused | 2.67 M (4,443/step, 6 launches in all) |
+| sin(x), unfused (`examples/sine.py`) | 3,000 | MSE 0.0044 (target 0.01), max error 0.144 | bit-identical | 78.0 M (26,012/step) |
+
+The GPU's FP32 truncates and flushes denormals (ASIC L8); against the same network in NumPy float32 the loss differs by
+at most 6e-7 (XOR) and 3e-6 (sine) over the whole run. At the ASIC's 25 MHz, the fused XOR training is about 0.1 s of
+chip time.
 
 ## Quick start
 ```
 python3 -m mahi.asm kernels/vadd.s -o build/vadd -l      # from sw/: prog.hex, dmem.hex, map.json, listing
 python3 tests/test_asm.py                                 # assembler
 python3 tests/test_kernels.py                             # kernels: golden (+ verilator if installed)
+python3 tests/test_nn.py                                  # NN kernels, training steps, fused == unfused
+python3 examples/xor.py --compare golden,verilator        # train XOR on the golden model and the RTL
+python3 examples/sine.py --fused --backend verilator      # fused training kernel
 MAHI_BACKENDS=golden,xsim python3 tests/test_kernels.py   # on the Vivado machine
 MAHI_PROFILE=asic_mini python3 tests/test_kernels.py      # profiles: fpga (default), sim, asic, asic_mini
 ```
@@ -52,11 +69,11 @@ print(dev.read(c), r.cycles)
   `kernels/reduce_sum.s`, which masks instead of branching).
 - `STR`/`STSH` take the value as their first operand; shared memory (`LDSH`/`STSH`) has no offset.
 
-## Next milestones
-| # | Deliverable | Done when |
-|---|---|---|
-| M3 | NN kernel library: linear forward/backward, ReLU and its gradient, MSE loss and gradient, batch reduction, SGD update; NumPy tests | every kernel within tolerance, golden == RTL bit for bit |
-| M4 | XOR 2-4-1 training with one kernel per op + `mahi.nn` (`Tensor`, `Linear`, `ReLU`, `MSELoss`, `SGD`) | loss falls, all 4 XOR outputs right; golden and RTL loss curves identical |
-| M5 | fused training-step kernel, cycle and stall report | same weights as M4, fewer host round trips |
-| M6 | 1-8-1 curve fit with a 16-sample batch | MSE below target vs NumPy float32 |
-| M7 | FPGA board backend | M4-M6 on the board match simulation |
+## Next
+- **M7, FPGA board backend:** a `Device('fpga')` backend that loads program and data memory over the board's host link
+  (UART-to-Wishbone bridge or Zynq AXI), launches, and reads back; then XOR and sine on the board, bit-identical to
+  the simulation.
+- On the Vivado machine: `MAHI_BACKENDS=golden,xsim python tests/test_kernels.py` and `tests/test_nn.py` to validate
+  the `xsim` backend (4-state simulation is a useful second opinion).
+- Later: a Python kernel builder (generate kernels like `mlp_train` instead of writing them by hand), more layers in
+  the fused kernel, a softmax-free classifier example.
