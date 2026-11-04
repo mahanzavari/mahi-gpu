@@ -21,6 +21,7 @@ RTL simulation and, later, on the FPGA.
 | XOR, unfused (`examples/xor.py`) | 600 | loss 0.000000, outputs [0, 1, 1, 0] | losses and weights bit-identical | 5.61 M (9,354/step, 12 launches/step) |
 | XOR, fused (`--fused`) | 600 | same | same weights as unfused | 2.67 M (4,443/step, 6 launches in all) |
 | sin(x), unfused (`examples/sine.py`) | 3,000 | MSE 0.0044 (target 0.01), max error 0.144 | bit-identical | 78.0 M (26,012/step) |
+| sin(x), fused (`--fused`) | 3,000 | same | bit-identical | 69.6 M (23,216/step, 6 launches in all) |
 
 The GPU's FP32 truncates and flushes denormals (ASIC L8); against the same network in NumPy float32 the loss differs by
 at most 6e-7 (XOR) and 3e-6 (sine) over the whole run. At the ASIC's 25 MHz, the fused XOR training is about 0.1 s of
