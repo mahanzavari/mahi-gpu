@@ -13,6 +13,7 @@ RTL simulation and, later, on the FPGA.
 | Framework: `MLP` (any depth, one launch per op), `RefMLP` (NumPy float32 reference) | `mahi/nn.py` | done (M4) |
 | Fused training kernel `mlp_train` (one hidden layer, N steps per launch) + `FusedMLP` | `kernels/mlp_train.s`, `mahi/nn.py` | done (M5) |
 | Examples: XOR (2-4-1, 17 params), sin(x) fit (1-8-1, 25 params, 16 samples) | `examples/` | done (M4, M6) |
+| Benchmark suite: 46 kernels, RTL performance probes, findings/oversight report | `bench/` | done ([bench/README.md](bench/README.md), [baseline report](bench/baseline/fpga/report.md)) |
 | FPGA board backend | — | after board bring-up (M7) |
 
 ## Results (profile `fpga`: 2 cores x 4 warps x 4 lanes; RTL = Verilator simulation of FPGA/src/rtl)
@@ -69,6 +70,19 @@ print(dev.read(c), r.cycles)
 - `SYNC` while a warp is diverged is a fault (L1): keep control flow before every barrier warp-uniform (see
   `kernels/reduce_sum.s`, which masks instead of branching).
 - `STR`/`STSH` take the value as their first operand; shared memory (`LDSH`/`STSH`) has no offset.
+
+## Benchmarks
+
+`python sw/bench/run.py` runs 46 micro and application kernels on the golden model and on the RTL with
+simulation-only performance probes. It writes a report with an issue-slot breakdown, a roofline, cache and LSU
+metrics, latency sensitivity, and rule-based oversight flags. See [bench/README.md](bench/README.md). Headline findings
+(baseline report):
+- **Atomics are not coherent across cores.** `ATOM_ADD` from both cores onto one cache line loses updates.
+- **FP instructions block their warp until writeback** (`WAITING_FP`), so independent FMAs of one warp never overlap.
+  The best case reaches 6.75 of 16 FLOP/cycle.
+- **The LSU is the memory bottleneck.** It handles one line at a time per core and blocks the warp. Bandwidth is
+  1.2 B/cycle from L2 or DRAM, a store costs about 33 LSU cycles per line (write-through), and 100% of added DRAM
+  latency shows up in the runtime.
 
 ## Next
 - **M7, FPGA board backend:** a `Device('fpga')` backend that loads program and data memory over the board's host link

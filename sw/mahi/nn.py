@@ -178,6 +178,6 @@ class FusedMLP:
         r = self.dev.launch(kernel('mlp_train'), threads=B, X=self.X, T=self.T, P=self.P, S=self.S, B=B, IN=IN, H=H,
                             OUT=OUT, steps=steps, neg_lr=float(np.float32(-lr)), scale=float(np.float32(2.0 / n)),
                             h_iters=-(-H // B), o_iters=-(-OUT // B))
-        self.launches += 1; self.cycles += r.cycles or 0; self.steps_done += steps
+        self.launches += 1; self.cycles += r.cycles or 0; self.steps_done += steps; self.last = r
         E = self.dev.read(self.S, offset=2 * B * H + B * OUT, words=B)
         return float(np.sum(E, dtype=np.float64) / n)
