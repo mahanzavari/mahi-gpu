@@ -35,7 +35,7 @@ module tb_random;
     always @(posedge clk) if (fault && !f_seen) begin f_seen <= 1; f_cause <= fault_cause; f_warp <= fault_warp; f_pc <= fault_pc; end
 
     reg [31:0] p_mem [0:4095];
-    reg [31:0] d_mem [0:1023];
+    reg [31:0] d_mem [0:16383];   // +dwords=N (default 1024) words are loaded/dumped
 
     // ---- xorshift32 for latency
     reg [31:0] rng = 32'h1234567;
@@ -84,10 +84,10 @@ module tb_random;
 
     always #5 clk = ~clk;
 
-    string prog_f, dmem_f, out_f; integer nthr, maxcyc, cyc, fd, seed_arg;
+    string prog_f, dmem_f, out_f; integer nthr, maxcyc, cyc, fd, seed_arg, dwords;
     initial begin
         for (i = 0; i < 4096; i = i + 1) p_mem[i] = 0;
-        for (i = 0; i < 1024; i = i + 1) d_mem[i] = 0;
+        for (i = 0; i < 16384; i = i + 1) d_mem[i] = 0;
         if (!$value$plusargs("prog=%s", prog_f)) begin $display("TB_ERROR: +prog required"); $fatal(1); end
         $readmemh(prog_f, p_mem);
         if ($value$plusargs("dmem=%s", dmem_f)) $readmemh(dmem_f, d_mem);
@@ -96,6 +96,7 @@ module tb_random;
         if ($value$plusargs("seed=%d", seed_arg)) rng = seed_arg * 32'h9E3779B1 + 1;
         if (!$value$plusargs("threads=%d", nthr)) nthr = 8;
         if (!$value$plusargs("maxcyc=%d", maxcyc)) maxcyc = 400000;
+        if (!$value$plusargs("dwords=%d", dwords)) dwords = 1024;
 
         repeat (10) @(posedge clk); #1 reset = 0;
         repeat (5) @(posedge clk); #1 dcr_we = 1; dcr_data = nthr[7:0];
@@ -109,7 +110,7 @@ module tb_random;
         repeat (200) @(posedge clk);            // let the final flush/writebacks land
 
         fd = $fopen(out_f, "w");
-        for (i = 0; i < 1024; i = i + 1) $fdisplay(fd, "%08x", d_mem[i]);
+        for (i = 0; i < dwords; i = i + 1) $fdisplay(fd, "%08x", d_mem[i]);
         $fclose(fd);
         if (f_seen) $display("TB_FAULT cause=%0d warp=%0d pc=%0d", f_cause, f_warp, f_pc);
         $display("TB_DONE cycles=%0d", cyc);
